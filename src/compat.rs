@@ -55,7 +55,7 @@ impl IntegrationAdapter for JsonLineAdapter {
         );
         CompatibilityEnvelope {
             protocol_version: "1".to_string(),
-            producer: "aureon-mev-system".to_string(),
+            producer: "security-agent".to_string(),
             payload_kind: "execution_plan".to_string(),
             fields,
         }

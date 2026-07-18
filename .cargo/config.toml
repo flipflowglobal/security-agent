@@ -20,10 +20,10 @@
 #      cargo build --release --target aarch64-linux-android
 #
 # Deploy to device via ADB (e.g. into Termux's $HOME or /data/local/tmp):
-#      adb push target/aarch64-linux-android/release/aureon_mev_system \
-#               /data/local/tmp/aureon_mev_system
-#      adb shell chmod +x /data/local/tmp/aureon_mev_system
-#      adb shell /data/local/tmp/aureon_mev_system
+#      adb push target/aarch64-linux-android/release/security-agent \
+#               /data/local/tmp/security-agent
+#      adb shell chmod +x /data/local/tmp/security-agent
+#      adb shell /data/local/tmp/security-agent
 #
 # Run in Termux without ADB (clone repo on device, install Rust via rustup):
 #      cargo run --release
