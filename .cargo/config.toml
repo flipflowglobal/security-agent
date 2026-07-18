@@ -1,0 +1,47 @@
+# .cargo/config.toml
+#
+# Cross-compilation configuration for Android targets.
+#
+# Prerequisites
+# =============
+# 1. Install the Android NDK (r25c or later recommended):
+#      https://developer.android.com/ndk/downloads
+#
+# 2. Add Rust Android targets:
+#      rustup target add aarch64-linux-android   # arm64-v8a  (modern phones)
+#      rustup target add armv7-linux-androideabi # armeabi-v7a (older 32-bit)
+#      rustup target add x86_64-linux-android    # x86_64 (emulator / Intel)
+#      rustup target add i686-linux-android      # x86     (older emulator)
+#
+# 3. Set ANDROID_NDK_HOME (or update the linker paths below to match your NDK):
+#      export ANDROID_NDK_HOME=/path/to/android-ndk-r25c
+#
+# 4. Build:
+#      cargo build --release --target aarch64-linux-android
+#
+# Deploy to device via ADB (e.g. into Termux's $HOME or /data/local/tmp):
+#      adb push target/aarch64-linux-android/release/aureon_mev_system \
+#               /data/local/tmp/aureon_mev_system
+#      adb shell chmod +x /data/local/tmp/aureon_mev_system
+#      adb shell /data/local/tmp/aureon_mev_system
+#
+# Run in Termux without ADB (clone repo on device, install Rust via rustup):
+#      cargo run --release
+
+# ── arm64-v8a (64-bit, all modern Android devices) ──────────────────────────
+[target.aarch64-linux-android]
+linker = "aarch64-linux-android35-clang"
+# If the NDK clang wrappers are not in PATH, use the full absolute path, e.g.:
+# linker = "/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang"
+
+# ── armeabi-v7a (32-bit ARM, Android 5.0+) ──────────────────────────────────
+[target.armv7-linux-androideabi]
+linker = "armv7a-linux-androideabi35-clang"
+
+# ── x86_64 (Android emulator / Intel Chromebooks) ───────────────────────────
+[target.x86_64-linux-android]
+linker = "x86_64-linux-android35-clang"
+
+# ── x86 (older 32-bit emulators) ────────────────────────────────────────────
+[target.i686-linux-android]
+linker = "i686-linux-android35-clang"

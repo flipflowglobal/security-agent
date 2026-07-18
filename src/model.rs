@@ -9,6 +9,8 @@ pub enum SpecialistKind {
     Secrets,
     Malware,
     Compliance,
+    MobileAndroid,
+    BlockchainSmartContract,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -16,6 +18,8 @@ pub enum TargetType {
     WebApp,
     Api,
     MobileBackend,
+    /// Android APK / mobile application binary analysis.
+    MobileApp,
     Cloud,
     Blockchain,
     Container,
@@ -39,6 +43,10 @@ pub enum Technique {
     ThreatModeling,
     AttackPathAnalysis,
     ExploitValidationSandboxed,
+    /// Static analysis of Android APK/DEX bytecode.
+    AndroidStaticAnalysis,
+    /// Dynamic instrumentation of a running mobile application.
+    MobileRuntime,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -59,10 +67,15 @@ pub struct EngagementProfile {
     pub engagement_id: String,
     pub authorized_by: String,
     pub time_window: TimeWindow,
+    /// Explicit allow-list of target IDs that are authorized for this engagement.
+    /// Empty means no target IDs are in scope.
+    pub in_scope_targets: Vec<String>,
     pub allowed_techniques: Vec<Technique>,
     pub deny_list_targets: Vec<String>,
     pub max_intensity: TestIntensity,
     pub high_impact_approved: bool,
+    /// Additional approval for active/penetrative testing techniques.
+    pub penetrative_testing_approved: bool,
 }
 
 #[derive(Debug, Clone)]

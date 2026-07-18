@@ -29,4 +29,14 @@ impl AuditLedger {
     pub fn records(&self) -> &[AuditRecord] {
         &self.records
     }
+
+    /// Return all records where the actor's role matches `role`.
+    pub fn filter_by_role(&self, role: Role) -> Vec<&AuditRecord> {
+        self.records.iter().filter(|r| r.role == role).collect()
+    }
+
+    /// Return all records where the action string equals `action`.
+    pub fn filter_by_action<'a>(&'a self, action: &str) -> Vec<&'a AuditRecord> {
+        self.records.iter().filter(|r| r.action == action).collect()
+    }
 }

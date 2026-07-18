@@ -2,5 +2,8 @@
 name = "aureon_mev_system"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
+description = "Defensive security orchestration agent for authorized vulnerability testing."
+license = "MIT"
 
 [dependencies]

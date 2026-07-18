@@ -84,6 +84,30 @@ fn requested_full_toolset_names() -> Vec<String> {
     .collect()
 }
 
+/// Tools focused on Android / mobile application analysis.
+fn android_toolset_names() -> Vec<String> {
+    vec![
+        "apktool",
+        "jadx",
+        "mobsf",
+        "androguard",
+        "frida",
+        "objection",
+        "apkleaks",
+        "apksigner",
+        "dex2jar",
+        "drozer",
+        "qark",
+        "mariana-trench",
+        "trueseeing",
+        "nuclei",
+        "semgrep",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
 #[derive(Debug, Clone)]
 pub struct SpecialistCapability {
     pub specialist: SpecialistKind,
@@ -118,9 +142,13 @@ impl Default for CapabilityRegistry {
                 },
                 SpecialistCapability {
                     specialist: SpecialistKind::ApiSecurity,
-                    target_types: vec![TargetType::Api],
+                    target_types: vec![TargetType::Api, TargetType::MobileBackend],
                     approved_tools: requested_full_toolset_names(),
-                    supported_techniques: vec![Technique::PassiveRecon, Technique::ApiSecurity],
+                    supported_techniques: vec![
+                        Technique::PassiveRecon,
+                        Technique::ApiSecurity,
+                        Technique::ConfigurationAudit,
+                    ],
                     max_intensity: TestIntensity::Standard,
                 },
                 SpecialistCapability {
@@ -174,8 +202,32 @@ impl Default for CapabilityRegistry {
                     supported_techniques: vec![
                         Technique::ConfigurationAudit,
                         Technique::ThreatModeling,
+                        Technique::AttackPathAnalysis,
                     ],
                     max_intensity: TestIntensity::Passive,
+                },
+                SpecialistCapability {
+                    specialist: SpecialistKind::MobileAndroid,
+                    target_types: vec![TargetType::MobileApp, TargetType::MobileBackend],
+                    approved_tools: android_toolset_names(),
+                    supported_techniques: vec![
+                        Technique::AndroidStaticAnalysis,
+                        Technique::MobileRuntime,
+                        Technique::SecretScan,
+                        Technique::DependencyAudit,
+                    ],
+                    max_intensity: TestIntensity::Aggressive,
+                },
+                SpecialistCapability {
+                    specialist: SpecialistKind::BlockchainSmartContract,
+                    target_types: vec![TargetType::Blockchain],
+                    approved_tools: requested_full_toolset_names(),
+                    supported_techniques: vec![
+                        Technique::Sast,
+                        Technique::ThreatModeling,
+                        Technique::AttackPathAnalysis,
+                    ],
+                    max_intensity: TestIntensity::Standard,
                 },
             ],
         }
@@ -197,6 +249,7 @@ pub enum UseCase {
     WebApp,
     Api,
     MobileBackend,
+    MobileApp,
     Cloud,
     BlockchainSmartContract,
 }
@@ -212,6 +265,19 @@ pub struct ToolDefinition {
 
 fn requested_full_tool_definitions() -> Vec<ToolDefinition> {
     requested_full_toolset_names()
+        .into_iter()
+        .map(|name| ToolDefinition {
+            name,
+            version: "imported".to_string(),
+            signed: true,
+            vulnerability_reviewed: true,
+            egress_policy: vec!["restricted-by-engagement-policy".to_string()],
+        })
+        .collect()
+}
+
+fn android_tool_definitions() -> Vec<ToolDefinition> {
+    android_toolset_names()
         .into_iter()
         .map(|name| ToolDefinition {
             name,
@@ -270,6 +336,17 @@ impl Default for ToolchainPackRegistry {
                 name: "mobile-backend-pack".to_string(),
                 use_case: UseCase::MobileBackend,
                 tools: imported_tools.clone(),
+                deprecated: false,
+                replacement_pack: None,
+            },
+        );
+
+        packs.insert(
+            UseCase::MobileApp,
+            ToolchainPack {
+                name: "android-mobile-pack".to_string(),
+                use_case: UseCase::MobileApp,
+                tools: android_tool_definitions(),
                 deprecated: false,
                 replacement_pack: None,
             },

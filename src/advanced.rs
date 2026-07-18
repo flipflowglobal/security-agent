@@ -20,6 +20,42 @@ pub struct AttackPathGraph {
     pub edges: Vec<AttackPathEdge>,
 }
 
+impl AttackPathGraph {
+    /// Populate the graph by creating a node per unique target in `findings`
+    /// and an edge for each finding connecting the attacker entry point to the
+    /// affected target via the source tool that identified it.
+    pub fn build_from_findings(findings: &[Finding]) -> Self {
+        let mut graph = AttackPathGraph::default();
+
+        // Single attacker entry-point node.
+        graph.nodes.push(ThreatModelNode {
+            node_id: "attacker".to_string(),
+            role: "Threat Actor".to_string(),
+            trust_zone: "untrusted".to_string(),
+        });
+
+        let mut seen_targets = std::collections::HashSet::new();
+
+        for finding in findings {
+            if seen_targets.insert(finding.target_id.clone()) {
+                graph.nodes.push(ThreatModelNode {
+                    node_id: finding.target_id.clone(),
+                    role: "Target Asset".to_string(),
+                    trust_zone: "internal".to_string(),
+                });
+            }
+
+            graph.edges.push(AttackPathEdge {
+                from: "attacker".to_string(),
+                to: finding.target_id.clone(),
+                technique: finding.source_tool.clone(),
+            });
+        }
+
+        graph
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RetestSchedule {
     pub target_id: String,
