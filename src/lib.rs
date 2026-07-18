@@ -58,7 +58,7 @@ mod tests {
             deny_list_targets: vec!["prod-ledger".to_string()],
             max_intensity: TestIntensity::Standard,
             high_impact_approved: false,
-            penetrative_testing_approved: false,
+            penetrative_testing_approved: true,
         }
     }
 
@@ -884,8 +884,10 @@ mod tests {
 
     #[test]
     fn capability_graph_validates_registry_and_pack_coverage() {
-        let result =
-            CapabilityGraph::validate_coverage(&CapabilityRegistry::default(), &ToolchainPackRegistry::default());
+        let result = CapabilityGraph::validate_coverage(
+            &CapabilityRegistry::default(),
+            &ToolchainPackRegistry::default(),
+        );
         assert!(result.is_ok());
     }
 

@@ -92,7 +92,9 @@ impl CapabilityGraph {
                 .capabilities_for_target(&target_type)
                 .is_empty()
             {
-                return Err(format!("No specialist coverage for target type: {target_type:?}"));
+                return Err(format!(
+                    "No specialist coverage for target type: {target_type:?}"
+                ));
             }
 
             let use_case = match target_type {
@@ -107,7 +109,9 @@ impl CapabilityGraph {
                 TargetType::SourceCode | TargetType::DependencyManifest => UseCase::WebApp,
             };
             if pack_registry.by_use_case(&use_case).is_none() {
-                return Err(format!("No toolchain pack coverage for use case: {use_case:?}"));
+                return Err(format!(
+                    "No toolchain pack coverage for use case: {use_case:?}"
+                ));
             }
         }
         Ok(())
