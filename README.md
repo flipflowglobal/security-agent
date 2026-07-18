@@ -1,4 +1,4 @@
-# aureon-mev-system
+# Security-Agent
 
 Rust-first hybrid defensive security orchestration agent for authorized vulnerability testing across web, API, mobile (Android), blockchain, cloud, and infrastructure targets.
 
@@ -15,7 +15,7 @@ Defensive security orchestration agent for authorized vulnerability testing acro
 ```bash
 # Clone and build
 git clone <repo-url>
-cd aureon-mev-system
+cd security-agent
 
 # Run all tests
 cargo test
@@ -31,7 +31,7 @@ cargo run --release
 pkg install rust
 
 # Clone and run directly on-device
-git clone <repo-url> && cd aureon-mev-system
+git clone <repo-url> && cd security-agent
 cargo run --release
 ```
 
@@ -63,9 +63,9 @@ cargo build --release --target aarch64-linux-android
 **Deploy via ADB**
 
 ```bash
-adb push target/aarch64-linux-android/release/aureon_mev_system /data/local/tmp/
-adb shell chmod +x /data/local/tmp/aureon_mev_system
-adb shell /data/local/tmp/aureon_mev_system
+adb push target/aarch64-linux-android/release/security-agent /data/local/tmp/
+adb shell chmod +x /data/local/tmp/security-agent
+adb shell /data/local/tmp/security-agent
 ```
 
 The resulting binary is fully self-contained — no JVM, no framework, no internet access required at runtime.
@@ -171,7 +171,7 @@ The `MobileAndroid` specialist uses a dedicated tool set for APK/DEX analysis an
 ## Development
 
 ```bash
-cargo test            # run all 24 tests
+cargo test            # run all 29 tests
 cargo fmt --check     # verify formatting
 cargo clippy          # lint (zero warnings enforced)
 cargo build --release # optimized host binary

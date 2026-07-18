@@ -1,4 +1,4 @@
-//! Aureon MEV System — runnable security orchestration agent binary.
+//! Security-Agent — runnable security orchestration agent binary.
 //!
 //! Build for the host:
 //!   cargo build --release
@@ -13,11 +13,11 @@
 //!
 //! The resulting binary can be pushed to an Android device via ADB (e.g. via
 //! Termux) and executed directly — no JVM or framework required:
-//!   adb push target/aarch64-linux-android/release/aureon_mev_system /data/local/tmp/
-//!   adb shell chmod +x /data/local/tmp/aureon_mev_system
-//!   adb shell /data/local/tmp/aureon_mev_system
+//!   adb push target/aarch64-linux-android/release/security-agent /data/local/tmp/
+//!   adb shell chmod +x /data/local/tmp/security-agent
+//!   adb shell /data/local/tmp/security-agent
 
-use aureon_mev_system::{
+use security_agent::{
     AttackPathGraph, CapabilityRegistry, Coordinator, EngagementProfile, Finding,
     MISSION_STATEMENT, PolicyEngine, ROADMAP_PHASES, RiskScoreCalculator, Severity, Target,
     TargetType, Technique, TestIntensity, TimeWindow, ToolchainPackRegistry,
@@ -26,7 +26,7 @@ use aureon_mev_system::{
 
 fn main() {
     println!("========================================");
-    println!("  Aureon MEV Security Orchestration Agent");
+    println!("  Security-Agent");
     println!("========================================");
     println!("Mission: {MISSION_STATEMENT}");
     println!();
