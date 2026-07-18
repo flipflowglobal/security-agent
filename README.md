@@ -171,7 +171,7 @@ The `MobileAndroid` specialist uses a dedicated tool set for APK/DEX analysis an
 ## Development
 
 ```bash
-cargo test            # run all 24 tests
+cargo test            # run all 29 tests
 cargo fmt --check     # verify formatting
 cargo clippy          # lint (zero warnings enforced)
 cargo build --release # optimized host binary
