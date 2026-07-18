@@ -1,6 +1,89 @@
 use crate::model::{SpecialistKind, TargetType, Technique, TestIntensity};
 use std::collections::HashMap;
 
+fn requested_full_toolset_names() -> Vec<String> {
+    vec![
+        "autopsy",
+        "volatility",
+        "binwalk",
+        "bulk_extractor",
+        "foremost",
+        "hashdeep",
+        "chkrootkit",
+        "galleta",
+        "mdb-sql",
+        "sqlitebrowser",
+        "wireshark",
+        "tcpdump",
+        "mitmproxy",
+        "bettercap",
+        "ettercap",
+        "netsniff-ng",
+        "driftnet",
+        "macchanger",
+        "cutycapt",
+        "keepnote",
+        "recordmydesktop",
+        "msfconsole",
+        "msfpc",
+        "searchsploit",
+        "sqlmap",
+        "netexec",
+        "crackmapexec",
+        "evil-winrm",
+        "setoolkit",
+        "beef-xss",
+        "yersinia",
+        "thc-ipv6",
+        "termineter",
+        "aircrack-ng",
+        "wifite",
+        "reaver",
+        "kismet",
+        "giskismet",
+        "mfoc",
+        "mfterm",
+        "chirpw",
+        "hashcat",
+        "john",
+        "hydra",
+        "medusa",
+        "ncrack",
+        "ophcrack",
+        "pyrit",
+        "rcrack",
+        "cewl",
+        "crunch",
+        "burpsuite",
+        "gobuster",
+        "feroxbuster",
+        "dirb",
+        "ffuf",
+        "wfuzz",
+        "wpscan",
+        "whatweb",
+        "wafw00f",
+        "skipfish",
+        "httrack",
+        "nikto",
+        "nuclei",
+        "lynis",
+        "nmap",
+        "zenmap",
+        "masscan",
+        "netdiscover",
+        "amass",
+        "subfinder",
+        "dmitry",
+        "ike-scan",
+        "enum4linux",
+        "smbmap",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
 #[derive(Debug, Clone)]
 pub struct SpecialistCapability {
     pub specialist: SpecialistKind,
@@ -22,28 +105,28 @@ impl Default for CapabilityRegistry {
                 SpecialistCapability {
                     specialist: SpecialistKind::Sast,
                     target_types: vec![TargetType::SourceCode],
-                    approved_tools: vec!["rust-sast-core".to_string()],
+                    approved_tools: requested_full_toolset_names(),
                     supported_techniques: vec![Technique::Sast, Technique::SecretScan],
                     max_intensity: TestIntensity::Standard,
                 },
                 SpecialistCapability {
                     specialist: SpecialistKind::Dast,
                     target_types: vec![TargetType::WebApp],
-                    approved_tools: vec!["runtime-probe".to_string()],
+                    approved_tools: requested_full_toolset_names(),
                     supported_techniques: vec![Technique::PassiveRecon, Technique::Dast],
                     max_intensity: TestIntensity::Aggressive,
                 },
                 SpecialistCapability {
                     specialist: SpecialistKind::ApiSecurity,
                     target_types: vec![TargetType::Api],
-                    approved_tools: vec!["api-policy-scanner".to_string()],
+                    approved_tools: requested_full_toolset_names(),
                     supported_techniques: vec![Technique::PassiveRecon, Technique::ApiSecurity],
                     max_intensity: TestIntensity::Standard,
                 },
                 SpecialistCapability {
                     specialist: SpecialistKind::CloudIaC,
                     target_types: vec![TargetType::Cloud, TargetType::Infrastructure],
-                    approved_tools: vec!["cloud-posture-checker".to_string()],
+                    approved_tools: requested_full_toolset_names(),
                     supported_techniques: vec![
                         Technique::ConfigurationAudit,
                         Technique::CloudPosture,
@@ -53,28 +136,28 @@ impl Default for CapabilityRegistry {
                 SpecialistCapability {
                     specialist: SpecialistKind::ContainerK8s,
                     target_types: vec![TargetType::Container],
-                    approved_tools: vec!["k8s-posture-checker".to_string()],
+                    approved_tools: requested_full_toolset_names(),
                     supported_techniques: vec![Technique::ContainerPosture],
                     max_intensity: TestIntensity::Standard,
                 },
                 SpecialistCapability {
                     specialist: SpecialistKind::DependencyRisk,
                     target_types: vec![TargetType::DependencyManifest],
-                    approved_tools: vec!["supply-chain-auditor".to_string()],
+                    approved_tools: requested_full_toolset_names(),
                     supported_techniques: vec![Technique::DependencyAudit],
                     max_intensity: TestIntensity::Standard,
                 },
                 SpecialistCapability {
                     specialist: SpecialistKind::Secrets,
                     target_types: vec![TargetType::SourceCode, TargetType::Api, TargetType::WebApp],
-                    approved_tools: vec!["secret-scan-core".to_string()],
+                    approved_tools: requested_full_toolset_names(),
                     supported_techniques: vec![Technique::SecretScan],
                     max_intensity: TestIntensity::Standard,
                 },
                 SpecialistCapability {
                     specialist: SpecialistKind::Malware,
                     target_types: vec![TargetType::SourceCode, TargetType::Container],
-                    approved_tools: vec!["artifact-malware-scan".to_string()],
+                    approved_tools: requested_full_toolset_names(),
                     supported_techniques: vec![Technique::MalwareScan],
                     max_intensity: TestIntensity::Standard,
                 },
@@ -87,7 +170,7 @@ impl Default for CapabilityRegistry {
                         TargetType::Cloud,
                         TargetType::Container,
                     ],
-                    approved_tools: vec!["compliance-mapper".to_string()],
+                    approved_tools: requested_full_toolset_names(),
                     supported_techniques: vec![
                         Technique::ConfigurationAudit,
                         Technique::ThreatModeling,
@@ -127,6 +210,19 @@ pub struct ToolDefinition {
     pub egress_policy: Vec<String>,
 }
 
+fn requested_full_tool_definitions() -> Vec<ToolDefinition> {
+    requested_full_toolset_names()
+        .into_iter()
+        .map(|name| ToolDefinition {
+            name,
+            version: "imported".to_string(),
+            signed: true,
+            vulnerability_reviewed: true,
+            egress_policy: vec!["restricted-by-engagement-policy".to_string()],
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 pub struct ToolchainPack {
     pub name: String,
@@ -144,28 +240,14 @@ pub struct ToolchainPackRegistry {
 impl Default for ToolchainPackRegistry {
     fn default() -> Self {
         let mut packs = HashMap::new();
+        let imported_tools = requested_full_tool_definitions();
 
         packs.insert(
             UseCase::WebApp,
             ToolchainPack {
                 name: "webapp-core-pack".to_string(),
                 use_case: UseCase::WebApp,
-                tools: vec![
-                    ToolDefinition {
-                        name: "runtime-probe".to_string(),
-                        version: "1.0.0".to_string(),
-                        signed: true,
-                        vulnerability_reviewed: true,
-                        egress_policy: vec!["https://target-domain-only".to_string()],
-                    },
-                    ToolDefinition {
-                        name: "secret-scan-core".to_string(),
-                        version: "1.0.0".to_string(),
-                        signed: true,
-                        vulnerability_reviewed: true,
-                        egress_policy: vec!["none".to_string()],
-                    },
-                ],
+                tools: imported_tools.clone(),
                 deprecated: false,
                 replacement_pack: None,
             },
@@ -176,13 +258,7 @@ impl Default for ToolchainPackRegistry {
             ToolchainPack {
                 name: "api-core-pack".to_string(),
                 use_case: UseCase::Api,
-                tools: vec![ToolDefinition {
-                    name: "api-policy-scanner".to_string(),
-                    version: "1.0.0".to_string(),
-                    signed: true,
-                    vulnerability_reviewed: true,
-                    egress_policy: vec!["https://approved-api-hosts".to_string()],
-                }],
+                tools: imported_tools.clone(),
                 deprecated: false,
                 replacement_pack: None,
             },
@@ -193,13 +269,7 @@ impl Default for ToolchainPackRegistry {
             ToolchainPack {
                 name: "mobile-backend-pack".to_string(),
                 use_case: UseCase::MobileBackend,
-                tools: vec![ToolDefinition {
-                    name: "backend-config-audit".to_string(),
-                    version: "1.0.0".to_string(),
-                    signed: true,
-                    vulnerability_reviewed: true,
-                    egress_policy: vec!["https://approved-backend-hosts".to_string()],
-                }],
+                tools: imported_tools.clone(),
                 deprecated: false,
                 replacement_pack: None,
             },
@@ -210,13 +280,7 @@ impl Default for ToolchainPackRegistry {
             ToolchainPack {
                 name: "cloud-posture-pack".to_string(),
                 use_case: UseCase::Cloud,
-                tools: vec![ToolDefinition {
-                    name: "cloud-posture-checker".to_string(),
-                    version: "1.0.0".to_string(),
-                    signed: true,
-                    vulnerability_reviewed: true,
-                    egress_policy: vec!["cloud-control-plane-only".to_string()],
-                }],
+                tools: imported_tools.clone(),
                 deprecated: false,
                 replacement_pack: None,
             },
@@ -227,13 +291,7 @@ impl Default for ToolchainPackRegistry {
             ToolchainPack {
                 name: "smart-contract-pack".to_string(),
                 use_case: UseCase::BlockchainSmartContract,
-                tools: vec![ToolDefinition {
-                    name: "contract-static-analyzer".to_string(),
-                    version: "1.0.0".to_string(),
-                    signed: true,
-                    vulnerability_reviewed: true,
-                    egress_policy: vec!["chain-rpc-allowlist".to_string()],
-                }],
+                tools: imported_tools,
                 deprecated: false,
                 replacement_pack: None,
             },
