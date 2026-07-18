@@ -67,10 +67,15 @@ pub struct EngagementProfile {
     pub engagement_id: String,
     pub authorized_by: String,
     pub time_window: TimeWindow,
+    /// Explicit allow-list of target IDs that are authorized for this engagement.
+    /// Empty means no target IDs are in scope.
+    pub in_scope_targets: Vec<String>,
     pub allowed_techniques: Vec<Technique>,
     pub deny_list_targets: Vec<String>,
     pub max_intensity: TestIntensity,
     pub high_impact_approved: bool,
+    /// Additional approval for active/penetrative testing techniques.
+    pub penetrative_testing_approved: bool,
 }
 
 #[derive(Debug, Clone)]

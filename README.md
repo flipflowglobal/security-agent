@@ -115,9 +115,11 @@ The `MobileAndroid` specialist uses a dedicated tool set for APK/DEX analysis an
 
 **Authorization and scope:**
 - Time-bounded engagement profiles
+- Explicit in-scope target allow-list (target IDs must be pre-authorized)
 - Technique allow-list per engagement
 - Explicit deny-list targets
 - High-impact approval gate (criticality ≥ 8 + Standard intensity)
+- Explicit penetrative-technique approval gate (DAST/API/mobile runtime/exploit validation)
 
 **Least-privilege defaults (enforced in `AuthorizationOutcome`):**
 - Ephemeral runner required

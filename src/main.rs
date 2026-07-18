@@ -46,6 +46,17 @@ fn main() {
             start_epoch_seconds: 0,
             end_epoch_seconds: u64::MAX,
         },
+        in_scope_targets: vec![
+            "com.example.app".to_string(),
+            "mobile-api.example.com".to_string(),
+            "web-app.example.com".to_string(),
+            "api.example.com".to_string(),
+            "defi-contract.eth".to_string(),
+            "src-repo".to_string(),
+            "deps-manifest".to_string(),
+            "cloud-infra".to_string(),
+            "k8s-cluster".to_string(),
+        ],
         allowed_techniques: vec![
             Technique::PassiveRecon,
             Technique::ConfigurationAudit,
@@ -65,6 +76,7 @@ fn main() {
         deny_list_targets: vec!["prod-ledger".to_string()],
         max_intensity: TestIntensity::Aggressive,
         high_impact_approved: true,
+        penetrative_testing_approved: true,
     };
 
     // ── Define targets including Android / mobile ───────────────────────────

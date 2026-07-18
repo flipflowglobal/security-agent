@@ -5,6 +5,7 @@ use crate::registry::{
     CapabilityRegistry, SpecialistCapability, ToolchainPack, ToolchainPackRegistry, UseCase,
 };
 use crate::workflow::WorkflowStage;
+use std::collections::HashSet;
 
 #[derive(Debug, Clone)]
 pub struct ScanTask {
@@ -54,6 +55,7 @@ impl Coordinator {
     ) -> Result<ExecutionPlan, AuthorizationError> {
         let mut tasks = Vec::new();
         let mut selected_packs = Vec::new();
+        let mut selected_use_cases = HashSet::new();
         let mut high_impact_count = 0;
 
         for target in targets {
@@ -100,11 +102,11 @@ impl Coordinator {
                 });
             }
 
-            if let Some(pack) = self
-                .pack_registry
-                .by_use_case(&use_case_for_target(&target.target_type))
-            {
-                selected_packs.push(pack.clone());
+            let use_case = use_case_for_target(&target.target_type);
+            if selected_use_cases.insert(use_case) {
+                if let Some(pack) = self.pack_registry.by_use_case(&use_case) {
+                    selected_packs.push(pack.clone());
+                }
             }
         }
 

@@ -3,8 +3,10 @@ use crate::model::{EngagementProfile, Target, Technique, TestIntensity};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthorizationError {
     ExpiredOrInactiveWindow,
+    TargetOutOfScope(String),
     TargetDenied(String),
     TechniqueNotAllowed(Technique),
+    PenetrativeTechniqueRequiresApproval(Technique),
     IntensityTooHigh,
     HighImpactRequiresApproval,
 }
@@ -45,6 +47,14 @@ impl PolicyEngine {
             return Err(AuthorizationError::ExpiredOrInactiveWindow);
         }
 
+        if !profile
+            .in_scope_targets
+            .iter()
+            .any(|target_id| target_id == &target.id)
+        {
+            return Err(AuthorizationError::TargetOutOfScope(target.id.clone()));
+        }
+
         if profile.deny_list_targets.iter().any(|id| id == &target.id) {
             return Err(AuthorizationError::TargetDenied(target.id.clone()));
         }
@@ -56,6 +66,11 @@ impl PolicyEngine {
                 .any(|allowed| allowed == technique)
             {
                 return Err(AuthorizationError::TechniqueNotAllowed(technique.clone()));
+            }
+            if is_penetrative_technique(technique) && !profile.penetrative_testing_approved {
+                return Err(AuthorizationError::PenetrativeTechniqueRequiresApproval(
+                    technique.clone(),
+                ));
             }
         }
 
@@ -77,4 +92,14 @@ impl PolicyEngine {
             shared_long_lived_credentials_forbidden: true,
         })
     }
+}
+
+fn is_penetrative_technique(technique: &Technique) -> bool {
+    matches!(
+        technique,
+        Technique::Dast
+            | Technique::ApiSecurity
+            | Technique::MobileRuntime
+            | Technique::ExploitValidationSandboxed
+    )
 }

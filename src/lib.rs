@@ -1,4 +1,5 @@
 pub mod advanced;
+pub mod capability_graph;
 pub mod compat;
 pub mod coordinator;
 pub mod findings;
@@ -13,6 +14,7 @@ pub mod workflow;
 pub use advanced::{
     AttackPathEdge, AttackPathGraph, RetestSchedule, ThreatModelNode, propose_retest_schedule,
 };
+pub use capability_graph::{CapabilityGraph, CapabilityNode, CapabilityStage, FunctionFamily};
 pub use compat::{CompatibilityEnvelope, IntegrationAdapter, JsonLineAdapter};
 pub use coordinator::{Coordinator, ExecutionPlan, ScanTask};
 pub use findings::{Finding, RiskScoreCalculator, Severity};
@@ -41,6 +43,11 @@ mod tests {
                 start_epoch_seconds: 10,
                 end_epoch_seconds: 1000,
             },
+            in_scope_targets: vec![
+                "api-staging".to_string(),
+                "web-staging".to_string(),
+                "prod-ledger".to_string(),
+            ],
             allowed_techniques: vec![
                 Technique::PassiveRecon,
                 Technique::ConfigurationAudit,
@@ -51,6 +58,7 @@ mod tests {
             deny_list_targets: vec!["prod-ledger".to_string()],
             max_intensity: TestIntensity::Standard,
             high_impact_approved: false,
+            penetrative_testing_approved: false,
         }
     }
 
@@ -62,6 +70,11 @@ mod tests {
                 start_epoch_seconds: 10,
                 end_epoch_seconds: 1000,
             },
+            in_scope_targets: vec![
+                "com.example.app".to_string(),
+                "mobile-api".to_string(),
+                "defi-contract".to_string(),
+            ],
             allowed_techniques: vec![
                 Technique::AndroidStaticAnalysis,
                 Technique::MobileRuntime,
@@ -76,6 +89,7 @@ mod tests {
             deny_list_targets: vec![],
             max_intensity: TestIntensity::Aggressive,
             high_impact_approved: true,
+            penetrative_testing_approved: true,
         }
     }
 
@@ -313,10 +327,12 @@ mod tests {
                 start_epoch_seconds: 100,
                 end_epoch_seconds: 200,
             },
+            in_scope_targets: vec!["t1".to_string()],
             allowed_techniques: vec![Technique::PassiveRecon],
             deny_list_targets: vec![],
             max_intensity: TestIntensity::Passive,
             high_impact_approved: false,
+            penetrative_testing_approved: false,
         };
         let target = Target {
             id: "t1".to_string(),
@@ -360,10 +376,12 @@ mod tests {
                 start_epoch_seconds: 0,
                 end_epoch_seconds: u64::MAX,
             },
+            in_scope_targets: vec!["t1".to_string()],
             allowed_techniques: vec![Technique::PassiveRecon],
             deny_list_targets: vec![],
             max_intensity: TestIntensity::Standard,
             high_impact_approved: false,
+            penetrative_testing_approved: false,
         };
         let target = Target {
             id: "t1".to_string(),
@@ -393,10 +411,12 @@ mod tests {
                 start_epoch_seconds: 0,
                 end_epoch_seconds: u64::MAX,
             },
+            in_scope_targets: vec!["t1".to_string()],
             allowed_techniques: vec![Technique::Dast],
             deny_list_targets: vec![],
             max_intensity: TestIntensity::Passive,
             high_impact_approved: false,
+            penetrative_testing_approved: true,
         };
         let target = Target {
             id: "t1".to_string(),
@@ -423,10 +443,12 @@ mod tests {
                 start_epoch_seconds: 0,
                 end_epoch_seconds: u64::MAX,
             },
+            in_scope_targets: vec!["critical-target".to_string()],
             allowed_techniques: vec![Technique::Dast],
             deny_list_targets: vec![],
             max_intensity: TestIntensity::Standard,
             high_impact_approved: false, // <-- no approval
+            penetrative_testing_approved: true,
         };
         // criticality >= 8 triggers high-impact gate
         let target = Target {
@@ -457,10 +479,12 @@ mod tests {
                 start_epoch_seconds: 0,
                 end_epoch_seconds: u64::MAX,
             },
+            in_scope_targets: vec!["critical-target".to_string()],
             allowed_techniques: vec![Technique::Dast],
             deny_list_targets: vec![],
             max_intensity: TestIntensity::Aggressive,
             high_impact_approved: true,
+            penetrative_testing_approved: true,
         };
         let target = Target {
             id: "critical-target".to_string(),
@@ -512,6 +536,7 @@ mod tests {
                 start_epoch_seconds: 0,
                 end_epoch_seconds: u64::MAX,
             },
+            in_scope_targets: vec!["allowed".to_string(), "forbidden".to_string()],
             allowed_techniques: vec![
                 Technique::PassiveRecon,
                 Technique::ApiSecurity,
@@ -520,6 +545,7 @@ mod tests {
             deny_list_targets: vec!["forbidden".to_string()],
             max_intensity: TestIntensity::Standard,
             high_impact_approved: false,
+            penetrative_testing_approved: true,
         };
         let targets = vec![
             Target {
@@ -737,5 +763,145 @@ mod tests {
                 "No specialist registered for target type: {target_type:?}"
             );
         }
+    }
+
+    #[test]
+    fn policy_blocks_target_outside_scope() {
+        let engine = PolicyEngine::default();
+        let profile = EngagementProfile {
+            engagement_id: "eng-scope".to_string(),
+            authorized_by: "secops".to_string(),
+            time_window: TimeWindow {
+                start_epoch_seconds: 0,
+                end_epoch_seconds: u64::MAX,
+            },
+            in_scope_targets: vec!["in-scope".to_string()],
+            allowed_techniques: vec![Technique::PassiveRecon],
+            deny_list_targets: vec![],
+            max_intensity: TestIntensity::Passive,
+            high_impact_approved: false,
+            penetrative_testing_approved: false,
+        };
+        let target = Target {
+            id: "out-of-scope".to_string(),
+            target_type: TargetType::Api,
+            criticality: 1,
+        };
+        let result = engine.authorize_target_scan(
+            &profile,
+            &target,
+            &[Technique::PassiveRecon],
+            TestIntensity::Passive,
+            10,
+        );
+        assert!(matches!(
+            result,
+            Err(AuthorizationError::TargetOutOfScope(id)) if id == "out-of-scope"
+        ));
+    }
+
+    #[test]
+    fn policy_blocks_penetrative_technique_without_explicit_approval() {
+        let engine = PolicyEngine::default();
+        let profile = EngagementProfile {
+            engagement_id: "eng-pen-no".to_string(),
+            authorized_by: "secops".to_string(),
+            time_window: TimeWindow {
+                start_epoch_seconds: 0,
+                end_epoch_seconds: u64::MAX,
+            },
+            in_scope_targets: vec!["api-staging".to_string()],
+            allowed_techniques: vec![Technique::ApiSecurity],
+            deny_list_targets: vec![],
+            max_intensity: TestIntensity::Standard,
+            high_impact_approved: true,
+            penetrative_testing_approved: false,
+        };
+        let target = Target {
+            id: "api-staging".to_string(),
+            target_type: TargetType::Api,
+            criticality: 5,
+        };
+        let result = engine.authorize_target_scan(
+            &profile,
+            &target,
+            &[Technique::ApiSecurity],
+            TestIntensity::Standard,
+            10,
+        );
+        assert!(matches!(
+            result,
+            Err(AuthorizationError::PenetrativeTechniqueRequiresApproval(
+                Technique::ApiSecurity
+            ))
+        ));
+    }
+
+    #[test]
+    fn coordinator_deduplicates_selected_toolchain_packs() {
+        let mut coordinator = Coordinator::new(
+            CapabilityRegistry::default(),
+            ToolchainPackRegistry::default(),
+            PolicyEngine::default(),
+        );
+        let profile = EngagementProfile {
+            engagement_id: "eng-dedupe".to_string(),
+            authorized_by: "secops".to_string(),
+            time_window: TimeWindow {
+                start_epoch_seconds: 0,
+                end_epoch_seconds: u64::MAX,
+            },
+            in_scope_targets: vec!["api-1".to_string(), "api-2".to_string()],
+            allowed_techniques: vec![
+                Technique::PassiveRecon,
+                Technique::ConfigurationAudit,
+                Technique::ApiSecurity,
+            ],
+            deny_list_targets: vec![],
+            max_intensity: TestIntensity::Standard,
+            high_impact_approved: true,
+            penetrative_testing_approved: true,
+        };
+        let targets = vec![
+            Target {
+                id: "api-1".to_string(),
+                target_type: TargetType::Api,
+                criticality: 4,
+            },
+            Target {
+                id: "api-2".to_string(),
+                target_type: TargetType::Api,
+                criticality: 4,
+            },
+        ];
+
+        let plan = coordinator
+            .plan_authorized_scan(profile, targets, 10)
+            .expect("plan should succeed");
+        assert_eq!(plan.selected_packs.len(), 1);
+        assert_eq!(plan.selected_packs[0].name, "api-core-pack");
+    }
+
+    #[test]
+    fn capability_graph_validates_registry_and_pack_coverage() {
+        let result =
+            CapabilityGraph::validate_coverage(&CapabilityRegistry::default(), &ToolchainPackRegistry::default());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn function_first_order_is_prioritized_and_stable() {
+        let order = CapabilityGraph::function_first_order();
+        assert_eq!(
+            order,
+            [
+                FunctionFamily::DiscoveryInventory,
+                FunctionFamily::StaticSourceDependencyAnalysis,
+                FunctionFamily::RuntimeAppApiMobileCloudContainerChecks,
+                FunctionFamily::FindingNormalizationRiskScoring,
+                FunctionFamily::AttackPathCorrelationRetestScheduling,
+                FunctionFamily::RemediationVerificationLoop,
+            ]
+        );
     }
 }
