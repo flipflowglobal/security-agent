@@ -1,3 +1,4 @@
+use crate::governance::{AuditLedger, AuditRecord, Role};
 use crate::model::{EngagementProfile, Target, TargetType, Technique, TestIntensity};
 use crate::policy::{AuthorizationError, PolicyEngine};
 use crate::registry::{
@@ -28,6 +29,7 @@ pub struct Coordinator {
     capability_registry: CapabilityRegistry,
     pack_registry: ToolchainPackRegistry,
     policy_engine: PolicyEngine,
+    pub audit_ledger: AuditLedger,
 }
 
 impl Coordinator {
@@ -40,6 +42,7 @@ impl Coordinator {
             capability_registry,
             pack_registry,
             policy_engine,
+            audit_ledger: AuditLedger::default(),
         }
     }
 
@@ -109,13 +112,28 @@ impl Coordinator {
             task.approved_tools = task.specialist.approved_tools.clone();
         }
 
-        Ok(ExecutionPlan {
-            engagement_id: profile.engagement_id,
+        let plan = ExecutionPlan {
+            engagement_id: profile.engagement_id.clone(),
             workflow_stages: WorkflowStage::ordered().to_vec(),
             tasks,
             selected_packs,
             high_impact_tasks: high_impact_count,
-        })
+        };
+
+        self.audit_ledger.append(AuditRecord {
+            timestamp_epoch_seconds: now_epoch_seconds,
+            actor: profile.authorized_by.clone(),
+            role: Role::SecurityAdmin,
+            action: "plan_authorized_scan".to_string(),
+            target: profile.engagement_id.clone(),
+            details: format!(
+                "tasks={} high_impact={}",
+                plan.tasks.len(),
+                plan.high_impact_tasks
+            ),
+        });
+
+        Ok(plan)
     }
 }
 
@@ -124,6 +142,7 @@ fn use_case_for_target(target_type: &TargetType) -> UseCase {
         TargetType::WebApp => UseCase::WebApp,
         TargetType::Api => UseCase::Api,
         TargetType::MobileBackend => UseCase::MobileBackend,
+        TargetType::MobileApp => UseCase::MobileApp,
         TargetType::Cloud | TargetType::Container | TargetType::Infrastructure => UseCase::Cloud,
         TargetType::Blockchain => UseCase::BlockchainSmartContract,
         TargetType::SourceCode | TargetType::DependencyManifest => UseCase::WebApp,
@@ -142,9 +161,23 @@ fn default_techniques_for_target(target_type: &TargetType) -> Vec<Technique> {
             Technique::ConfigurationAudit,
             Technique::ApiSecurity,
         ],
-        TargetType::MobileBackend => vec![Technique::ConfigurationAudit, Technique::ApiSecurity],
+        TargetType::MobileBackend => vec![
+            Technique::ConfigurationAudit,
+            Technique::ApiSecurity,
+            Technique::AndroidStaticAnalysis,
+        ],
+        TargetType::MobileApp => vec![
+            Technique::AndroidStaticAnalysis,
+            Technique::MobileRuntime,
+            Technique::SecretScan,
+            Technique::DependencyAudit,
+        ],
         TargetType::Cloud => vec![Technique::ConfigurationAudit, Technique::CloudPosture],
-        TargetType::Blockchain => vec![Technique::Sast, Technique::ThreatModeling],
+        TargetType::Blockchain => vec![
+            Technique::Sast,
+            Technique::ThreatModeling,
+            Technique::AttackPathAnalysis,
+        ],
         TargetType::Container => vec![Technique::ConfigurationAudit, Technique::ContainerPosture],
         TargetType::Infrastructure => vec![Technique::ConfigurationAudit, Technique::CloudPosture],
         TargetType::SourceCode => vec![Technique::Sast, Technique::SecretScan],

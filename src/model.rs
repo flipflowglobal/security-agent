@@ -9,6 +9,8 @@ pub enum SpecialistKind {
     Secrets,
     Malware,
     Compliance,
+    MobileAndroid,
+    BlockchainSmartContract,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -16,6 +18,8 @@ pub enum TargetType {
     WebApp,
     Api,
     MobileBackend,
+    /// Android APK / mobile application binary analysis.
+    MobileApp,
     Cloud,
     Blockchain,
     Container,
@@ -39,6 +43,10 @@ pub enum Technique {
     ThreatModeling,
     AttackPathAnalysis,
     ExploitValidationSandboxed,
+    /// Static analysis of Android APK/DEX bytecode.
+    AndroidStaticAnalysis,
+    /// Dynamic instrumentation of a running mobile application.
+    MobileRuntime,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
