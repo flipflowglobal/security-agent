@@ -14,10 +14,6 @@ pub struct AuditRecord {
     pub action: String,
     pub target: String,
     pub details: String,
-    /// Set when this record was emitted inside a tagged security test run.
-    /// The value is the `test_run_id` of the [`crate::tagged_run::TaggedTestRun`]
-    /// that produced it.  `None` for regular (non-test) operations.
-    pub test_run_id: Option<String>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -42,13 +38,5 @@ impl AuditLedger {
     /// Return all records where the action string equals `action`.
     pub fn filter_by_action<'a>(&'a self, action: &str) -> Vec<&'a AuditRecord> {
         self.records.iter().filter(|r| r.action == action).collect()
-    }
-
-    /// Return all records that belong to the given test run.
-    pub fn filter_by_test_run_id<'a>(&'a self, test_run_id: &str) -> Vec<&'a AuditRecord> {
-        self.records
-            .iter()
-            .filter(|r| r.test_run_id.as_deref() == Some(test_run_id))
-            .collect()
     }
 }

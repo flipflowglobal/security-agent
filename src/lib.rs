@@ -9,7 +9,6 @@ pub mod model;
 pub mod policy;
 pub mod registry;
 pub mod roadmap;
-pub mod tagged_run;
 pub mod workflow;
 
 pub use advanced::{
@@ -30,7 +29,6 @@ pub use registry::{
     UseCase,
 };
 pub use roadmap::{ROADMAP_PHASES, RoadmapPhase};
-pub use tagged_run::{TaggedTestRun, TestEnvironment, TestRunReport};
 pub use workflow::WorkflowStage;
 
 #[cfg(test)]
@@ -582,7 +580,6 @@ mod tests {
             action: "plan_authorized_scan".to_string(),
             target: "eng-1".to_string(),
             details: "tasks=3".to_string(),
-            test_run_id: None,
         });
         ledger.append(AuditRecord {
             timestamp_epoch_seconds: 2,
@@ -591,7 +588,6 @@ mod tests {
             action: "review_findings".to_string(),
             target: "eng-1".to_string(),
             details: "reviewed".to_string(),
-            test_run_id: None,
         });
 
         let admin_records = ledger.filter_by_role(Role::SecurityAdmin);
@@ -909,172 +905,5 @@ mod tests {
                 FunctionFamily::RemediationVerificationLoop,
             ]
         );
-    }
-
-    // ── Tagged test-run tests ─────────────────────────────────────────────────
-
-    fn tagged_run() -> TaggedTestRun {
-        TaggedTestRun::new(
-            "run-abc-123".to_string(),
-            TestEnvironment::Staging,
-            "secops-engineer".to_string(),
-            "Quarterly API surface regression".to_string(),
-            10,
-        )
-    }
-
-    #[test]
-    fn tagged_test_run_source_tag_contains_run_id() {
-        let run = tagged_run();
-        assert!(run.source_tag().contains("run-abc-123"));
-        assert!(run.source_tag().starts_with("security-agent/test-run/"));
-    }
-
-    #[test]
-    fn plan_tagged_scan_tags_audit_records() {
-        let mut coordinator = Coordinator::new(
-            CapabilityRegistry::default(),
-            ToolchainPackRegistry::default(),
-            PolicyEngine::default(),
-        );
-
-        let profile = sample_profile();
-        let targets = vec![Target {
-            id: "api-staging".to_string(),
-            target_type: TargetType::Api,
-            criticality: 4,
-        }];
-        let run = tagged_run();
-
-        coordinator
-            .plan_tagged_scan(profile, targets, 80, &run)
-            .expect("tagged scan should succeed");
-
-        // Every audit record must carry the test_run_id.
-        for record in coordinator.audit_ledger.records() {
-            assert_eq!(
-                record.test_run_id.as_deref(),
-                Some("run-abc-123"),
-                "audit record missing test_run_id tag"
-            );
-        }
-    }
-
-    #[test]
-    fn plan_tagged_scan_returns_accurate_report() {
-        let mut coordinator = Coordinator::new(
-            CapabilityRegistry::default(),
-            ToolchainPackRegistry::default(),
-            PolicyEngine::default(),
-        );
-
-        let profile = sample_profile();
-        let targets = vec![Target {
-            id: "api-staging".to_string(),
-            target_type: TargetType::Api,
-            criticality: 4,
-        }];
-        let run = tagged_run();
-
-        let (plan, report) = coordinator
-            .plan_tagged_scan(profile, targets, 80, &run)
-            .expect("tagged scan should succeed");
-
-        assert_eq!(report.test_run_id, "run-abc-123");
-        assert_eq!(report.environment, TestEnvironment::Staging);
-        assert_eq!(report.operator, "secops-engineer");
-        assert_eq!(report.started_at_epoch_seconds, 10);
-        assert_eq!(report.completed_at_epoch_seconds, 80);
-        assert_eq!(report.task_count, plan.tasks.len());
-        assert!(report.audit_record_count > 0);
-        assert!(report.source_tag.contains("run-abc-123"));
-    }
-
-    #[test]
-    fn filter_by_test_run_id_returns_tagged_records_only() {
-        let mut coordinator = Coordinator::new(
-            CapabilityRegistry::default(),
-            ToolchainPackRegistry::default(),
-            PolicyEngine::default(),
-        );
-
-        // Untagged scan first.
-        let profile_a = sample_profile();
-        let untagged_targets = vec![Target {
-            id: "web-staging".to_string(),
-            target_type: TargetType::WebApp,
-            criticality: 3,
-        }];
-        coordinator
-            .plan_authorized_scan(profile_a, untagged_targets, 50)
-            .expect("untagged scan should succeed");
-
-        // Tagged scan second.
-        let profile_b = EngagementProfile {
-            engagement_id: "eng-tagged".to_string(),
-            authorized_by: "secops".to_string(),
-            time_window: TimeWindow {
-                start_epoch_seconds: 0,
-                end_epoch_seconds: u64::MAX,
-            },
-            in_scope_targets: vec!["api-staging".to_string()],
-            allowed_techniques: vec![
-                Technique::PassiveRecon,
-                Technique::ConfigurationAudit,
-                Technique::ApiSecurity,
-            ],
-            deny_list_targets: vec![],
-            max_intensity: TestIntensity::Standard,
-            high_impact_approved: false,
-            penetrative_testing_approved: true,
-        };
-        let tagged_targets = vec![Target {
-            id: "api-staging".to_string(),
-            target_type: TargetType::Api,
-            criticality: 3,
-        }];
-        let run = tagged_run();
-        coordinator
-            .plan_tagged_scan(profile_b, tagged_targets, 80, &run)
-            .expect("tagged scan should succeed");
-
-        // Only the tagged record should appear when filtering by run id.
-        let tagged = coordinator
-            .audit_ledger
-            .filter_by_test_run_id("run-abc-123");
-        assert_eq!(tagged.len(), 1);
-        assert_eq!(tagged[0].action, "plan_tagged_scan");
-
-        // The untagged record should have no test_run_id.
-        let untagged_record = coordinator
-            .audit_ledger
-            .records()
-            .iter()
-            .find(|r| r.action == "plan_authorized_scan")
-            .expect("untagged record must exist");
-        assert!(untagged_record.test_run_id.is_none());
-    }
-
-    #[test]
-    fn plan_tagged_scan_rejects_denied_target() {
-        let mut coordinator = Coordinator::new(
-            CapabilityRegistry::default(),
-            ToolchainPackRegistry::default(),
-            PolicyEngine::default(),
-        );
-        let profile = sample_profile();
-        let targets = vec![Target {
-            id: "prod-ledger".to_string(),
-            target_type: TargetType::Api,
-            criticality: 10,
-        }];
-        let run = tagged_run();
-        let result = coordinator.plan_tagged_scan(profile, targets, 80, &run);
-        assert!(matches!(
-            result,
-            Err(AuthorizationError::TargetDenied(id)) if id == "prod-ledger"
-        ));
-        // No audit records on failure.
-        assert_eq!(coordinator.audit_ledger.records().len(), 0);
     }
 }

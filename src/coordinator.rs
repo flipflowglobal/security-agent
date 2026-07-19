@@ -4,7 +4,6 @@ use crate::policy::{AuthorizationError, PolicyEngine};
 use crate::registry::{
     CapabilityRegistry, SpecialistCapability, ToolchainPack, ToolchainPackRegistry, UseCase,
 };
-use crate::tagged_run::{TaggedTestRun, TestRunReport};
 use crate::workflow::WorkflowStage;
 use std::collections::HashSet;
 
@@ -134,134 +133,9 @@ impl Coordinator {
                 plan.tasks.len(),
                 plan.high_impact_tasks
             ),
-            test_run_id: None,
         });
 
         Ok(plan)
-    }
-
-    /// Plan a fully-logged, tagged security test run.
-    ///
-    /// Identical to [`plan_authorized_scan`][Self::plan_authorized_scan] in
-    /// every respect, except every audit record produced is tagged with
-    /// `test_run.test_run_id`.  This makes it trivial to filter test traffic
-    /// in dashboards or query it in a SIEM without suppressing any events.
-    ///
-    /// A [`TestRunReport`] summary is returned alongside the
-    /// [`ExecutionPlan`] for compliance archiving.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same [`AuthorizationError`] variants as
-    /// [`plan_authorized_scan`][Self::plan_authorized_scan].
-    pub fn plan_tagged_scan(
-        &mut self,
-        profile: EngagementProfile,
-        targets: Vec<Target>,
-        now_epoch_seconds: u64,
-        test_run: &TaggedTestRun,
-    ) -> Result<(ExecutionPlan, TestRunReport), AuthorizationError> {
-        let ledger_len_before = self.audit_ledger.records().len();
-
-        let mut tasks = Vec::new();
-        let mut selected_packs = Vec::new();
-        let mut selected_use_cases = HashSet::new();
-        let mut high_impact_count = 0;
-
-        for target in targets {
-            let intensity = if target.criticality >= 8 {
-                TestIntensity::Standard
-            } else {
-                TestIntensity::Passive
-            };
-
-            let default_techniques = default_techniques_for_target(&target.target_type);
-            self.policy_engine.authorize_target_scan(
-                &profile,
-                &target,
-                &default_techniques,
-                intensity,
-                now_epoch_seconds,
-            )?;
-
-            if target.criticality >= 8 && intensity >= TestIntensity::Standard {
-                high_impact_count += 1;
-            }
-
-            for specialist in self
-                .capability_registry
-                .capabilities_for_target(&target.target_type)
-            {
-                let techniques = specialist
-                    .supported_techniques
-                    .iter()
-                    .filter(|technique| default_techniques.iter().any(|t| t == *technique))
-                    .cloned()
-                    .collect::<Vec<_>>();
-
-                if techniques.is_empty() {
-                    continue;
-                }
-
-                tasks.push(ScanTask {
-                    target_id: target.id.clone(),
-                    specialist,
-                    techniques,
-                    approved_tools: vec![],
-                    intensity,
-                });
-            }
-
-            let use_case = use_case_for_target(&target.target_type);
-            if selected_use_cases.insert(use_case) {
-                if let Some(pack) = self.pack_registry.by_use_case(&use_case) {
-                    selected_packs.push(pack.clone());
-                }
-            }
-        }
-
-        for task in &mut tasks {
-            task.approved_tools = task.specialist.approved_tools.clone();
-        }
-
-        let plan = ExecutionPlan {
-            engagement_id: profile.engagement_id.clone(),
-            workflow_stages: WorkflowStage::ordered().to_vec(),
-            tasks,
-            selected_packs,
-            high_impact_tasks: high_impact_count,
-        };
-
-        self.audit_ledger.append(AuditRecord {
-            timestamp_epoch_seconds: now_epoch_seconds,
-            actor: test_run.operator.clone(),
-            role: Role::SecurityAdmin,
-            action: "plan_tagged_scan".to_string(),
-            target: profile.engagement_id.clone(),
-            details: format!(
-                "tasks={} high_impact={} source={}",
-                plan.tasks.len(),
-                plan.high_impact_tasks,
-                test_run.source_tag(),
-            ),
-            test_run_id: Some(test_run.test_run_id.clone()),
-        });
-
-        let audit_records_written = self.audit_ledger.records().len() - ledger_len_before;
-
-        let report = TestRunReport {
-            test_run_id: test_run.test_run_id.clone(),
-            environment: test_run.environment,
-            operator: test_run.operator.clone(),
-            purpose: test_run.purpose.clone(),
-            source_tag: test_run.source_tag(),
-            started_at_epoch_seconds: test_run.started_at_epoch_seconds,
-            completed_at_epoch_seconds: now_epoch_seconds,
-            task_count: plan.tasks.len(),
-            audit_record_count: audit_records_written,
-        };
-
-        Ok((plan, report))
     }
 }
 
