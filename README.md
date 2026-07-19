@@ -6,6 +6,12 @@ Rust-first hybrid defensive security orchestration agent for authorized vulnerab
 
 Defensive security orchestration agent for authorized vulnerability testing across platform applications, tools, APIs, and infrastructure.
 
+## Operating Guide
+
+For a beginner-friendly, step-by-step operations manual, read:
+
+- [`OPERATING_GUIDE.md`](./OPERATING_GUIDE.md)
+
 ---
 
 ## Quick Start
