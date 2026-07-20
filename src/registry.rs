@@ -254,7 +254,7 @@ pub enum UseCase {
     BlockchainSmartContract,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolDefinition {
     pub name: String,
     pub version: String,
@@ -268,10 +268,10 @@ fn requested_full_tool_definitions() -> Vec<ToolDefinition> {
         .into_iter()
         .map(|name| ToolDefinition {
             name,
-            version: "imported".to_string(),
-            signed: true,
-            vulnerability_reviewed: true,
-            egress_policy: vec!["restricted-by-engagement-policy".to_string()],
+            version: "not-detected".to_string(),
+            signed: false,
+            vulnerability_reviewed: false,
+            egress_policy: vec!["offline-local-only".to_string()],
         })
         .collect()
 }
@@ -281,10 +281,10 @@ fn android_tool_definitions() -> Vec<ToolDefinition> {
         .into_iter()
         .map(|name| ToolDefinition {
             name,
-            version: "imported".to_string(),
-            signed: true,
-            vulnerability_reviewed: true,
-            egress_policy: vec!["restricted-by-engagement-policy".to_string()],
+            version: "not-detected".to_string(),
+            signed: false,
+            vulnerability_reviewed: false,
+            egress_policy: vec!["offline-local-only".to_string()],
         })
         .collect()
 }
@@ -306,14 +306,14 @@ pub struct ToolchainPackRegistry {
 impl Default for ToolchainPackRegistry {
     fn default() -> Self {
         let mut packs = HashMap::new();
-        let imported_tools = requested_full_tool_definitions();
+        let cataloged_tools = requested_full_tool_definitions();
 
         packs.insert(
             UseCase::WebApp,
             ToolchainPack {
                 name: "webapp-core-pack".to_string(),
                 use_case: UseCase::WebApp,
-                tools: imported_tools.clone(),
+                tools: cataloged_tools.clone(),
                 deprecated: false,
                 replacement_pack: None,
             },
@@ -324,7 +324,7 @@ impl Default for ToolchainPackRegistry {
             ToolchainPack {
                 name: "api-core-pack".to_string(),
                 use_case: UseCase::Api,
-                tools: imported_tools.clone(),
+                tools: cataloged_tools.clone(),
                 deprecated: false,
                 replacement_pack: None,
             },
@@ -335,7 +335,7 @@ impl Default for ToolchainPackRegistry {
             ToolchainPack {
                 name: "mobile-backend-pack".to_string(),
                 use_case: UseCase::MobileBackend,
-                tools: imported_tools.clone(),
+                tools: cataloged_tools.clone(),
                 deprecated: false,
                 replacement_pack: None,
             },
@@ -357,7 +357,7 @@ impl Default for ToolchainPackRegistry {
             ToolchainPack {
                 name: "cloud-posture-pack".to_string(),
                 use_case: UseCase::Cloud,
-                tools: imported_tools.clone(),
+                tools: cataloged_tools.clone(),
                 deprecated: false,
                 replacement_pack: None,
             },
@@ -368,7 +368,7 @@ impl Default for ToolchainPackRegistry {
             ToolchainPack {
                 name: "smart-contract-pack".to_string(),
                 use_case: UseCase::BlockchainSmartContract,
-                tools: imported_tools,
+                tools: cataloged_tools,
                 deprecated: false,
                 replacement_pack: None,
             },

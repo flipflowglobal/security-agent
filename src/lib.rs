@@ -1,9 +1,11 @@
 pub mod advanced;
+pub mod builtin_tools;
 pub mod capability_graph;
 pub mod compat;
 pub mod coordinator;
 pub mod findings;
 pub mod governance;
+pub mod local_assets;
 pub mod mission;
 pub mod model;
 pub mod policy;
@@ -15,11 +17,15 @@ pub mod workflow;
 pub use advanced::{
     AttackPathEdge, AttackPathGraph, RetestSchedule, ThreatModelNode, propose_retest_schedule,
 };
+pub use builtin_tools::{
+    AutopsyReport, BuiltInToolError, EvidenceFile, is_builtin_tool, run_autopsy, run_builtin_tool,
+};
 pub use capability_graph::{CapabilityGraph, CapabilityNode, CapabilityStage, FunctionFamily};
 pub use compat::{CompatibilityEnvelope, IntegrationAdapter, JsonLineAdapter};
 pub use coordinator::{Coordinator, ExecutionPlan, ScanTask};
 pub use findings::{Finding, RiskScoreCalculator, Severity};
 pub use governance::{AuditLedger, AuditRecord, Role};
+pub use local_assets::{LocalAgentAssets, LocalSkill, LocalTool};
 pub use mission::MISSION_STATEMENT;
 pub use model::{
     EngagementProfile, SpecialistKind, Target, TargetType, Technique, TestIntensity, TimeWindow,
@@ -37,7 +43,7 @@ pub use workflow::WorkflowStage;
 mod tests {
     use super::*;
 
-    fn sample_profile() -> EngagementProfile {
+    fn authorized_profile() -> EngagementProfile {
         EngagementProfile {
             engagement_id: "eng-001".to_string(),
             authorized_by: "secops".to_string(),
@@ -73,7 +79,7 @@ mod tests {
                 end_epoch_seconds: 1000,
             },
             in_scope_targets: vec![
-                "com.example.app".to_string(),
+                "authorized-mobile-app".to_string(),
                 "mobile-api".to_string(),
                 "defi-contract".to_string(),
             ],
@@ -98,7 +104,7 @@ mod tests {
     #[test]
     fn policy_blocks_denied_target() {
         let engine = PolicyEngine::default();
-        let profile = sample_profile();
+        let profile = authorized_profile();
         let target = Target {
             id: "prod-ledger".to_string(),
             target_type: TargetType::Api,
@@ -126,7 +132,7 @@ mod tests {
         let policy_engine = PolicyEngine::default();
         let mut coordinator = Coordinator::new(capability_registry, pack_registry, policy_engine);
 
-        let profile = sample_profile();
+        let profile = authorized_profile();
         let targets = vec![
             Target {
                 id: "api-staging".to_string(),
@@ -165,7 +171,7 @@ mod tests {
 
         let profile = android_profile();
         let targets = vec![Target {
-            id: "com.example.app".to_string(),
+            id: "authorized-mobile-app".to_string(),
             target_type: TargetType::MobileApp,
             criticality: 6,
         }];
@@ -184,15 +190,17 @@ mod tests {
             "MobileAndroid specialist should be assigned"
         );
 
-        // Approved tools should include android-specific tools.
+        let local_assets = LocalAgentAssets::bundled();
         let all_tools: Vec<_> = plan
             .tasks
             .iter()
             .flat_map(|t| t.approved_tools.iter())
             .collect();
         assert!(
-            all_tools.iter().any(|t| t.as_str() == "mobsf"),
-            "mobsf should be in approved tools"
+            all_tools.iter().all(|name| local_assets
+                .tool(name)
+                .is_some_and(|tool| tool.is_installed())),
+            "execution plans must not approve unavailable tools"
         );
     }
 
@@ -262,7 +270,7 @@ mod tests {
 
         let profile = android_profile();
         let targets = vec![Target {
-            id: "com.example.app".to_string(),
+            id: "authorized-mobile-app".to_string(),
             target_type: TargetType::MobileApp,
             criticality: 4,
         }];
@@ -289,7 +297,7 @@ mod tests {
                 finding_id: "f1".to_string(),
                 source_tool: "mobsf".to_string(),
                 title: "Insecure data storage".to_string(),
-                target_id: "com.example.app".to_string(),
+                target_id: "authorized-mobile-app".to_string(),
                 severity: Severity::High,
                 confidence_percent: 90,
                 remediation_playbook: "encrypt-at-rest".to_string(),
@@ -299,7 +307,7 @@ mod tests {
                 finding_id: "f2".to_string(),
                 source_tool: "frida".to_string(),
                 title: "Cleartext traffic observed".to_string(),
-                target_id: "com.example.app".to_string(),
+                target_id: "authorized-mobile-app".to_string(),
                 severity: Severity::Medium,
                 confidence_percent: 75,
                 remediation_playbook: "enforce-tls".to_string(),
@@ -314,7 +322,12 @@ mod tests {
         // Two edges (one per finding).
         assert_eq!(graph.edges.len(), 2);
         assert!(graph.nodes.iter().any(|n| n.node_id == "attacker"));
-        assert!(graph.nodes.iter().any(|n| n.node_id == "com.example.app"));
+        assert!(
+            graph
+                .nodes
+                .iter()
+                .any(|n| n.node_id == "authorized-mobile-app")
+        );
     }
 
     // ── Error-path / edge-case tests ─────────────────────────────────────────
@@ -667,7 +680,7 @@ mod tests {
         );
         let profile = android_profile();
         let targets = vec![Target {
-            id: "com.example.app".to_string(),
+            id: "authorized-mobile-app".to_string(),
             target_type: TargetType::MobileApp,
             criticality: 4,
         }];
@@ -686,7 +699,7 @@ mod tests {
         let mut fields = BTreeMap::new();
         fields.insert("finding_id".to_string(), "hint-1".to_string());
         fields.insert("title".to_string(), "Suspicious intent".to_string());
-        fields.insert("target_id".to_string(), "com.example.app".to_string());
+        fields.insert("target_id".to_string(), "authorized-mobile-app".to_string());
         fields.insert("confidence_percent".to_string(), "70".to_string());
 
         let hint_envelope = CompatibilityEnvelope {
@@ -701,7 +714,7 @@ mod tests {
         let f = finding.unwrap();
         assert_eq!(f.finding_id, "hint-1");
         assert_eq!(f.confidence_percent, 70);
-        assert_eq!(f.target_id, "com.example.app");
+        assert_eq!(f.target_id, "authorized-mobile-app");
     }
 
     #[test]
@@ -936,7 +949,7 @@ mod tests {
             PolicyEngine::default(),
         );
 
-        let profile = sample_profile();
+        let profile = authorized_profile();
         let targets = vec![Target {
             id: "api-staging".to_string(),
             target_type: TargetType::Api,
@@ -961,7 +974,7 @@ mod tests {
             PolicyEngine::default(),
         );
 
-        let profile = sample_profile();
+        let profile = authorized_profile();
         let targets = vec![Target {
             id: "api-staging".to_string(),
             target_type: TargetType::Api,
@@ -991,7 +1004,7 @@ mod tests {
             PolicyEngine::default(),
         );
 
-        let profile_a = sample_profile();
+        let profile_a = authorized_profile();
         let untagged_targets = vec![Target {
             id: "web-staging".to_string(),
             target_type: TargetType::WebApp,
@@ -1051,7 +1064,7 @@ mod tests {
             ToolchainPackRegistry::default(),
             PolicyEngine::default(),
         );
-        let profile = sample_profile();
+        let profile = authorized_profile();
         let targets = vec![Target {
             id: "prod-ledger".to_string(),
             target_type: TargetType::Api,

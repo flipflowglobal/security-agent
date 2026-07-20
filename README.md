@@ -26,7 +26,7 @@ cd security-agent
 # Run all tests
 cargo test
 
-# Build and run the demo agent binary
+# Build and inspect the local agent
 cargo run --release
 ```
 
@@ -161,7 +161,7 @@ The `MobileAndroid` specialist uses a dedicated tool set for APK/DEX analysis an
 | `src/advanced.rs` | Attack-path graph builder and retest scheduler |
 | `src/compat.rs` | Integration adapter contracts and wire-format envelope |
 | `src/roadmap.rs` | Phased rollout model |
-| `src/main.rs` | Runnable demo binary (also cross-compiles for Android) |
+| `src/main.rs` | Offline local runtime entry point (also cross-compiles for Android) |
 
 ---
 
@@ -182,3 +182,27 @@ cargo fmt --check     # verify formatting
 cargo clippy          # lint (zero warnings enforced)
 cargo build --release # optimized host binary
 ```
+
+### Offline local assets
+
+The skill is compiled into the Rust binary and the tool catalog is generated
+from the built-in registry. These commands do not use the network or read an
+external skill source:
+
+```bash
+security-agent --list-skills
+security-agent --show-skill security-agent
+security-agent --list-tools
+security-agent --offline-status
+```
+
+All 89 tool definitions are stored in and loaded from the binary.
+`--list-tools` also reports whether a corresponding third-party executable is
+already present on the local `PATH`. Catalog presence does not imply that the
+third-party executable is installed or functional. Execution plans only
+approve tools found locally. Security-Agent does not download, contact, or
+silently execute external sources.
+
+The built-in Autopsy substitute inventories and hashes a local evidence path.
+It prints a human-readable report to the terminal, or writes the same report
+to a local `.txt` file when the optional `--output` argument is supplied.

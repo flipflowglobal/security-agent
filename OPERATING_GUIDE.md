@@ -69,7 +69,7 @@ What each one does:
 - `cargo clippy -- -D warnings` → lint check, fails on warnings.
 - `cargo test` → runs automated tests.
 - `cargo build --release` → creates optimized binary.
-- `cargo run --release` → builds and starts the demo program.
+- `cargo run --release` → builds and reports actual local offline status.
 
 ---
 
@@ -194,7 +194,7 @@ If any item is missing, stop and resolve it first.
 
 Key files in this repository:
 - `/home/runner/work/security-agent/security-agent/README.md` → high-level project overview.
-- `/home/runner/work/security-agent/security-agent/src/main.rs` → runnable demo binary entry point.
+- `/home/runner/work/security-agent/security-agent/src/main.rs` → offline local runtime entry point.
 - `/home/runner/work/security-agent/security-agent/src/lib.rs` → core library logic and tests.
 - `/home/runner/work/security-agent/security-agent/Cargo.toml` → Rust package metadata and dependencies.
 

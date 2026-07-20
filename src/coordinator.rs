@@ -1,4 +1,5 @@
 use crate::governance::{AuditLedger, AuditRecord, Role};
+use crate::local_assets::LocalAgentAssets;
 use crate::model::{EngagementProfile, Target, TargetType, Technique, TestIntensity};
 use crate::policy::{AuthorizationError, PolicyEngine};
 use crate::registry::{
@@ -112,7 +113,7 @@ impl Coordinator {
         }
 
         for task in &mut tasks {
-            task.approved_tools = task.specialist.approved_tools.clone();
+            task.approved_tools = locally_installed_tools(&task.specialist.approved_tools);
         }
 
         let plan = ExecutionPlan {
@@ -207,7 +208,7 @@ impl Coordinator {
         }
 
         for task in &mut tasks {
-            task.approved_tools = task.specialist.approved_tools.clone();
+            task.approved_tools = locally_installed_tools(&task.specialist.approved_tools);
         }
 
         let plan = ExecutionPlan {
@@ -249,6 +250,15 @@ impl Coordinator {
 
         Ok((plan, report))
     }
+}
+
+fn locally_installed_tools(tool_names: &[String]) -> Vec<String> {
+    let assets = LocalAgentAssets::bundled();
+    tool_names
+        .iter()
+        .filter(|name| assets.tool(name).is_some_and(|tool| tool.is_available()))
+        .cloned()
+        .collect()
 }
 
 fn use_case_for_target(target_type: &TargetType) -> UseCase {
