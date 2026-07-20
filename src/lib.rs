@@ -8,6 +8,7 @@ pub mod governance;
 pub mod local_assets;
 pub mod mission;
 pub mod model;
+pub mod pcap;
 pub mod policy;
 pub mod registry;
 pub mod roadmap;
@@ -18,7 +19,8 @@ pub use advanced::{
     AttackPathEdge, AttackPathGraph, RetestSchedule, ThreatModelNode, propose_retest_schedule,
 };
 pub use builtin_tools::{
-    AutopsyReport, BuiltInToolError, EvidenceFile, is_builtin_tool, run_autopsy, run_builtin_tool,
+    AutopsyReport, BuiltInToolError, EmbeddedSignature, EvidenceFile, MemoryString,
+    VolatilityReport, is_builtin_tool, run_autopsy, run_builtin_tool, run_volatility,
 };
 pub use capability_graph::{CapabilityGraph, CapabilityNode, CapabilityStage, FunctionFamily};
 pub use compat::{CompatibilityEnvelope, IntegrationAdapter, JsonLineAdapter};
@@ -30,6 +32,7 @@ pub use mission::MISSION_STATEMENT;
 pub use model::{
     EngagementProfile, SpecialistKind, Target, TargetType, Technique, TestIntensity, TimeWindow,
 };
+pub use pcap::{CaptureTimestamp, ProtocolCounts, WiresharkReport, run_wireshark};
 pub use policy::{AuthorizationError, AuthorizationOutcome, PolicyEngine};
 pub use registry::{
     CapabilityRegistry, SpecialistCapability, ToolDefinition, ToolchainPack, ToolchainPackRegistry,

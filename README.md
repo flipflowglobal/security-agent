@@ -23,11 +23,14 @@ For a beginner-friendly, step-by-step operations manual, read:
 git clone <repo-url>
 cd security-agent
 
-# Run all tests
+# Validate and build
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
 cargo test
+cargo build --release
 
-# Build and inspect the local agent
-cargo run --release
+# Inspect actual local status
+./target/release/security-agent --offline-status
 ```
 
 ### Android Device / Termux (native, no cross-compilation needed)
@@ -177,10 +180,10 @@ The `MobileAndroid` specialist uses a dedicated tool set for APK/DEX analysis an
 ## Development
 
 ```bash
-cargo test            # run all 29 tests
-cargo fmt --check     # verify formatting
-cargo clippy          # lint (zero warnings enforced)
-cargo build --release # optimized host binary
+cargo fmt --check                    # verify formatting
+cargo clippy --all-targets -- -D warnings # lint all targets
+cargo test                           # run all tests
+cargo build --release                # optimized host binary
 ```
 
 ### Offline local assets
@@ -190,11 +193,18 @@ from the built-in registry. These commands do not use the network or read an
 external skill source:
 
 ```bash
-security-agent --list-skills
-security-agent --show-skill security-agent
-security-agent --list-tools
-security-agent --offline-status
+./target/release/security-agent
+./target/release/security-agent --offline-status
+./target/release/security-agent --list-skills
+./target/release/security-agent --show-skill security-agent
+./target/release/security-agent --list-tools
+./target/release/security-agent --run-tool autopsy <local-path>
+./target/release/security-agent --run-tool autopsy <local-path> --output <report-path>.txt
 ```
+
+Running without arguments is equivalent to `--offline-status`. To install the
+binary into Cargo's local binary directory, run `cargo install --path . --locked`;
+the same commands can then use `security-agent` instead of the path above.
 
 All 89 tool definitions are stored in and loaded from the binary.
 `--list-tools` also reports whether a corresponding third-party executable is
@@ -206,3 +216,21 @@ silently execute external sources.
 The built-in Autopsy substitute inventories and hashes a local evidence path.
 It prints a human-readable report to the terminal, or writes the same report
 to a local `.txt` file when the optional `--output` argument is supplied.
+
+The built-in Volatility substitute analyzes a local memory image or binary,
+computes its SHA-256 digest and byte entropy, detects embedded ELF, PE/COFF, and
+ZIP signatures, and extracts bounded printable strings:
+
+```bash
+./target/release/security-agent --run-tool volatility <local-memory-image>
+./target/release/security-agent --run-tool volatility <local-memory-image> --output <report-path>.txt
+```
+
+The built-in Wireshark substitute strictly parses classic PCAP files, reports
+capture timestamps and byte totals, and classifies Ethernet, VLAN, IPv4, IPv6,
+ARP, TCP, UDP, ICMP, and ICMPv6 traffic without live capture:
+
+```bash
+./target/release/security-agent --run-tool wireshark <local-capture.pcap>
+./target/release/security-agent --run-tool wireshark <local-capture.pcap> --output <report-path>.txt
+```

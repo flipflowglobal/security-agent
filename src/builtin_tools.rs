@@ -4,6 +4,9 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 const AUTOPSY_MAX_FILES: usize = 100_000;
+const VOLATILITY_MIN_STRING_LENGTH: usize = 8;
+const VOLATILITY_MAX_REPORTED_STRINGS: usize = 200;
+const VOLATILITY_MAX_STRING_LENGTH: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvidenceFile {
@@ -18,6 +21,33 @@ pub struct AutopsyReport {
     pub directories: usize,
     pub total_bytes: u64,
     pub files: Vec<EvidenceFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryString {
+    pub offset: u64,
+    pub text: String,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbeddedSignature {
+    pub kind: &'static str,
+    pub occurrences: u64,
+    pub first_offset: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct VolatilityReport {
+    pub image: PathBuf,
+    pub bytes: u64,
+    pub sha256: String,
+    pub shannon_entropy: f64,
+    pub zero_bytes: u64,
+    pub printable_bytes: u64,
+    pub signatures: Vec<EmbeddedSignature>,
+    pub strings_found: u64,
+    pub strings: Vec<MemoryString>,
 }
 
 impl fmt::Display for AutopsyReport {
@@ -50,6 +80,59 @@ impl fmt::Display for AutopsyReport {
     }
 }
 
+impl fmt::Display for VolatilityReport {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(formatter, "Volatility Local Memory Report")?;
+        writeln!(formatter, "==============================")?;
+        writeln!(formatter, "Implementation : Built-in substitute")?;
+        writeln!(formatter, "Network used   : No")?;
+        writeln!(formatter, "Memory image   : {}", self.image.display())?;
+        writeln!(formatter)?;
+        writeln!(formatter, "Image Summary")?;
+        writeln!(formatter, "-------------")?;
+        writeln!(formatter, "Size           : {} bytes", self.bytes)?;
+        writeln!(formatter, "SHA-256        : {}", self.sha256)?;
+        writeln!(
+            formatter,
+            "Entropy        : {:.6} bits/byte",
+            self.shannon_entropy
+        )?;
+        writeln!(formatter, "Zero bytes     : {}", self.zero_bytes)?;
+        writeln!(formatter, "Printable bytes: {}", self.printable_bytes)?;
+        writeln!(formatter)?;
+        writeln!(formatter, "Embedded Signatures")?;
+        writeln!(formatter, "-------------------")?;
+        if self.signatures.is_empty() {
+            writeln!(formatter, "None detected")?;
+        } else {
+            for signature in &self.signatures {
+                writeln!(
+                    formatter,
+                    "{}: {} occurrence(s), first at byte offset {}",
+                    signature.kind, signature.occurrences, signature.first_offset
+                )?;
+            }
+        }
+        writeln!(formatter)?;
+        writeln!(formatter, "Printable Strings")?;
+        writeln!(formatter, "-----------------")?;
+        writeln!(formatter, "Total found     : {}", self.strings_found)?;
+        writeln!(formatter, "Reported        : {}", self.strings.len())?;
+        for (index, string) in self.strings.iter().enumerate() {
+            let suffix = if string.truncated { " [truncated]" } else { "" };
+            writeln!(
+                formatter,
+                "{}. offset {}: {}{}",
+                index + 1,
+                string.offset,
+                string.text,
+                suffix
+            )?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 pub enum BuiltInToolError {
     UnsupportedTool(String),
@@ -76,17 +159,29 @@ impl fmt::Display for BuiltInToolError {
 impl std::error::Error for BuiltInToolError {}
 
 pub fn is_builtin_tool(name: &str) -> bool {
-    name == "autopsy"
+    matches!(name, "autopsy" | "volatility" | "wireshark")
 }
 
 pub fn run_builtin_tool(name: &str, input: &Path) -> Result<String, BuiltInToolError> {
     match name {
         "autopsy" => Ok(run_autopsy(input)?.to_string()),
+        "volatility" => Ok(run_volatility(input)?.to_string()),
+        "wireshark" => Ok(crate::pcap::run_wireshark(input)?.to_string()),
         _ => Err(BuiltInToolError::UnsupportedTool(name.to_string())),
     }
 }
 
 pub fn run_autopsy(input: &Path) -> Result<AutopsyReport, BuiltInToolError> {
+    let input_metadata = fs::symlink_metadata(input).map_err(|source| BuiltInToolError::Io {
+        path: input.to_path_buf(),
+        source,
+    })?;
+    if input_metadata.file_type().is_symlink() {
+        return Err(BuiltInToolError::InvalidInput(
+            "evidence root must not be a symbolic link".to_string(),
+        ));
+    }
+
     let root = input
         .canonicalize()
         .map_err(|source| BuiltInToolError::Io {
@@ -97,12 +192,6 @@ pub fn run_autopsy(input: &Path) -> Result<AutopsyReport, BuiltInToolError> {
         path: root.clone(),
         source,
     })?;
-
-    if metadata.file_type().is_symlink() {
-        return Err(BuiltInToolError::InvalidInput(
-            "evidence root must not be a symbolic link".to_string(),
-        ));
-    }
 
     let mut report = AutopsyReport {
         root: root.clone(),
@@ -125,6 +214,185 @@ pub fn run_autopsy(input: &Path) -> Result<AutopsyReport, BuiltInToolError> {
         .files
         .sort_by(|left, right| left.path.cmp(&right.path));
     Ok(report)
+}
+
+pub fn run_volatility(input: &Path) -> Result<VolatilityReport, BuiltInToolError> {
+    let input_metadata = fs::symlink_metadata(input).map_err(|source| BuiltInToolError::Io {
+        path: input.to_path_buf(),
+        source,
+    })?;
+    if input_metadata.file_type().is_symlink() {
+        return Err(BuiltInToolError::InvalidInput(
+            "memory image must not be a symbolic link".to_string(),
+        ));
+    }
+    if !input_metadata.is_file() {
+        return Err(BuiltInToolError::InvalidInput(
+            "memory image must be a regular file".to_string(),
+        ));
+    }
+
+    let image = input
+        .canonicalize()
+        .map_err(|source| BuiltInToolError::Io {
+            path: input.to_path_buf(),
+            source,
+        })?;
+    let mut file = File::open(&image).map_err(|source| BuiltInToolError::Io {
+        path: image.clone(),
+        source,
+    })?;
+    let mut sha256 = Sha256::new();
+    let mut frequencies = [0_u64; 256];
+    let mut bytes = 0_u64;
+    let mut printable_bytes = 0_u64;
+    let mut strings_found = 0_u64;
+    let mut strings = Vec::new();
+    let mut string_start = 0_u64;
+    let mut string_length = 0_usize;
+    let mut string_bytes = Vec::with_capacity(VOLATILITY_MAX_STRING_LENGTH);
+    let mut rolling = [0_u8; 4];
+    let mut rolling_len = 0_usize;
+    let mut mz = (0_u64, 0_u64);
+    let mut elf = (0_u64, 0_u64);
+    let mut zip = (0_u64, 0_u64);
+    let mut buffer = [0_u8; 64 * 1024];
+
+    loop {
+        let bytes_read = file
+            .read(&mut buffer)
+            .map_err(|source| BuiltInToolError::Io {
+                path: image.clone(),
+                source,
+            })?;
+        if bytes_read == 0 {
+            break;
+        }
+        sha256.update(&buffer[..bytes_read]);
+        for byte in &buffer[..bytes_read] {
+            let offset = bytes;
+            bytes = bytes.checked_add(1).ok_or(BuiltInToolError::SizeOverflow)?;
+            frequencies[*byte as usize] += 1;
+
+            if byte.is_ascii_graphic() || *byte == b' ' {
+                printable_bytes += 1;
+                if string_length == 0 {
+                    string_start = offset;
+                }
+                string_length += 1;
+                if string_bytes.len() < VOLATILITY_MAX_STRING_LENGTH {
+                    string_bytes.push(*byte);
+                }
+            } else {
+                finish_memory_string(
+                    string_start,
+                    string_length,
+                    &mut string_bytes,
+                    &mut strings_found,
+                    &mut strings,
+                );
+                string_length = 0;
+            }
+
+            if rolling_len < rolling.len() {
+                rolling[rolling_len] = *byte;
+                rolling_len += 1;
+            } else {
+                rolling.copy_within(1.., 0);
+                rolling[3] = *byte;
+            }
+            if rolling_len >= 2 && rolling[rolling_len - 2..rolling_len] == *b"MZ" {
+                record_signature(&mut mz, offset - 1);
+            }
+            if rolling_len == 4 {
+                if rolling == *b"\x7fELF" {
+                    record_signature(&mut elf, offset - 3);
+                }
+                if rolling == *b"PK\x03\x04" {
+                    record_signature(&mut zip, offset - 3);
+                }
+            }
+        }
+    }
+    finish_memory_string(
+        string_start,
+        string_length,
+        &mut string_bytes,
+        &mut strings_found,
+        &mut strings,
+    );
+
+    let mut signatures = Vec::new();
+    append_signature(&mut signatures, "PE/COFF MZ", mz);
+    append_signature(&mut signatures, "ELF", elf);
+    append_signature(&mut signatures, "ZIP", zip);
+
+    Ok(VolatilityReport {
+        image,
+        bytes,
+        sha256: sha256.finalize_hex(),
+        shannon_entropy: shannon_entropy(&frequencies, bytes),
+        zero_bytes: frequencies[0],
+        printable_bytes,
+        signatures,
+        strings_found,
+        strings,
+    })
+}
+
+fn finish_memory_string(
+    offset: u64,
+    length: usize,
+    bytes: &mut Vec<u8>,
+    strings_found: &mut u64,
+    strings: &mut Vec<MemoryString>,
+) {
+    if length >= VOLATILITY_MIN_STRING_LENGTH {
+        *strings_found += 1;
+        if strings.len() < VOLATILITY_MAX_REPORTED_STRINGS {
+            strings.push(MemoryString {
+                offset,
+                text: String::from_utf8_lossy(bytes).into_owned(),
+                truncated: length > bytes.len(),
+            });
+        }
+    }
+    bytes.clear();
+}
+
+fn record_signature(signature: &mut (u64, u64), offset: u64) {
+    if signature.0 == 0 {
+        signature.1 = offset;
+    }
+    signature.0 += 1;
+}
+
+fn append_signature(
+    signatures: &mut Vec<EmbeddedSignature>,
+    kind: &'static str,
+    signature: (u64, u64),
+) {
+    if signature.0 > 0 {
+        signatures.push(EmbeddedSignature {
+            kind,
+            occurrences: signature.0,
+            first_offset: signature.1,
+        });
+    }
+}
+
+fn shannon_entropy(frequencies: &[u64; 256], bytes: u64) -> f64 {
+    if bytes == 0 {
+        return 0.0;
+    }
+    frequencies
+        .iter()
+        .filter(|frequency| **frequency > 0)
+        .map(|frequency| {
+            let probability = *frequency as f64 / bytes as f64;
+            -probability * probability.log2()
+        })
+        .sum()
 }
 
 fn walk_evidence(
@@ -204,7 +472,7 @@ fn add_evidence_file(
     Ok(())
 }
 
-fn sha256_file(path: &Path) -> Result<String, BuiltInToolError> {
+pub(crate) fn sha256_file(path: &Path) -> Result<String, BuiltInToolError> {
     let mut file = File::open(path).map_err(|source| BuiltInToolError::Io {
         path: path.to_path_buf(),
         source,
@@ -382,5 +650,47 @@ mod tests {
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
         fs::remove_dir_all(root).expect("remove evidence directory");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn autopsy_rejects_symbolic_link_root() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "security-agent-autopsy-symlink-{}",
+            std::process::id()
+        ));
+        let target = root.with_extension("target");
+        let _ = fs::remove_file(&root);
+        let _ = fs::remove_file(&target);
+        File::create(&target).expect("create evidence target");
+        symlink(&target, &root).expect("create evidence symlink");
+
+        let result = run_autopsy(&root);
+
+        assert!(matches!(result, Err(BuiltInToolError::InvalidInput(_))));
+        fs::remove_file(root).expect("remove evidence symlink");
+        fs::remove_file(target).expect("remove evidence target");
+    }
+
+    #[test]
+    fn volatility_analyzes_real_executable() {
+        let executable = std::env::current_exe().expect("resolve current executable");
+
+        let report = run_volatility(&executable).expect("analyze current executable");
+
+        assert!(report.bytes > 0);
+        assert_eq!(report.sha256.len(), 64);
+        assert!(report.shannon_entropy > 0.0);
+        assert!(report.printable_bytes > 0);
+        assert!(report.strings_found > 0);
+        #[cfg(target_os = "linux")]
+        assert!(
+            report
+                .signatures
+                .iter()
+                .any(|signature| signature.kind == "ELF")
+        );
     }
 }

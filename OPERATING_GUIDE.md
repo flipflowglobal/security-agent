@@ -58,18 +58,18 @@ You will mainly use these commands:
 
 ```bash
 cargo fmt --check
-cargo clippy -- -D warnings
+cargo clippy --all-targets -- -D warnings
 cargo test
 cargo build --release
-cargo run --release
+./target/release/security-agent --offline-status
 ```
 
 What each one does:
 - `cargo fmt --check` → verifies code formatting.
-- `cargo clippy -- -D warnings` → lint check, fails on warnings.
+- `cargo clippy --all-targets -- -D warnings` → lint check, fails on warnings.
 - `cargo test` → runs automated tests.
 - `cargo build --release` → creates optimized binary.
-- `cargo run --release` → builds and reports actual local offline status.
+- `./target/release/security-agent --offline-status` → reports actual local status.
 
 ---
 
@@ -78,10 +78,10 @@ What each one does:
 Run the commands in this order:
 
 1. `cargo fmt --check`
-2. `cargo clippy -- -D warnings`
+2. `cargo clippy --all-targets -- -D warnings`
 3. `cargo test`
 4. `cargo build --release`
-5. `cargo run --release`
+5. `./target/release/security-agent --offline-status`
 
 If all commands pass, your environment is working correctly.
 
@@ -95,12 +95,12 @@ Use this routine whenever you work in the repository:
 2. Make your edits.
 3. Run checks:
    - `cargo fmt --check`
-   - `cargo clippy -- -D warnings`
+   - `cargo clippy --all-targets -- -D warnings`
    - `cargo test`
 4. Build release:
    - `cargo build --release`
-5. Run locally if needed:
-   - `cargo run --release`
+5. Inspect local status:
+   - `./target/release/security-agent --offline-status`
 
 This keeps your changes safe and consistent.
 
@@ -136,7 +136,48 @@ For full command details, see `/home/runner/work/security-agent/security-agent/R
 
 ---
 
-## 8) Basic usage expectations
+## 8) Local runtime commands
+
+Run these from the repository root after `cargo build --release`:
+
+```bash
+./target/release/security-agent
+./target/release/security-agent --offline-status
+./target/release/security-agent --list-skills
+./target/release/security-agent --show-skill security-agent
+./target/release/security-agent --list-tools
+./target/release/security-agent --run-tool autopsy <local-path>
+./target/release/security-agent --run-tool autopsy <local-path> --output <report-path>.txt
+./target/release/security-agent --run-tool volatility <local-memory-image>
+./target/release/security-agent --run-tool volatility <local-memory-image> --output <report-path>.txt
+./target/release/security-agent --run-tool wireshark <local-capture.pcap>
+./target/release/security-agent --run-tool wireshark <local-capture.pcap> --output <report-path>.txt
+```
+
+- No argument and `--offline-status` report the same local runtime state.
+- `--list-skills` lists skills compiled into the binary.
+- `--show-skill` prints the named embedded skill.
+- `--list-tools` distinguishes built-in substitutes, installed executables, and
+  catalog entries that are not installed.
+- `--run-tool autopsy` inventories regular files and computes SHA-256 digests.
+- `--run-tool volatility` analyzes a local memory image or binary for entropy,
+  embedded executable/archive signatures, and printable strings.
+- `--run-tool wireshark` parses a local classic PCAP and reports capture,
+  link-layer, network-layer, and transport-layer statistics.
+- `--output` writes the same human-readable report to a `.txt` file.
+
+To install the binary into Cargo's local binary directory:
+
+```bash
+cargo install --path . --locked
+```
+
+After installation, replace `./target/release/security-agent` with
+`security-agent`.
+
+---
+
+## 9) Basic usage expectations
 
 Security-Agent follows a controlled model:
 - A coordinator plans work.
@@ -152,7 +193,7 @@ As an operator, your responsibility is to:
 
 ---
 
-## 9) Safety and authorization checklist
+## 10) Safety and authorization checklist
 
 Before any scan or test run, confirm:
 
@@ -167,7 +208,7 @@ If any item is missing, stop and resolve it first.
 
 ---
 
-## 10) Troubleshooting
+## 11) Troubleshooting
 
 ### `cargo` command not found
 - Rust is not installed or not in your shell path.
@@ -177,7 +218,7 @@ If any item is missing, stop and resolve it first.
 - Dependencies may still be downloading.
 - Re-run the command and check network access.
 
-### `cargo clippy -- -D warnings` fails
+### `cargo clippy --all-targets -- -D warnings` fails
 - There is at least one lint warning.
 - Fix warnings before continuing.
 
@@ -190,7 +231,7 @@ If any item is missing, stop and resolve it first.
 
 ---
 
-## 11) File map for beginners
+## 12) File map for beginners
 
 Key files in this repository:
 - `/home/runner/work/security-agent/security-agent/README.md` → high-level project overview.
@@ -200,7 +241,7 @@ Key files in this repository:
 
 ---
 
-## 12) Good operating habits
+## 13) Good operating habits
 
 - Work in small changes.
 - Run validation after every meaningful edit.
@@ -210,16 +251,16 @@ Key files in this repository:
 
 ---
 
-## 13) Quick command copy block
+## 14) Quick command copy block
 
 ```bash
 git clone <repo-url>
 cd security-agent
 cargo fmt --check
-cargo clippy -- -D warnings
+cargo clippy --all-targets -- -D warnings
 cargo test
 cargo build --release
-cargo run --release
+./target/release/security-agent --offline-status
 ```
 
 If this block succeeds, you are fully operational.

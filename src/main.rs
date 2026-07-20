@@ -91,7 +91,7 @@ fn main() -> ExitCode {
                     if let Some(path) = output {
                         match fs::write(&path, report) {
                             Ok(()) => {
-                                println!("Autopsy report written to {path}");
+                                println!("{name} report written to {path}");
                                 ExitCode::SUCCESS
                             }
                             Err(error) => {
