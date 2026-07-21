@@ -4,12 +4,21 @@
 //! substitutes implemented entirely in this crate, this module actually
 //! spawns a locally installed third-party binary. To keep that safe, only
 //! tools classified [`ExecutionClass::StaticLocalAnalysis`] may be run
-//! this way: tools that operate solely on local files, with no network or
-//! live-target interaction. Tools classified `ActiveNetwork` or
-//! `ActiveExploitation` (nmap, sqlmap, hydra, msfconsole, and similar) are
+//! this way by default: tools that operate solely on local files, with no
+//! network or live-target interaction. Most `ActiveNetwork` and
+//! `ActiveExploitation` tools (sqlmap, hydra, msfconsole, and similar) are
 //! rejected here — real execution of those needs a live-target
 //! confirmation/rate-limit design layered on
 //! [`crate::policy::AuthorizationOutcome`], which does not exist yet.
+//!
+//! `nmap` is a deliberate, explicit exception (see
+//! `WIRED_DESPITE_EXECUTION_CLASS`): it has been reviewed and wired for
+//! real execution the same way `StaticLocalAnalysis` tools are — gated
+//! only by the coordinator's existing planning approval (scope + technique
+//! allow-list) and the tool being locally installed, with no additional
+//! target-confirmation, approval, or rate-limiting beyond that. Arguments
+//! passed to `--execute`/`execute_plan` are trusted as-is, exactly like
+//! the already-wired static tools.
 
 use crate::coordinator::ExecutionPlan;
 use crate::local_assets::LocalAgentAssets;
@@ -29,7 +38,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(20);
 #[derive(Debug)]
 pub enum ToolExecutionError {
     NotInstalled(String),
-    NotStaticLocalAnalysis(String),
+    NotEligibleForExecution(String),
     Spawn {
         tool: String,
         source: std::io::Error,
@@ -44,10 +53,10 @@ impl fmt::Display for ToolExecutionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotInstalled(name) => write!(formatter, "{name} is not installed locally"),
-            Self::NotStaticLocalAnalysis(name) => write!(
+            Self::NotEligibleForExecution(name) => write!(
                 formatter,
-                "{name} is not classified as static-local-analysis; \
-                 real execution is not wired up for it yet"
+                "{name} is not classified as static-local-analysis and has no explicit \
+                 execution exception; real execution is not wired up for it yet"
             ),
             Self::Spawn { tool, source } => write!(formatter, "failed to spawn {tool}: {source}"),
             Self::TimedOut { tool, timeout } => write!(
@@ -99,13 +108,32 @@ impl fmt::Display for ToolExecutionReport {
     }
 }
 
+/// Tools classified `ActiveNetwork`/`ActiveExploitation` that have been
+/// explicitly reviewed and wired for real execution anyway. Kept to an
+/// explicit, named list rather than loosening the execution-class check
+/// itself, so enabling a new tool here is always a deliberate, visible
+/// decision rather than an accidental side effect of some other change.
+///
+/// `nmap` is the only entry today: it's approved the same way the
+/// `StaticLocalAnalysis` tools are — via the coordinator's existing
+/// planning gate (scope + technique allow-list) plus local installation,
+/// with no additional target-confirmation, approval, or rate-limiting.
+/// Arguments given to `--execute`/[`execute_plan`] are trusted as-is.
+const WIRED_DESPITE_EXECUTION_CLASS: &[&str] = &["nmap"];
+
+fn is_eligible_for_execution(tool: &LocalTool) -> bool {
+    tool.definition.execution_class == ExecutionClass::StaticLocalAnalysis
+        || WIRED_DESPITE_EXECUTION_CLASS.contains(&tool.definition.name.as_str())
+}
+
 /// Runs `tool` with `arguments`, enforcing a bounded execution window.
 ///
 /// # Errors
 ///
 /// Returns [`ToolExecutionError::NotInstalled`] if the tool has no
-/// resolved executable path, [`ToolExecutionError::NotStaticLocalAnalysis`]
-/// if the tool isn't classified for direct execution,
+/// resolved executable path, [`ToolExecutionError::NotEligibleForExecution`]
+/// if the tool isn't classified for direct execution and has no explicit
+/// exception (see `WIRED_DESPITE_EXECUTION_CLASS`),
 /// [`ToolExecutionError::Spawn`] if the process could not be started, and
 /// [`ToolExecutionError::TimedOut`] if it exceeded `timeout` and had to be
 /// killed. A non-zero exit code from the tool itself is not an error: it
@@ -119,8 +147,8 @@ pub fn run_external_tool(
     let Some(executable) = tool.executable.as_ref() else {
         return Err(ToolExecutionError::NotInstalled(name));
     };
-    if tool.definition.execution_class != ExecutionClass::StaticLocalAnalysis {
-        return Err(ToolExecutionError::NotStaticLocalAnalysis(name));
+    if !is_eligible_for_execution(tool) {
+        return Err(ToolExecutionError::NotEligibleForExecution(name));
     }
 
     let start = Instant::now();
@@ -210,9 +238,10 @@ impl fmt::Display for TaskExecutionOutcome {
 /// This only actually executes tools the coordinator approved for a task
 /// (`ScanTask::approved_tools`, which is already filtered to what's locally
 /// installed) — it never expands scope beyond what was planned. Tools not
-/// classified [`ExecutionClass::StaticLocalAnalysis`] are still attempted
-/// (so the caller sees why, via [`ToolExecutionError::NotStaticLocalAnalysis`]
-/// in the outcome) rather than silently skipped.
+/// eligible for direct execution (see `WIRED_DESPITE_EXECUTION_CLASS`)
+/// are still attempted (so the caller sees why, via
+/// [`ToolExecutionError::NotEligibleForExecution`] in the outcome) rather
+/// than silently skipped.
 #[must_use]
 pub fn execute_plan(
     plan: &ExecutionPlan,
@@ -381,8 +410,38 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(ToolExecutionError::NotStaticLocalAnalysis(name)) if name == "test-tool"
+            Err(ToolExecutionError::NotEligibleForExecution(name)) if name == "test-tool"
         ));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn rejects_other_active_network_tools_not_on_the_explicit_allowlist() {
+        // Only "nmap" is on WIRED_DESPITE_EXECUTION_CLASS; a differently
+        // named ActiveNetwork tool (e.g. hydra) must still be rejected.
+        let tool = tool_named("hydra", "/bin/true", ExecutionClass::ActiveNetwork);
+
+        let result = run_external_tool(&tool, &[], Duration::from_secs(5));
+
+        assert!(matches!(
+            result,
+            Err(ToolExecutionError::NotEligibleForExecution(name)) if name == "hydra"
+        ));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn nmap_is_eligible_for_real_execution_despite_being_active_network() {
+        if !Path::new("/bin/true").exists() {
+            return;
+        }
+        let tool = tool_named("nmap", "/bin/true", ExecutionClass::ActiveNetwork);
+
+        let report = run_external_tool(&tool, &[], Duration::from_secs(5))
+            .expect("nmap should be an explicit execution exception");
+
+        assert_eq!(report.exit_code, Some(0));
+        assert_eq!(report.tool, "nmap");
     }
 
     #[test]

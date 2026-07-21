@@ -265,20 +265,27 @@ Every cataloged tool is classified by `ExecutionClass` (`src/registry.rs`):
 androguard, apktool, dex2jar, apksigner, and others), `ActiveNetwork`
 (scans or contacts a live target), or `ActiveExploitation` (attempts to
 compromise a live target or running process). `--run-external-tool`
-directly invokes a real, locally installed tool, but only when it is
-classified `StaticLocalAnalysis`:
+directly invokes a real, locally installed tool when it is classified
+`StaticLocalAnalysis`, or is `nmap` — an explicit, reviewed exception (see
+`WIRED_DESPITE_EXECUTION_CLASS` in `src/execution.rs`):
 
 ```bash
 ./target/release/security-agent --run-external-tool semgrep --version
 ./target/release/security-agent --run-external-tool jadx -d <out-dir> <apk-path>
+./target/release/security-agent --run-external-tool nmap -sV <in-scope-host>
 ```
 
 The process is spawned with a bounded execution timeout and its stdout,
-stderr, exit code, and duration are captured into a report. Tools
-classified `ActiveNetwork` or `ActiveExploitation` (nmap, sqlmap, hydra,
-msfconsole, and similar) are rejected by this command — real execution of
-those needs a live-target confirmation/rate-limit design layered on the
-policy engine's `AuthorizationOutcome`, which does not exist yet.
+stderr, exit code, and duration are captured into a report. `nmap` runs
+under the same gate as the `StaticLocalAnalysis` tools above — the
+coordinator's existing planning approval (scope + technique allow-list)
+plus local installation — with no additional target-confirmation,
+approval, or rate-limiting: arguments given to `--execute`/
+`--run-external-tool` are trusted as-is. Every other tool classified
+`ActiveNetwork` or `ActiveExploitation` (sqlmap, hydra, msfconsole, and
+similar) is still rejected by this command — real execution of those
+needs a live-target confirmation/rate-limit design layered on the policy
+engine's `AuthorizationOutcome`, which does not exist yet.
 
 ### Planning and running an authorized scan
 
