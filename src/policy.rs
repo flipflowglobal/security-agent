@@ -1,4 +1,5 @@
 use crate::model::{EngagementProfile, Target, Technique, TestIntensity};
+use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthorizationError {
@@ -10,6 +11,40 @@ pub enum AuthorizationError {
     IntensityTooHigh,
     HighImpactRequiresApproval,
 }
+
+impl fmt::Display for AuthorizationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ExpiredOrInactiveWindow => {
+                formatter.write_str("the engagement's authorized time window is not active now")
+            }
+            Self::TargetOutOfScope(target_id) => {
+                write!(formatter, "target is out of scope: {target_id}")
+            }
+            Self::TargetDenied(target_id) => {
+                write!(formatter, "target is on the deny-list: {target_id}")
+            }
+            Self::TechniqueNotAllowed(technique) => {
+                write!(
+                    formatter,
+                    "technique not allowed by this engagement: {technique}"
+                )
+            }
+            Self::PenetrativeTechniqueRequiresApproval(technique) => write!(
+                formatter,
+                "penetrative technique requires explicit approval: {technique}"
+            ),
+            Self::IntensityTooHigh => {
+                formatter.write_str("requested intensity exceeds the engagement's maximum")
+            }
+            Self::HighImpactRequiresApproval => {
+                formatter.write_str("high-impact target requires explicit high-impact approval")
+            }
+        }
+    }
+}
+
+impl std::error::Error for AuthorizationError {}
 
 // Each flag is an independently meaningful least-privilege requirement
 // (see the README's "Least-privilege defaults" section); folding them into
