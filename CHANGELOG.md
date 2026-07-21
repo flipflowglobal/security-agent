@@ -10,6 +10,17 @@ conventions. Releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## [Unreleased]
 
 ### Added
+- **`src/memory_store.rs`** — append-only, on-disk persistence for the
+  cognitive layer's memory, so cognition learns across engagements instead
+  of starting blank each run. The "memory file" is an append-only JSON
+  Lines ledger of `Finding`s (mirroring `src/audit_log.rs`);
+  `CognitiveMemory` is always re-derived by folding the full ledger, so
+  persistence is lossless and never double-counts. `Finding`/`Severity`
+  gained `serde` derives. New CLI: `--record-findings <ledger> <findings>`
+  folds a findings file into the ledger, and `--plan-scan ...
+  --cognitive-review --memory <ledger>` loads accumulated history so
+  hypothesis confidence and attention rise and beliefs get
+  Bayesian-updated by real prior evidence.
 - **`src/cognitive_engine.rs`** — advanced cognitive architecture that
   models the agent's reasoning *process* as cooperating faculties:
   `ReasoningChain` (an explicit, provenance-linked train of thought:
