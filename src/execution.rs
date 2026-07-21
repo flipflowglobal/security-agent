@@ -20,7 +20,7 @@
 //! passed to `--execute`/`execute_plan` are trusted as-is, exactly like
 //! the already-wired static tools.
 
-use crate::coordinator::ExecutionPlan;
+use crate::coordinator::{ExecutionPlan, ScanTask};
 use crate::integrity::IntegrityStatus;
 use crate::local_assets::LocalAgentAssets;
 use crate::local_assets::LocalTool;
@@ -258,6 +258,14 @@ impl fmt::Display for TaskExecutionOutcome {
 /// are still attempted (so the caller sees why, via
 /// [`ToolExecutionError::NotEligibleForExecution`] in the outcome) rather
 /// than silently skipped.
+///
+/// When a task carries a [`ScanTask::network_address`] and the tool is not
+/// [`ExecutionClass::StaticLocalAnalysis`] (i.e. it is a network tool like
+/// nmap/masscan), the address is prepended as the tool's first argument —
+/// see [`effective_arguments`] — keeping the authorization boundary (the
+/// target id) connected to what the tool actually connects to.
+/// Static-local tools operate on local files, not addresses, so they are
+/// never touched by this.
 #[must_use]
 pub fn execute_plan(
     plan: &ExecutionPlan,
@@ -270,14 +278,35 @@ pub fn execute_plan(
             let Some(tool) = assets.tool(tool_name) else {
                 continue;
             };
+            let effective_arguments = effective_arguments(task, tool, arguments);
             outcomes.push(TaskExecutionOutcome {
                 target_id: task.target_id.clone(),
                 tool: tool_name.clone(),
-                result: run_external_tool_with_default_timeout(tool, arguments),
+                result: run_external_tool_with_default_timeout(tool, &effective_arguments),
             });
         }
     }
     outcomes
+}
+
+/// Builds the argument list actually passed to `tool` for `task`.
+///
+/// Prepends `task.network_address` (when present) as the first argument,
+/// but only for tools that are not [`ExecutionClass::StaticLocalAnalysis`]
+/// — static-local tools (semgrep, jadx, ...) operate on local files, not
+/// network addresses. This is prepend-only: it never removes or reorders
+/// the caller's own `arguments`.
+fn effective_arguments(task: &ScanTask, tool: &LocalTool, arguments: &[String]) -> Vec<String> {
+    let is_network_tool = tool.definition.execution_class != ExecutionClass::StaticLocalAnalysis;
+    match (is_network_tool, &task.network_address) {
+        (true, Some(address)) => {
+            let mut effective = Vec::with_capacity(arguments.len() + 1);
+            effective.push(address.clone());
+            effective.extend_from_slice(arguments);
+            effective
+        }
+        _ => arguments.to_vec(),
+    }
 }
 
 fn read_all<R: Read>(pipe: &mut Option<R>) -> String {
@@ -348,6 +377,14 @@ mod tests {
     }
 
     fn minimal_task(target_id: &str, approved_tools: Vec<String>) -> crate::coordinator::ScanTask {
+        task_with_network_address(target_id, approved_tools, None)
+    }
+
+    fn task_with_network_address(
+        target_id: &str,
+        approved_tools: Vec<String>,
+        network_address: Option<&str>,
+    ) -> crate::coordinator::ScanTask {
         use crate::model::{SpecialistKind, TestIntensity};
         use crate::registry::SpecialistCapability;
 
@@ -363,6 +400,7 @@ mod tests {
             techniques: Vec::new(),
             approved_tools,
             intensity: TestIntensity::Passive,
+            network_address: network_address.map(str::to_string),
         }
     }
 
@@ -594,6 +632,52 @@ mod tests {
         assert_eq!(outcomes.len(), 2);
         assert_eq!(outcomes[0].target_id, "target-a");
         assert_eq!(outcomes[1].target_id, "target-b");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn execute_plan_injects_network_address_for_network_tools() {
+        if !Path::new("/bin/true").exists() {
+            return;
+        }
+        let assets = assets_with(vec![tool_named(
+            "nmap",
+            "/bin/true",
+            ExecutionClass::ActiveNetwork,
+        )]);
+        let task =
+            task_with_network_address("target-a", vec!["nmap".to_string()], Some("10.0.0.5"));
+        let plan = minimal_plan(vec![task]);
+
+        let outcomes = execute_plan(&plan, &assets, &["-sV".to_string()]);
+
+        assert_eq!(outcomes.len(), 1);
+        let report = outcomes[0].result.as_ref().expect("nmap should execute");
+        assert_eq!(
+            report.arguments,
+            vec!["10.0.0.5".to_string(), "-sV".to_string()]
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn execute_plan_does_not_inject_for_static_tools() {
+        if !Path::new("/bin/true").exists() {
+            return;
+        }
+        let assets = assets_with(vec![tool_named(
+            "tool-a",
+            "/bin/true",
+            ExecutionClass::StaticLocalAnalysis,
+        )]);
+        let task =
+            task_with_network_address("target-a", vec!["tool-a".to_string()], Some("10.0.0.5"));
+        let plan = minimal_plan(vec![task]);
+
+        let outcomes = execute_plan(&plan, &assets, &["--version".to_string()]);
+
+        let report = outcomes[0].result.as_ref().expect("should execute");
+        assert_eq!(report.arguments, vec!["--version".to_string()]);
     }
 
     #[test]

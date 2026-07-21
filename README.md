@@ -370,6 +370,8 @@ by the library's tests, and prints the resulting scan plan:
 ./target/release/security-agent --plan-scan engagement.txt --audit-log audit.jsonl
 ./target/release/security-agent --plan-scan engagement.txt --cognitive-review
 ./target/release/security-agent --plan-scan engagement.txt --execute <args-passed-to-each-tool>
+./target/release/security-agent --plan-scan engagement.txt --findings-log findings.jsonl --execute <args>
+./target/release/security-agent --schedule-retest findings.jsonl
 ```
 
 - With no extra flags, `--plan-scan` only plans: it prints the

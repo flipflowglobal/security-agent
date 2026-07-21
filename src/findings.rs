@@ -42,3 +42,44 @@ impl RiskScoreCalculator {
         (severity_weight * confidence_factor * exploitability_factor).min(10.0)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn severity_display_and_from_str_round_trip() {
+        for severity in [
+            Severity::Critical,
+            Severity::High,
+            Severity::Medium,
+            Severity::Low,
+            Severity::Informational,
+        ] {
+            assert_eq!(severity.to_string().parse(), Ok(severity));
+        }
+        assert!("nonexistent".parse::<Severity>().is_err());
+    }
+
+    #[test]
+    fn severity_from_label_maps_common_vocabularies() {
+        assert_eq!(severity_from_label("critical"), Severity::Critical);
+        assert_eq!(severity_from_label("CRITICAL"), Severity::Critical);
+        assert_eq!(severity_from_label("high"), Severity::High);
+        assert_eq!(severity_from_label("ERROR"), Severity::High);
+        assert_eq!(severity_from_label("medium"), Severity::Medium);
+        assert_eq!(severity_from_label("WARNING"), Severity::Medium);
+        assert_eq!(severity_from_label("low"), Severity::Low);
+        assert_eq!(severity_from_label("INFO"), Severity::Informational);
+        assert_eq!(severity_from_label("note"), Severity::Informational);
+    }
+
+    #[test]
+    fn severity_from_label_fails_safe_for_unknown_labels() {
+        assert_eq!(
+            severity_from_label("totally-unknown"),
+            Severity::Informational
+        );
+        assert_eq!(severity_from_label(""), Severity::Informational);
+    }
+}

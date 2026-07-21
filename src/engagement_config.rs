@@ -21,12 +21,19 @@
 //! id=api-staging
 //! target_type=Api
 //! criticality=5
+//! network_address=192.168.1.10
 //!
 //! [target]
 //! id=web-staging
 //! target_type=WebApp
 //! criticality=3
 //! ```
+//!
+//! `network_address` is optional: a resolvable IP or hostname for the
+//! target, used by real execution to bind network-tool invocations to the
+//! authorized address (see `crate::execution::execute_plan`). Omitting it
+//! (as `web-staging` does above) leaves the target label-only, exactly as
+//! before this field existed.
 //!
 //! This is a minimal parser for this crate's fixed shape, not a
 //! general-purpose config format.
@@ -173,6 +180,7 @@ fn build_target(fields: &BTreeMap<String, String>) -> Result<Target, EngagementC
         id: required_string(fields, "id")?,
         target_type: parse_field(fields, "target_type")?,
         criticality: parse_field(fields, "criticality")?,
+        network_address: fields.get("network_address").cloned(),
     })
 }
 
@@ -296,6 +304,38 @@ criticality=3
         assert_eq!(targets[1].id, "web-staging");
         assert_eq!(targets[1].target_type, TargetType::WebApp);
         assert_eq!(targets[1].criticality, 3);
+    }
+
+    #[test]
+    fn parses_optional_network_address() {
+        let config = "\
+engagement_id=eng-1
+authorized_by=jane.doe
+authorized_by_role=SecurityAdmin
+time_window_start=0
+time_window_end=100
+max_intensity=Passive
+high_impact_approved=false
+penetrative_testing_approved=false
+
+[target]
+id=t1
+target_type=Api
+criticality=5
+network_address=192.168.1.10
+";
+        let (_, targets) = parse_engagement_config(config).expect("should parse");
+        assert_eq!(targets[0].network_address.as_deref(), Some("192.168.1.10"));
+    }
+
+    #[test]
+    fn network_address_absent_is_none() {
+        // Regression guard: a config with no network_address key (the
+        // shape every config used before this field existed) still parses,
+        // leaving the target label-only.
+        let (_, targets) = parse_engagement_config(valid_config()).expect("should parse");
+        assert_eq!(targets[0].network_address, None);
+        assert_eq!(targets[1].network_address, None);
     }
 
     #[test]

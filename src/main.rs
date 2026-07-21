@@ -29,6 +29,7 @@ fn main() -> ExitCode {
         Some("--plan-scan") => plan_scan_command(&mut arguments),
         Some("--record-findings") => record_findings_command(&mut arguments),
         Some("--view-audit") => view_audit_command(&mut arguments),
+        Some("--schedule-retest") => schedule_retest_command(&mut arguments),
         Some(command) => {
             eprintln!("unknown command: {command}");
             ExitCode::from(2)
@@ -279,6 +280,7 @@ type PlanScanOutcome = (
     security_agent::ExecutionPlan,
     Option<CognitiveReview>,
     Option<Vec<security_agent::TaskExecutionOutcome>>,
+    Vec<security_agent::Finding>,
 );
 
 fn plan_scan(
@@ -373,17 +375,39 @@ fn plan_scan(
         security_agent::execute_plan(&plan, &assets, &tool_arguments)
     });
 
-    Ok((plan, cognitive_output, outcomes))
+    let findings: Vec<security_agent::Finding> = outcomes
+        .as_ref()
+        .map(|outcomes| {
+            outcomes
+                .iter()
+                .filter_map(|outcome| outcome.result.as_ref().ok().map(|report| (outcome, report)))
+                .flat_map(|(outcome, report)| {
+                    security_agent::ingest::ingest(&outcome.target_id, report)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if let Some(path) = findings_log_path {
+        security_agent::append_findings(Path::new(&path), &findings)
+            .map_err(|error| PlanScanError::FindingsLogWrite(error.to_string()))?;
+    }
+
+    let assessment = cognitive_review
+        .then(|| assess_plan_cognitively(&plan, &targets_for_review, &CognitiveMemory::new()));
+
+    Ok((plan, assessment, outcomes, findings))
 }
 
 /// CLI entry point for `--plan-scan <config-file> [--audit-log <path>]
-/// [--cognitive-review] [--execute <args>...]`; prints the resulting
-/// [`security_agent::ExecutionPlan`], the [`CognitiveAssessment`] when
-/// `--cognitive-review` was given, and — when `--execute` was given —
-/// each task's tool execution outcomes.
+/// [--cognitive-review] [--findings-log <path>] [--execute <args>...]`;
+/// prints the resulting [`security_agent::ExecutionPlan`], the
+/// [`CognitiveAssessment`] when `--cognitive-review` was given, and —
+/// when `--execute` was given — each task's tool execution outcomes plus
+/// a findings summary ingested from their output.
 fn plan_scan_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
     match plan_scan(arguments) {
-        Ok((plan, cognitive_output, outcomes)) => {
+        Ok((plan, assessment, outcomes, findings)) => {
             print!("{plan}");
             if let Some((assessment, deliberation)) = cognitive_output {
                 println!();
@@ -402,6 +426,7 @@ fn plan_scan_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
                         println!("{outcome}");
                     }
                 }
+                print_findings_summary(&findings);
             }
             ExitCode::SUCCESS
         }
@@ -414,6 +439,50 @@ fn plan_scan_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+/// Prints a summary of findings ingested from `--execute`'s tool output:
+/// counts by severity, the top few by [`security_agent::RiskScoreCalculator`]
+/// score, and the node/edge counts of the
+/// [`security_agent::AttackPathGraph`] built from them.
+fn print_findings_summary(findings: &[security_agent::Finding]) {
+    println!();
+    println!("Findings Summary");
+    println!("================");
+    if findings.is_empty() {
+        println!("None (no findings ingested from tool output)");
+        return;
+    }
+
+    let mut by_severity: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
+    for finding in findings {
+        *by_severity.entry(finding.severity.to_string()).or_insert(0) += 1;
+    }
+    for (severity, count) in &by_severity {
+        println!("{severity:<14}: {count}");
+    }
+
+    println!();
+    println!("Top findings by risk score");
+    println!("--------------------------");
+    let mut by_risk_score: Vec<&security_agent::Finding> = findings.iter().collect();
+    by_risk_score.sort_by(|a, b| b.normalized_risk_score.total_cmp(&a.normalized_risk_score));
+    const TOP_FINDINGS_SHOWN: usize = 5;
+    for finding in by_risk_score.iter().take(TOP_FINDINGS_SHOWN) {
+        println!(
+            "{:.2}\t{}\t{}\t{}",
+            finding.normalized_risk_score, finding.severity, finding.target_id, finding.title
+        );
+    }
+
+    let graph = security_agent::AttackPathGraph::build_from_findings(findings);
+    println!();
+    println!(
+        "Attack path graph: {} nodes, {} edges",
+        graph.nodes.len(),
+        graph.edges.len()
+    );
 }
 
 /// Prints one non-blocking intensity advisory per over-aggressive argument
@@ -515,6 +584,45 @@ fn view_audit_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode 
         }
         Err(error) => {
             eprintln!("failed to read audit log: {error}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// Reads a persisted findings log (`--schedule-retest <path>.jsonl`) and
+/// emits a retest schedule for every finding via
+/// [`security_agent::propose_retest_schedule`], sorted by soonest retest
+/// first. Surfaces that scheduler from a real CLI path for the first time.
+fn schedule_retest_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    let Some(path) = arguments.next() else {
+        eprintln!("missing findings log file path");
+        return ExitCode::from(2);
+    };
+    match security_agent::load_findings(Path::new(&path)) {
+        Ok(findings) => {
+            let now = current_epoch_seconds();
+            let mut schedules: Vec<security_agent::RetestSchedule> = findings
+                .iter()
+                .map(|finding| security_agent::propose_retest_schedule(finding, now))
+                .collect();
+            schedules.sort_by_key(|schedule| schedule.next_retest_epoch_seconds);
+
+            println!("Retest Schedule");
+            println!("===============");
+            if schedules.is_empty() {
+                println!("No findings in log.");
+            } else {
+                for schedule in &schedules {
+                    println!(
+                        "{}\tnext_retest_epoch_seconds={}\treason={}",
+                        schedule.target_id, schedule.next_retest_epoch_seconds, schedule.reason
+                    );
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("failed to read findings log: {error}");
             ExitCode::from(1)
         }
     }
@@ -726,15 +834,13 @@ criticality=3
         let result = plan_scan(&mut arguments);
         fs::remove_file(&path).expect("remove temp config");
 
-        let (plan, cognitive_output, outcomes) =
+        let (plan, assessment, outcomes, findings) =
             result.expect("valid config should authorize and plan");
         assert_eq!(plan.engagement_id, "eng-cli-test");
         assert!(!plan.tasks.is_empty());
         assert!(outcomes.is_none(), "no --execute flag was given");
-        assert!(
-            cognitive_output.is_none(),
-            "no --cognitive-review flag was given"
-        );
+        assert!(assessment.is_none(), "no --cognitive-review flag was given");
+        assert!(findings.is_empty(), "no --execute flag was given");
     }
 
     #[test]
@@ -773,10 +879,8 @@ criticality=3
         let result = plan_scan(&mut arguments);
         fs::remove_file(&path).expect("remove temp config");
 
-        let (_, cognitive_output, outcomes) =
-            result.expect("valid config should authorize and plan");
-        let (assessment, deliberation) =
-            cognitive_output.expect("--cognitive-review should produce Some(review)");
+        let (_, assessment, outcomes, _) = result.expect("valid config should authorize and plan");
+        let assessment = assessment.expect("--cognitive-review should produce Some(assessment)");
         assert_eq!(assessment.hypotheses_by_target.len(), 1);
         assert!(!assessment.prioritized_tasks.is_empty());
         // The deep deliberation ran too: a train of thought reaching at
@@ -926,7 +1030,7 @@ criticality=3
         let result = plan_scan(&mut arguments);
         fs::remove_file(&path).expect("remove temp config");
 
-        let (_, _, outcomes) = result.expect("valid config should authorize and plan");
+        let (_, _, outcomes, _) = result.expect("valid config should authorize and plan");
         assert!(
             outcomes.is_some(),
             "--execute should produce Some(outcomes), even if empty"
@@ -992,6 +1096,70 @@ criticality=3
             plan_scan(&mut arguments),
             Err(PlanScanError::MissingAuditLogPath)
         ));
+    }
+
+    #[test]
+    fn plan_scan_findings_log_missing_path() {
+        let mut arguments =
+            vec!["config.txt".to_string(), "--findings-log".to_string()].into_iter();
+        assert!(matches!(
+            plan_scan(&mut arguments),
+            Err(PlanScanError::MissingFindingsLogPath)
+        ));
+    }
+
+    #[test]
+    fn plan_scan_writes_findings_log_when_flag_is_given() {
+        let config_path = std::env::temp_dir().join(format!(
+            "security-agent-main-plan-scan-findings-config-{}.txt",
+            std::process::id()
+        ));
+        let log_path = std::env::temp_dir().join(format!(
+            "security-agent-main-plan-scan-findings-log-{}.jsonl",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&log_path);
+        fs::write(
+            &config_path,
+            "\
+engagement_id=eng-cli-findings
+authorized_by=jane.doe
+authorized_by_role=SecurityAdmin
+time_window_start=0
+time_window_end=99999999999
+in_scope_targets=api-staging
+allowed_techniques=PassiveRecon,ConfigurationAudit,ApiSecurity
+max_intensity=Standard
+high_impact_approved=false
+penetrative_testing_approved=true
+
+[target]
+id=api-staging
+target_type=Api
+criticality=3
+",
+        )
+        .expect("write temp config");
+
+        let mut arguments = vec![
+            config_path.to_string_lossy().into_owned(),
+            "--findings-log".to_string(),
+            log_path.to_string_lossy().into_owned(),
+            "--execute".to_string(),
+        ]
+        .into_iter();
+        let result = plan_scan(&mut arguments);
+        fs::remove_file(&config_path).expect("remove temp config");
+
+        result.expect("valid config should authorize, plan, execute, and log findings");
+
+        // No arguments were given to --execute, so no tool (installed or
+        // not) has a real target to scan; ingestion is deterministically
+        // empty regardless of what happens to be on PATH in this
+        // environment. The log is still created and loadable.
+        let findings = security_agent::load_findings(&log_path).expect("load findings log");
+        fs::remove_file(&log_path).expect("remove temp findings log");
+        assert!(findings.is_empty());
     }
 
     #[test]
@@ -1072,5 +1240,50 @@ criticality=2
     fn view_audit_reports_missing_path() {
         let mut arguments = std::iter::empty::<String>();
         assert_ne!(view_audit_command(&mut arguments), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn schedule_retest_reads_findings_and_emits_schedule() {
+        let path = std::env::temp_dir().join(format!(
+            "security-agent-main-schedule-retest-{}.jsonl",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+        security_agent::append_findings(
+            &path,
+            &[security_agent::Finding {
+                finding_id: "semgrep-target-a-0".to_string(),
+                source_tool: "semgrep".to_string(),
+                title: "exec-detected".to_string(),
+                target_id: "target-a".to_string(),
+                severity: security_agent::Severity::High,
+                confidence_percent: 75,
+                remediation_playbook: "app.py:10".to_string(),
+                normalized_risk_score: 8.5,
+            }],
+        )
+        .expect("write findings log");
+
+        let mut arguments = vec![path.to_string_lossy().into_owned()].into_iter();
+        let outcome = schedule_retest_command(&mut arguments);
+        fs::remove_file(&path).expect("remove temp findings log");
+
+        assert_eq!(outcome, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn schedule_retest_reports_failure_for_missing_file() {
+        let path = std::env::temp_dir().join(format!(
+            "security-agent-main-schedule-retest-missing-{}.jsonl",
+            std::process::id()
+        ));
+        let mut arguments = vec![path.to_string_lossy().into_owned()].into_iter();
+        assert_ne!(schedule_retest_command(&mut arguments), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn schedule_retest_reports_missing_path() {
+        let mut arguments = std::iter::empty::<String>();
+        assert_ne!(schedule_retest_command(&mut arguments), ExitCode::SUCCESS);
     }
 }

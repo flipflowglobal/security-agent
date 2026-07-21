@@ -1,10 +1,11 @@
 use crate::coordinator::ExecutionPlan;
 use crate::findings::{Finding, Severity};
 use crate::governance::AuditRecord;
+use crate::json::{
+    expect_char, parse_json_string, parse_json_string_object, peek_char, skip_whitespace,
+};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::iter::Peekable;
-use std::str::Chars;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompatibilityEnvelope {
@@ -113,80 +114,6 @@ fn push_json_string(out: &mut String, value: &str) {
     out.push('"');
 }
 
-fn skip_whitespace(chars: &mut Peekable<Chars<'_>>) {
-    while chars.next_if(|ch| ch.is_whitespace()).is_some() {}
-}
-
-fn peek_char(chars: &mut Peekable<Chars<'_>>, expected: char) -> bool {
-    chars.peek() == Some(&expected)
-}
-
-fn expect_char(chars: &mut Peekable<Chars<'_>>, expected: char) -> Option<()> {
-    skip_whitespace(chars);
-    if chars.next() == Some(expected) {
-        Some(())
-    } else {
-        None
-    }
-}
-
-fn parse_json_string(chars: &mut Peekable<Chars<'_>>) -> Option<String> {
-    skip_whitespace(chars);
-    expect_char(chars, '"')?;
-    let mut value = String::new();
-    loop {
-        match chars.next()? {
-            '"' => return Some(value),
-            '\\' => match chars.next()? {
-                '"' => value.push('"'),
-                '\\' => value.push('\\'),
-                '/' => value.push('/'),
-                'n' => value.push('\n'),
-                'r' => value.push('\r'),
-                't' => value.push('\t'),
-                'u' => {
-                    let code_point = parse_hex4(chars)?;
-                    value.push(char::from_u32(code_point)?);
-                }
-                _ => return None,
-            },
-            ch => value.push(ch),
-        }
-    }
-}
-
-fn parse_hex4(chars: &mut Peekable<Chars<'_>>) -> Option<u32> {
-    let mut code_point = 0_u32;
-    for _ in 0..4 {
-        let digit = chars.next()?.to_digit(16)?;
-        code_point = code_point * 16 + digit;
-    }
-    Some(code_point)
-}
-
-fn parse_json_string_object(chars: &mut Peekable<Chars<'_>>) -> Option<BTreeMap<String, String>> {
-    expect_char(chars, '{')?;
-    let mut map = BTreeMap::new();
-    loop {
-        skip_whitespace(chars);
-        if peek_char(chars, '}') {
-            chars.next();
-            return Some(map);
-        }
-        let key = parse_json_string(chars)?;
-        skip_whitespace(chars);
-        expect_char(chars, ':')?;
-        let value = parse_json_string(chars)?;
-        map.insert(key, value);
-        skip_whitespace(chars);
-        match chars.next()? {
-            ',' => {}
-            '}' => return Some(map),
-            _ => return None,
-        }
-    }
-}
-
 /// Converts an [`AuditRecord`] to a [`CompatibilityEnvelope`].
 ///
 /// The result is suitable for [`CompatibilityEnvelope::to_wire_format`],
@@ -235,6 +162,64 @@ pub fn envelope_to_audit_record(envelope: &CompatibilityEnvelope) -> Option<Audi
         target: envelope.fields.get("target")?.clone(),
         details: envelope.fields.get("details")?.clone(),
         test_run_id: envelope.fields.get("test_run_id").cloned(),
+    })
+}
+
+/// Converts a [`Finding`] to a [`CompatibilityEnvelope`], serializing all
+/// of its fields.
+///
+/// Uses `payload_kind = "finding_record"`, distinct from the lossy
+/// `"finding_hint"` envelope [`JsonLineAdapter::import_finding_hint`]
+/// consumes — a `finding_record` round-trips a `Finding` exactly, while a
+/// `finding_hint` is a partial, best-effort import from an external
+/// system. The result is suitable for [`CompatibilityEnvelope::to_wire_format`],
+/// used to persist findings to an append-only JSON Lines file (see
+/// `crate::findings_log`).
+#[must_use]
+pub fn finding_to_envelope(finding: &Finding) -> CompatibilityEnvelope {
+    let mut fields = BTreeMap::new();
+    fields.insert("finding_id".to_string(), finding.finding_id.clone());
+    fields.insert("source_tool".to_string(), finding.source_tool.clone());
+    fields.insert("title".to_string(), finding.title.clone());
+    fields.insert("target_id".to_string(), finding.target_id.clone());
+    fields.insert("severity".to_string(), finding.severity.to_string());
+    fields.insert(
+        "confidence_percent".to_string(),
+        finding.confidence_percent.to_string(),
+    );
+    fields.insert(
+        "remediation_playbook".to_string(),
+        finding.remediation_playbook.clone(),
+    );
+    fields.insert(
+        "normalized_risk_score".to_string(),
+        format!("{:.4}", finding.normalized_risk_score),
+    );
+    CompatibilityEnvelope {
+        protocol_version: "1".to_string(),
+        producer: "security-agent".to_string(),
+        payload_kind: "finding_record".to_string(),
+        fields,
+    }
+}
+
+/// The inverse of [`finding_to_envelope`]. Returns `None` if `envelope`
+/// isn't a `finding_record` payload or is missing/has an unparseable
+/// required field.
+#[must_use]
+pub fn envelope_to_finding(envelope: &CompatibilityEnvelope) -> Option<Finding> {
+    if envelope.payload_kind != "finding_record" {
+        return None;
+    }
+    Some(Finding {
+        finding_id: envelope.fields.get("finding_id")?.clone(),
+        source_tool: envelope.fields.get("source_tool")?.clone(),
+        title: envelope.fields.get("title")?.clone(),
+        target_id: envelope.fields.get("target_id")?.clone(),
+        severity: envelope.fields.get("severity")?.parse().ok()?,
+        confidence_percent: envelope.fields.get("confidence_percent")?.parse().ok()?,
+        remediation_playbook: envelope.fields.get("remediation_playbook")?.clone(),
+        normalized_risk_score: envelope.fields.get("normalized_risk_score")?.parse().ok()?,
     })
 }
 
@@ -427,5 +412,58 @@ mod tests {
     fn envelope_to_audit_record_rejects_wrong_payload_kind() {
         let envelope = sample_envelope();
         assert!(envelope_to_audit_record(&envelope).is_none());
+    }
+
+    fn sample_finding() -> Finding {
+        Finding {
+            finding_id: "semgrep-target-a-0".to_string(),
+            source_tool: "semgrep".to_string(),
+            title: "exec-detected".to_string(),
+            target_id: "target-a".to_string(),
+            severity: Severity::High,
+            confidence_percent: 75,
+            remediation_playbook: "app.py:10".to_string(),
+            normalized_risk_score: 6.0,
+        }
+    }
+
+    #[test]
+    fn finding_round_trips_through_envelope_and_wire_format() {
+        let finding = sample_finding();
+
+        let envelope = finding_to_envelope(&finding);
+        assert_eq!(envelope.payload_kind, "finding_record");
+        let parsed = envelope_to_finding(&envelope).expect("should convert back");
+
+        assert_eq!(parsed.finding_id, finding.finding_id);
+        assert_eq!(parsed.source_tool, finding.source_tool);
+        assert_eq!(parsed.title, finding.title);
+        assert_eq!(parsed.target_id, finding.target_id);
+        assert_eq!(parsed.severity, finding.severity);
+        assert_eq!(parsed.confidence_percent, finding.confidence_percent);
+        assert_eq!(parsed.remediation_playbook, finding.remediation_playbook);
+        // Serialized at {:.4} precision; tolerant rather than an exact f32
+        // equality check.
+        assert!((parsed.normalized_risk_score - finding.normalized_risk_score).abs() < 0.0001);
+
+        // And through the wire format too.
+        let line = envelope.to_wire_format();
+        let reparsed_envelope =
+            CompatibilityEnvelope::from_wire_format(&line).expect("should parse wire format");
+        let reparsed = envelope_to_finding(&reparsed_envelope).expect("should convert back");
+        assert_eq!(reparsed.finding_id, finding.finding_id);
+    }
+
+    #[test]
+    fn envelope_to_finding_rejects_wrong_payload_kind() {
+        let envelope = sample_envelope();
+        assert!(envelope_to_finding(&envelope).is_none());
+    }
+
+    #[test]
+    fn envelope_to_finding_rejects_missing_field() {
+        let mut envelope = finding_to_envelope(&sample_finding());
+        envelope.fields.remove("severity");
+        assert!(envelope_to_finding(&envelope).is_none());
     }
 }

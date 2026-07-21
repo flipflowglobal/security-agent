@@ -17,6 +17,10 @@ pub struct ScanTask {
     pub techniques: Vec<Technique>,
     pub approved_tools: Vec<String>,
     pub intensity: TestIntensity,
+    /// Carried through from `Target.network_address`, if any. Used by
+    /// `crate::execution::execute_plan` to bind network-tool execution to
+    /// the authorized address (see `Target::network_address`).
+    pub network_address: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -256,6 +260,7 @@ impl Coordinator {
                     techniques,
                     approved_tools: vec![],
                     intensity,
+                    network_address: target.network_address.clone(),
                 });
             }
 
