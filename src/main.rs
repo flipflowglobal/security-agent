@@ -216,11 +216,13 @@ enum PlanScanError {
     MissingConfigPath,
     MissingAuditLogPath,
     MissingMemoryPath,
+    MissingFindingsLogPath,
     UnexpectedArgument(String),
     ConfigLoad(String),
     AuthorizationDenied(String),
     AuditLogWrite(String),
     MemoryLoad(String),
+    FindingsLogWrite(String),
 }
 
 impl fmt::Display for PlanScanError {
@@ -229,6 +231,7 @@ impl fmt::Display for PlanScanError {
             Self::MissingConfigPath => formatter.write_str("missing engagement config file path"),
             Self::MissingAuditLogPath => formatter.write_str("missing --audit-log file path"),
             Self::MissingMemoryPath => formatter.write_str("missing --memory file path"),
+            Self::MissingFindingsLogPath => formatter.write_str("missing --findings-log file path"),
             Self::UnexpectedArgument(argument) => {
                 write!(formatter, "unexpected argument: {argument}")
             }
@@ -242,6 +245,9 @@ impl fmt::Display for PlanScanError {
             Self::MemoryLoad(message) => {
                 write!(formatter, "failed to load cognitive memory: {message}")
             }
+            Self::FindingsLogWrite(message) => {
+                write!(formatter, "failed to write findings log: {message}")
+            }
         }
     }
 }
@@ -251,7 +257,7 @@ impl fmt::Display for PlanScanError {
 /// asserted on directly in tests instead of through an `ExitCode`, which
 /// does not implement `PartialEq`.
 ///
-/// Recognizes four optional trailing arguments, in order: `--audit-log
+/// Recognizes five optional trailing arguments, in order: `--audit-log
 /// <path>` appends the new audit ledger records this call produced to
 /// `<path>` (see [`security_agent::append_audit_records`]); `--cognitive-review`
 /// runs the advisory reasoning layers over the resulting plan and returns a
@@ -264,12 +270,14 @@ impl fmt::Display for PlanScanError {
 /// review is informed by history accumulated across prior engagements —
 /// the folded memory boosts hypothesis confidence and attention, and the
 /// raw findings drive Bayesian belief revision — with the run staying
-/// stateless and type-based when the flag is omitted; `--execute
-/// <args>...` passes every remaining argument through
-/// to [`security_agent::execute_plan`], which runs each planned task's
-/// approved, execution-eligible tools (`StaticLocalAnalysis`, plus `nmap`
-/// as an explicit exception) and returns their outcomes alongside the
-/// plan.
+/// stateless and type-based when the flag is omitted; `--findings-log
+/// <path>` appends every finding ingested from `--execute`'s tool output
+/// to `<path>` (see [`security_agent::append_findings`]) — a no-op unless
+/// `--execute` was also given; `--execute <args>...` passes every
+/// remaining argument through to [`security_agent::execute_plan`], which
+/// runs each planned task's approved, execution-eligible tools
+/// (`StaticLocalAnalysis`, plus `nmap`/`masscan` as explicit exceptions)
+/// and returns their outcomes alongside the plan.
 /// The advisory cognitive output for a `--cognitive-review` run: the flat
 /// [`CognitiveAssessment`] (prioritization, hypotheses, insights) plus the
 /// deep [`CognitiveDeliberation`] (train of thought, beliefs, adversary
@@ -304,6 +312,15 @@ fn plan_scan(
     };
     let memory_path = if next_argument.as_deref() == Some("--memory") {
         let path = arguments.next().ok_or(PlanScanError::MissingMemoryPath)?;
+        next_argument = arguments.next();
+        Some(path)
+    } else {
+        None
+    };
+    let findings_log_path = if next_argument.as_deref() == Some("--findings-log") {
+        let path = arguments
+            .next()
+            .ok_or(PlanScanError::MissingFindingsLogPath)?;
         next_argument = arguments.next();
         Some(path)
     } else {
@@ -348,7 +365,7 @@ fn plan_scan(
         Some(path) => {
             let ledger = Path::new(path);
             if ledger.exists() {
-                security_agent::load_findings(ledger)
+                security_agent::memory_store::load_findings(ledger)
                     .map_err(|error| PlanScanError::MemoryLoad(error.to_string()))?
             } else {
                 Vec::new()
@@ -388,26 +405,29 @@ fn plan_scan(
         })
         .unwrap_or_default();
 
-    if let Some(path) = findings_log_path {
-        security_agent::append_findings(Path::new(&path), &findings)
-            .map_err(|error| PlanScanError::FindingsLogWrite(error.to_string()))?;
+    // Only touch the findings log when --execute actually ran (`outcomes`
+    // is `Some`); otherwise --findings-log is a true no-op, matching its
+    // documented behavior, rather than creating an empty log file.
+    if outcomes.is_some() {
+        if let Some(path) = findings_log_path {
+            security_agent::append_findings(Path::new(&path), &findings)
+                .map_err(|error| PlanScanError::FindingsLogWrite(error.to_string()))?;
+        }
     }
 
-    let assessment = cognitive_review
-        .then(|| assess_plan_cognitively(&plan, &targets_for_review, &CognitiveMemory::new()));
-
-    Ok((plan, assessment, outcomes, findings))
+    Ok((plan, cognitive_output, outcomes, findings))
 }
 
 /// CLI entry point for `--plan-scan <config-file> [--audit-log <path>]
-/// [--cognitive-review] [--findings-log <path>] [--execute <args>...]`;
+/// [--cognitive-review] [--memory <path>] [--findings-log <path>]
+/// [--execute <args>...]`;
 /// prints the resulting [`security_agent::ExecutionPlan`], the
 /// [`CognitiveAssessment`] when `--cognitive-review` was given, and —
 /// when `--execute` was given — each task's tool execution outcomes plus
 /// a findings summary ingested from their output.
 fn plan_scan_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
     match plan_scan(arguments) {
-        Ok((plan, assessment, outcomes, findings)) => {
+        Ok((plan, cognitive_output, outcomes, findings)) => {
             print!("{plan}");
             if let Some((assessment, deliberation)) = cognitive_output {
                 println!();
@@ -532,7 +552,7 @@ fn record_findings_command(arguments: &mut impl Iterator<Item = String>) -> Exit
         return ExitCode::from(1);
     }
 
-    match security_agent::append_findings(Path::new(&memory_path), &findings) {
+    match security_agent::memory_store::append_findings(Path::new(&memory_path), &findings) {
         Ok(()) => {
             println!(
                 "recorded {} finding(s) into cognitive memory at {memory_path}",
@@ -879,8 +899,9 @@ criticality=3
         let result = plan_scan(&mut arguments);
         fs::remove_file(&path).expect("remove temp config");
 
-        let (_, assessment, outcomes, _) = result.expect("valid config should authorize and plan");
-        let assessment = assessment.expect("--cognitive-review should produce Some(assessment)");
+        let (_, review, outcomes, _) = result.expect("valid config should authorize and plan");
+        let (assessment, deliberation) =
+            review.expect("--cognitive-review should produce Some(review)");
         assert_eq!(assessment.hypotheses_by_target.len(), 1);
         assert!(!assessment.prioritized_tasks.is_empty());
         // The deep deliberation ran too: a train of thought reaching at
@@ -962,7 +983,8 @@ criticality=3
                 normalized_risk_score: 8.0,
             },
         ];
-        security_agent::append_findings(&memory_path, &priors).expect("seed memory ledger");
+        security_agent::memory_store::append_findings(&memory_path, &priors)
+            .expect("seed memory ledger");
 
         let mut arguments = vec![
             config_path.to_string_lossy().into_owned(),
@@ -975,7 +997,7 @@ criticality=3
         fs::remove_file(&config_path).expect("remove temp config");
         fs::remove_file(&memory_path).expect("remove temp ledger");
 
-        let (_, cognitive_output, _) = result.expect("valid config should authorize and plan");
+        let (_, cognitive_output, _, _) = result.expect("valid config should authorize and plan");
         let (assessment, deliberation) =
             cognitive_output.expect("--cognitive-review should produce Some(review)");
 
@@ -1106,6 +1128,57 @@ criticality=3
             plan_scan(&mut arguments),
             Err(PlanScanError::MissingFindingsLogPath)
         ));
+    }
+
+    #[test]
+    fn plan_scan_findings_log_is_a_noop_without_execute() {
+        let config_path = std::env::temp_dir().join(format!(
+            "security-agent-main-plan-scan-findings-noop-config-{}.txt",
+            std::process::id()
+        ));
+        let log_path = std::env::temp_dir().join(format!(
+            "security-agent-main-plan-scan-findings-noop-log-{}.jsonl",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&log_path);
+        fs::write(
+            &config_path,
+            "\
+engagement_id=eng-cli-findings-noop
+authorized_by=jane.doe
+authorized_by_role=SecurityAdmin
+time_window_start=0
+time_window_end=99999999999
+in_scope_targets=api-staging
+allowed_techniques=PassiveRecon,ConfigurationAudit,ApiSecurity
+max_intensity=Standard
+high_impact_approved=false
+penetrative_testing_approved=true
+
+[target]
+id=api-staging
+target_type=Api
+criticality=3
+",
+        )
+        .expect("write temp config");
+
+        // --findings-log given, but --execute is not: the flag must be a
+        // true no-op and never touch the log path into existence.
+        let mut arguments = vec![
+            config_path.to_string_lossy().into_owned(),
+            "--findings-log".to_string(),
+            log_path.to_string_lossy().into_owned(),
+        ]
+        .into_iter();
+        let result = plan_scan(&mut arguments);
+        fs::remove_file(&config_path).expect("remove temp config");
+
+        result.expect("valid config should authorize and plan");
+        assert!(
+            !log_path.exists(),
+            "--findings-log without --execute must not create the log file"
+        );
     }
 
     #[test]

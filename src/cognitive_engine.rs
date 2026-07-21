@@ -849,11 +849,13 @@ mod tests {
                 id: "api-1".to_string(),
                 target_type: TargetType::Api,
                 criticality: 9,
+                network_address: None,
             },
             Target {
                 id: "web-1".to_string(),
                 target_type: TargetType::WebApp,
                 criticality: 4,
+                network_address: None,
             },
         ];
         let profile = EngagementProfile {
