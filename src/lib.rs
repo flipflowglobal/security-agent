@@ -142,6 +142,7 @@ mod tests {
             id: "prod-ledger".to_string(),
             target_type: TargetType::Api,
             criticality: 10,
+            network_address: None,
         };
 
         let result = engine.authorize_target_scan(
@@ -171,11 +172,13 @@ mod tests {
                 id: "api-staging".to_string(),
                 target_type: TargetType::Api,
                 criticality: 5,
+                network_address: None,
             },
             Target {
                 id: "web-staging".to_string(),
                 target_type: TargetType::WebApp,
                 criticality: 3,
+                network_address: None,
             },
         ];
 
@@ -218,6 +221,7 @@ mod tests {
             id: "api-critical".to_string(),
             target_type: TargetType::Api,
             criticality: 9,
+            network_address: None,
         }];
 
         let plan = coordinator
@@ -267,6 +271,7 @@ mod tests {
             id: "api-critical".to_string(),
             target_type: TargetType::Api,
             criticality: 9,
+            network_address: None,
         }];
 
         let plan = coordinator
@@ -301,6 +306,7 @@ mod tests {
             id: "authorized-mobile-app".to_string(),
             target_type: TargetType::MobileApp,
             criticality: 6,
+            network_address: None,
         }];
 
         let plan = coordinator
@@ -344,6 +350,7 @@ mod tests {
             id: "mobile-api".to_string(),
             target_type: TargetType::MobileBackend,
             criticality: 5,
+            network_address: None,
         }];
 
         let plan = coordinator
@@ -369,6 +376,7 @@ mod tests {
             id: "defi-contract".to_string(),
             target_type: TargetType::Blockchain,
             criticality: 7,
+            network_address: None,
         }];
 
         let plan = coordinator
@@ -400,6 +408,7 @@ mod tests {
             id: "authorized-mobile-app".to_string(),
             target_type: TargetType::MobileApp,
             criticality: 4,
+            network_address: None,
         }];
 
         coordinator
@@ -431,6 +440,7 @@ mod tests {
             id: "authorized-mobile-app".to_string(),
             target_type: TargetType::MobileApp,
             criticality: 4,
+            network_address: None,
         }];
 
         coordinator
@@ -457,6 +467,7 @@ mod tests {
             id: "api-staging".to_string(),
             target_type: TargetType::Api,
             criticality: 4,
+            network_address: None,
         }];
         let run = tagged_run();
         assert_eq!(run.operator_role, Role::SecurityEngineer);
@@ -537,6 +548,7 @@ mod tests {
             id: "t1".to_string(),
             target_type: TargetType::Api,
             criticality: 1,
+            network_address: None,
         };
         // now=50 is before the window start
         let result = engine.authorize_target_scan(
@@ -587,6 +599,7 @@ mod tests {
             id: "t1".to_string(),
             target_type: TargetType::WebApp,
             criticality: 2,
+            network_address: None,
         };
         let result = engine.authorize_target_scan(
             &profile,
@@ -623,6 +636,7 @@ mod tests {
             id: "t1".to_string(),
             target_type: TargetType::WebApp,
             criticality: 2,
+            network_address: None,
         };
         let result = engine.authorize_target_scan(
             &profile,
@@ -657,6 +671,7 @@ mod tests {
             id: "critical-target".to_string(),
             target_type: TargetType::WebApp,
             criticality: 9,
+            network_address: None,
         };
         let result = engine.authorize_target_scan(
             &profile,
@@ -693,6 +708,7 @@ mod tests {
             id: "critical-target".to_string(),
             target_type: TargetType::WebApp,
             criticality: 9,
+            network_address: None,
         };
         let result = engine.authorize_target_scan(
             &profile,
@@ -756,11 +772,13 @@ mod tests {
                 id: "allowed".to_string(),
                 target_type: TargetType::Api,
                 criticality: 2,
+                network_address: None,
             },
             Target {
                 id: "forbidden".to_string(),
                 target_type: TargetType::Api,
                 criticality: 2,
+                network_address: None,
             },
         ];
         let result = coordinator.plan_authorized_scan(profile, targets, 50);
@@ -872,6 +890,7 @@ mod tests {
             id: "authorized-mobile-app".to_string(),
             target_type: TargetType::MobileApp,
             criticality: 4,
+            network_address: None,
         }];
         let plan = coordinator
             .plan_authorized_scan(profile, targets, 50)
@@ -993,6 +1012,7 @@ mod tests {
             id: "out-of-scope".to_string(),
             target_type: TargetType::Api,
             criticality: 1,
+            network_address: None,
         };
         let result = engine.authorize_target_scan(
             &profile,
@@ -1029,6 +1049,7 @@ mod tests {
             id: "api-staging".to_string(),
             target_type: TargetType::Api,
             criticality: 5,
+            network_address: None,
         };
         let result = engine.authorize_target_scan(
             &profile,
@@ -1076,11 +1097,13 @@ mod tests {
                 id: "api-1".to_string(),
                 target_type: TargetType::Api,
                 criticality: 4,
+                network_address: None,
             },
             Target {
                 id: "api-2".to_string(),
                 target_type: TargetType::Api,
                 criticality: 4,
+                network_address: None,
             },
         ];
 
@@ -1147,6 +1170,7 @@ mod tests {
             id: "api-staging".to_string(),
             target_type: TargetType::Api,
             criticality: 4,
+            network_address: None,
         }];
         let run = tagged_run();
 
@@ -1172,6 +1196,7 @@ mod tests {
             id: "api-staging".to_string(),
             target_type: TargetType::Api,
             criticality: 4,
+            network_address: None,
         }];
         let run = tagged_run();
 
@@ -1202,6 +1227,7 @@ mod tests {
             id: "web-staging".to_string(),
             target_type: TargetType::WebApp,
             criticality: 3,
+            network_address: None,
         }];
         coordinator
             .plan_authorized_scan(profile_a, untagged_targets, 50)
@@ -1230,6 +1256,7 @@ mod tests {
             id: "api-staging".to_string(),
             target_type: TargetType::Api,
             criticality: 3,
+            network_address: None,
         }];
         let run = tagged_run();
         coordinator
@@ -1263,6 +1290,7 @@ mod tests {
             id: "prod-ledger".to_string(),
             target_type: TargetType::Api,
             criticality: 10,
+            network_address: None,
         }];
         let run = tagged_run();
         let result = coordinator.plan_tagged_scan(profile, targets, 80, &run);

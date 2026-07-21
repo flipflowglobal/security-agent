@@ -232,6 +232,7 @@ penetrative_testing_approved=true
 id=api-staging
 target_type=Api
 criticality=5
+network_address=192.168.1.10
 
 [target]
 id=web-staging
@@ -239,6 +240,14 @@ target_type=WebApp
 criticality=3
 ```
 
+- `network_address` is optional (`web-staging` above omits it): a
+  resolvable IP or hostname for the target. When set, real execution of a
+  network tool (nmap, masscan) through `--plan-scan ... --execute` binds
+  to this address automatically — it is prepended as the tool's first
+  argument, ahead of whatever `--execute` arguments were given. Static
+  local-analysis tools (semgrep, jadx, ...) are never affected. Omitting
+  `network_address` leaves the target label-only, exactly as before this
+  field existed.
 - `time_window_start`/`time_window_end` are Unix epoch seconds; the plan is
   only authorized while the current time falls inside that window.
 - `authorized_by_role` and `target_type` must match one of the values Rust

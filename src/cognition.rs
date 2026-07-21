@@ -518,6 +518,7 @@ mod tests {
             id: "web-1".to_string(),
             target_type: TargetType::WebApp,
             criticality: 9,
+            network_address: None,
         }];
 
         let profile = crate::model::EngagementProfile {
@@ -591,6 +592,7 @@ mod tests {
             techniques: vec![],
             approved_tools: vec![],
             intensity: TestIntensity::Standard,
+            network_address: None,
         };
         let mut task_high = task_low.clone();
         task_high.target_id = "high".to_string();
