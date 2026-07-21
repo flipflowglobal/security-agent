@@ -9,6 +9,8 @@ pub mod engagement_config;
 pub mod execution;
 pub mod findings;
 pub mod governance;
+pub mod integrity;
+pub mod intensity_guard;
 pub mod local_assets;
 pub mod mission;
 pub mod model;
@@ -47,6 +49,8 @@ pub use execution::{
 };
 pub use findings::{Finding, RiskScoreCalculator, Severity};
 pub use governance::{AuditLedger, AuditRecord, Role};
+pub use integrity::{IntegrityManifest, IntegrityStatus, verify};
+pub use intensity_guard::{IntensityAdvisory, advise};
 pub use local_assets::{LocalAgentAssets, LocalSkill, LocalTool};
 pub use mission::MISSION_STATEMENT;
 pub use model::{

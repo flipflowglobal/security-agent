@@ -26,6 +26,7 @@ fn main() -> ExitCode {
         Some("--run-tool") => run_tool_command(&mut arguments),
         Some("--run-external-tool") => run_external_tool_command(&assets, &mut arguments),
         Some("--plan-scan") => plan_scan_command(&mut arguments),
+        Some("--view-audit") => view_audit_command(&mut arguments),
         Some(command) => {
             eprintln!("unknown command: {command}");
             ExitCode::from(2)
@@ -40,6 +41,11 @@ fn print_offline_status(assets: &LocalAgentAssets) {
         .filter(|tool| tool.is_installed())
         .count();
     let built_in_tools = assets.tools().iter().filter(|tool| tool.built_in).count();
+    let integrity_verified_tools = assets
+        .tools()
+        .iter()
+        .filter(|tool| tool.integrity == security_agent::IntegrityStatus::Verified)
+        .count();
 
     println!("network_required=false");
     println!("external_api_required=false");
@@ -47,6 +53,7 @@ fn print_offline_status(assets: &LocalAgentAssets) {
     println!("cataloged_tool_definitions={}", assets.tools().len());
     println!("built_in_substitute_tools={built_in_tools}");
     println!("locally_executable_tools={executable_tools}");
+    println!("integrity_verified_tools={integrity_verified_tools}");
     println!("capability_coverage={}", capability_coverage_status());
 }
 
@@ -89,9 +96,10 @@ fn list_tools(assets: &LocalAgentAssets) -> ExitCode {
             println!("{}\tbuilt-in-substitute", tool.definition.name);
         } else if let Some(path) = &tool.executable {
             println!(
-                "{}\tcataloged\texecutable={}",
+                "{}\tcataloged\texecutable={}\tintegrity={}",
                 tool.definition.name,
-                path.display()
+                path.display(),
+                tool.integrity.label()
             );
         } else {
             println!(
@@ -179,6 +187,13 @@ fn run_external_tool_command(
         return ExitCode::from(2);
     };
     let tool_arguments: Vec<String> = arguments.collect();
+
+    // The direct CLI path has no declared engagement, so advise against a
+    // default Standard ceiling. Advisory only for tools that actually reach
+    // a live target — static-local tools never touch the network.
+    if tool.definition.execution_class != security_agent::ExecutionClass::StaticLocalAnalysis {
+        print_intensity_advisories(&tool_arguments, security_agent::TestIntensity::Standard);
+    }
 
     match run_external_tool_with_default_timeout(tool, &tool_arguments) {
         Ok(report) => {
@@ -273,6 +288,10 @@ fn plan_scan(
     let (profile, targets) = load_engagement_config(Path::new(&config_path))
         .map_err(|error| PlanScanError::ConfigLoad(error.to_string()))?;
 
+    // Captured before `profile` is moved into planning; used to advise on
+    // over-aggressive `--execute` arguments against the declared ceiling.
+    let declared_ceiling = profile.max_intensity;
+
     let mut coordinator = Coordinator::new(
         CapabilityRegistry::default(),
         ToolchainPackRegistry::default(),
@@ -289,8 +308,9 @@ fn plan_scan(
             .map_err(|error| PlanScanError::AuditLogWrite(error.to_string()))?;
     }
 
-    let assessment = cognitive_review
-        .then(|| assess_plan_cognitively(&plan, &targets_for_review, &CognitiveMemory::new()));
+    if let Some(tool_arguments) = &tool_arguments {
+        print_intensity_advisories(tool_arguments, declared_ceiling);
+    }
 
     let outcomes = tool_arguments.map(|tool_arguments| {
         let assets = LocalAgentAssets::bundled();
@@ -334,6 +354,58 @@ fn plan_scan_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
         Err(error) => {
             eprintln!("{error}");
             ExitCode::from(2)
+        }
+    }
+}
+
+/// Prints one non-blocking intensity advisory per over-aggressive argument
+/// to stderr (see `security_agent::intensity_guard`). Never changes control
+/// flow or exit codes — it only makes a scope/aggressiveness mismatch
+/// visible to the operator.
+fn print_intensity_advisories(arguments: &[String], ceiling: security_agent::TestIntensity) {
+    for advisory in security_agent::advise(arguments, ceiling) {
+        eprintln!("intensity advisory: {}", advisory.message);
+    }
+}
+
+/// Read-only view of a persisted audit log (`--view-audit <path>.jsonl`).
+///
+/// This command never plans, authorizes, executes, or writes — it only
+/// loads and renders existing records. That is exactly the surface the
+/// `Viewer` role (`security_agent::Role::Viewer`) exists for, so the view
+/// is rendered as operating under that role. Loading a missing or
+/// unreadable file is an error (exit 1); a readable but empty/foreign log
+/// simply shows no records.
+fn view_audit_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    let Some(path) = arguments.next() else {
+        eprintln!("missing audit log file path");
+        return ExitCode::from(2);
+    };
+    match security_agent::load_audit_records(Path::new(&path)) {
+        Ok(records) => {
+            // Read-only consumers operate under the least-privilege Viewer role.
+            let role = security_agent::Role::Viewer;
+            println!("Audit Log View (role: {role})");
+            println!("=============================");
+            if records.is_empty() {
+                println!("No audit records found.");
+            } else {
+                for record in &records {
+                    println!(
+                        "{}\tactor={}\trole={}\taction={}\ttarget={}",
+                        record.timestamp_epoch_seconds,
+                        record.actor,
+                        record.role,
+                        record.action,
+                        record.target
+                    );
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("failed to read audit log: {error}");
+            ExitCode::from(1)
         }
     }
 }
@@ -729,5 +801,49 @@ criticality=2
         fs::remove_file(&path).expect("remove temp config");
 
         assert!(matches!(result, Err(PlanScanError::AuthorizationDenied(_))));
+    }
+
+    #[test]
+    fn view_audit_reads_a_written_log() {
+        let path = std::env::temp_dir().join(format!(
+            "security-agent-main-view-audit-{}.jsonl",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+        security_agent::append_audit_records(
+            &path,
+            &[security_agent::AuditRecord {
+                timestamp_epoch_seconds: 42,
+                actor: "jane.doe".to_string(),
+                role: security_agent::Role::SecurityAdmin,
+                action: "plan_authorized_scan".to_string(),
+                target: "eng-view".to_string(),
+                details: "tasks=1 high_impact=0".to_string(),
+                test_run_id: None,
+            }],
+        )
+        .expect("write audit log");
+
+        let mut arguments = vec![path.to_string_lossy().into_owned()].into_iter();
+        let outcome = view_audit_command(&mut arguments);
+        fs::remove_file(&path).expect("remove temp audit log");
+
+        assert_eq!(outcome, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn view_audit_reports_failure_for_missing_file() {
+        let path = std::env::temp_dir().join(format!(
+            "security-agent-main-view-audit-missing-{}.jsonl",
+            std::process::id()
+        ));
+        let mut arguments = vec![path.to_string_lossy().into_owned()].into_iter();
+        assert_ne!(view_audit_command(&mut arguments), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn view_audit_reports_missing_path() {
+        let mut arguments = std::iter::empty::<String>();
+        assert_ne!(view_audit_command(&mut arguments), ExitCode::SUCCESS);
     }
 }

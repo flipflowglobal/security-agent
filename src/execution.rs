@@ -21,6 +21,7 @@
 //! the already-wired static tools.
 
 use crate::coordinator::ExecutionPlan;
+use crate::integrity::IntegrityStatus;
 use crate::local_assets::LocalAgentAssets;
 use crate::local_assets::LocalTool;
 use crate::registry::ExecutionClass;
@@ -39,6 +40,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(20);
 pub enum ToolExecutionError {
     NotInstalled(String),
     NotEligibleForExecution(String),
+    IntegrityMismatch(String),
     Spawn {
         tool: String,
         source: std::io::Error,
@@ -57,6 +59,11 @@ impl fmt::Display for ToolExecutionError {
                 formatter,
                 "{name} is not classified as static-local-analysis and has no explicit \
                  execution exception; real execution is not wired up for it yet"
+            ),
+            Self::IntegrityMismatch(name) => write!(
+                formatter,
+                "{name}'s local binary does not match its pinned integrity-manifest hash; \
+                 refusing to execute (see assets/tool_integrity.txt)"
             ),
             Self::Spawn { tool, source } => write!(formatter, "failed to spawn {tool}: {source}"),
             Self::TimedOut { tool, timeout } => write!(
@@ -114,12 +121,16 @@ impl fmt::Display for ToolExecutionReport {
 /// itself, so enabling a new tool here is always a deliberate, visible
 /// decision rather than an accidental side effect of some other change.
 ///
-/// `nmap` is the only entry today: it's approved the same way the
-/// `StaticLocalAnalysis` tools are — via the coordinator's existing
+/// `nmap` and `masscan` are the entries today: both are approved the same
+/// way the `StaticLocalAnalysis` tools are — via the coordinator's existing
 /// planning gate (scope + technique allow-list) plus local installation,
 /// with no additional target-confirmation, approval, or rate-limiting.
 /// Arguments given to `--execute`/[`execute_plan`] are trusted as-is.
-const WIRED_DESPITE_EXECUTION_CLASS: &[&str] = &["nmap"];
+/// Because `masscan` can saturate a link at its default rate, its
+/// arguments are additionally passed through the non-blocking intensity
+/// advisory (see `crate::intensity_guard`) at the CLI layer, but that only
+/// warns — it never gates execution here.
+const WIRED_DESPITE_EXECUTION_CLASS: &[&str] = &["nmap", "masscan"];
 
 fn is_eligible_for_execution(tool: &LocalTool) -> bool {
     tool.definition.execution_class == ExecutionClass::StaticLocalAnalysis
@@ -149,6 +160,11 @@ pub fn run_external_tool(
     };
     if !is_eligible_for_execution(tool) {
         return Err(ToolExecutionError::NotEligibleForExecution(name));
+    }
+    // A pinned binary whose hash no longer matches the manifest is refused;
+    // Unpinned (the default) and Verified both proceed.
+    if tool.integrity == IntegrityStatus::Mismatch {
+        return Err(ToolExecutionError::IntegrityMismatch(name));
     }
 
     let start = Instant::now();
@@ -300,6 +316,15 @@ mod tests {
     }
 
     fn tool_named(name: &str, path: &str, execution_class: ExecutionClass) -> LocalTool {
+        tool_with_integrity(name, path, execution_class, IntegrityStatus::Unpinned)
+    }
+
+    fn tool_with_integrity(
+        name: &str,
+        path: &str,
+        execution_class: ExecutionClass,
+        integrity: IntegrityStatus,
+    ) -> LocalTool {
         LocalTool {
             definition: ToolDefinition {
                 name: name.to_string(),
@@ -311,6 +336,7 @@ mod tests {
             },
             built_in: false,
             executable: Some(PathBuf::from(path)),
+            integrity,
         }
     }
 
@@ -392,6 +418,7 @@ mod tests {
             },
             built_in: false,
             executable: None,
+            integrity: IntegrityStatus::Unpinned,
         };
 
         let result = run_external_tool(&tool, &[], Duration::from_secs(5));
@@ -399,6 +426,48 @@ mod tests {
         assert!(
             matches!(result, Err(ToolExecutionError::NotInstalled(name)) if name == "missing-tool")
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn refuses_execution_on_integrity_mismatch() {
+        if !Path::new("/bin/true").exists() {
+            return;
+        }
+        // A statically-eligible, installed tool whose pinned hash no longer
+        // matches must be refused before spawn.
+        let tool = tool_with_integrity(
+            "pinned-tool",
+            "/bin/true",
+            ExecutionClass::StaticLocalAnalysis,
+            IntegrityStatus::Mismatch,
+        );
+
+        let result = run_external_tool(&tool, &[], Duration::from_secs(5));
+
+        assert!(matches!(
+            result,
+            Err(ToolExecutionError::IntegrityMismatch(name)) if name == "pinned-tool"
+        ));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn unpinned_tool_still_executes() {
+        if !Path::new("/bin/true").exists() {
+            return;
+        }
+        // Regression guard: the default (Unpinned) path is unchanged.
+        let tool = tool_with_integrity(
+            "unpinned-tool",
+            "/bin/true",
+            ExecutionClass::StaticLocalAnalysis,
+            IntegrityStatus::Unpinned,
+        );
+
+        let report = run_external_tool(&tool, &[], Duration::from_secs(5))
+            .expect("unpinned tools execute exactly as before");
+        assert_eq!(report.exit_code, Some(0));
     }
 
     #[test]
@@ -442,6 +511,21 @@ mod tests {
 
         assert_eq!(report.exit_code, Some(0));
         assert_eq!(report.tool, "nmap");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn masscan_is_eligible_for_real_execution_despite_being_active_network() {
+        if !Path::new("/bin/true").exists() {
+            return;
+        }
+        let tool = tool_named("masscan", "/bin/true", ExecutionClass::ActiveNetwork);
+
+        let report = run_external_tool(&tool, &[], Duration::from_secs(5))
+            .expect("masscan should be an explicit execution exception");
+
+        assert_eq!(report.exit_code, Some(0));
+        assert_eq!(report.tool, "masscan");
     }
 
     #[test]

@@ -297,26 +297,60 @@ androguard, apktool, dex2jar, apksigner, and others), `ActiveNetwork`
 (scans or contacts a live target), or `ActiveExploitation` (attempts to
 compromise a live target or running process). `--run-external-tool`
 directly invokes a real, locally installed tool when it is classified
-`StaticLocalAnalysis`, or is `nmap` — an explicit, reviewed exception (see
-`WIRED_DESPITE_EXECUTION_CLASS` in `src/execution.rs`):
+`StaticLocalAnalysis`, or is `nmap` or `masscan` — explicit, reviewed
+exceptions (see `WIRED_DESPITE_EXECUTION_CLASS` in `src/execution.rs`):
 
 ```bash
 ./target/release/security-agent --run-external-tool semgrep --version
 ./target/release/security-agent --run-external-tool jadx -d <out-dir> <apk-path>
 ./target/release/security-agent --run-external-tool nmap -sV <in-scope-host>
+./target/release/security-agent --run-external-tool masscan -p80 <in-scope-range>
 ```
 
 The process is spawned with a bounded execution timeout and its stdout,
-stderr, exit code, and duration are captured into a report. `nmap` runs
-under the same gate as the `StaticLocalAnalysis` tools above — the
-coordinator's existing planning approval (scope + technique allow-list)
-plus local installation — with no additional target-confirmation,
-approval, or rate-limiting: arguments given to `--execute`/
-`--run-external-tool` are trusted as-is. Every other tool classified
-`ActiveNetwork` or `ActiveExploitation` (sqlmap, hydra, msfconsole, and
-similar) is still rejected by this command — real execution of those
-needs a live-target confirmation/rate-limit design layered on the policy
-engine's `AuthorizationOutcome`, which does not exist yet.
+stderr, exit code, and duration are captured into a report. `nmap` and
+`masscan` run under the same gate as the `StaticLocalAnalysis` tools
+above — the coordinator's existing planning approval (scope + technique
+allow-list) plus local installation — with no additional
+target-confirmation, approval, or rate-limiting: arguments given to
+`--execute`/`--run-external-tool` are trusted as-is. As a non-blocking
+aid, arguments to these network tools are passed through an intensity
+advisory (`src/intensity_guard.rs`): aggressive flags (`-T5`,
+`--min-rate`, full-range sweeps) that exceed the engagement's declared
+`max_intensity` print a warning to stderr, but execution still proceeds.
+Every other tool classified `ActiveNetwork` or `ActiveExploitation`
+(sqlmap, hydra, msfconsole, and similar) is still rejected by this
+command — real execution of those needs a live-target
+confirmation/rate-limit design layered on the policy engine's
+`AuthorizationOutcome`, which does not exist yet.
+
+### Tool integrity
+
+Before spawning any eligible tool, Security-Agent checks the resolved
+binary against a bundled integrity manifest (`assets/tool_integrity.txt`,
+compiled into the binary). Each line pins a tool to the expected
+lowercase-hex SHA-256 of its executable:
+
+```text
+semgrep=<64-hex-sha256-of-the-vetted-semgrep-binary>
+```
+
+Per tool, the check yields one of three states, shown in `--list-tools`
+(the `integrity=` column) and counted in `--offline-status`
+(`integrity_verified_tools=`):
+
+- **verified** — a manifest entry exists and the local binary's SHA-256
+  matches it. Executes.
+- **mismatch** — a manifest entry exists but the local binary differs.
+  Execution is **refused** with an error.
+- **unpinned** — no manifest entry. Executes. This is the default for
+  every tool: the shipped manifest is intentionally empty, so integrity
+  pinning never blocks day-to-day use until an operator deliberately vets
+  a binary and adds its hash. Only pinned tools are ever hashed, so an
+  empty manifest adds no runtime cost. The SHA-256 is the crate's own
+  implementation (`src/builtin_tools.rs`) — no external dependency. Add an
+  entry only with documented provenance for the exact binary you intend to
+  pin.
 
 ### Planning and running an authorized scan
 
