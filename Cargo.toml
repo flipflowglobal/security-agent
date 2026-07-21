@@ -6,12 +6,11 @@ rust-version = "1.85"
 description = "Defensive security orchestration agent for authorized vulnerability testing."
 license = "MIT"
 repository = "https://github.com/flipflowglobal/security-agent"
-changelog = "CHANGELOG.md"
 
+# Core orchestration logic uses no external runtime crates — JSON, SHA-256,
+# and PCAP parsing are all implemented in-house (see `src/json.rs`,
+# `src/builtin_tools.rs`, `src/pcap.rs`).
 [dependencies]
-anyhow = "1.0.100"
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
 
 # Inference back-end (optional — not required for the core orchestration logic).
 # Enable with `cargo build --features inference` when the ML inference path is ready.

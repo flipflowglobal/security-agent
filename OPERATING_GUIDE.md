@@ -145,6 +145,7 @@ Run these from the repository root after `cargo build --release`:
 ```bash
 ./target/release/security-agent
 ./target/release/security-agent --offline-status
+./target/release/security-agent --about
 ./target/release/security-agent --list-skills
 ./target/release/security-agent --show-skill security-agent
 ./target/release/security-agent --show-skill nmap
@@ -162,12 +163,17 @@ Run these from the repository root after `cargo build --release`:
 ./target/release/security-agent --plan-scan <engagement-config-path> --audit-log <log-path>.jsonl
 ./target/release/security-agent --plan-scan <engagement-config-path> --findings-log <findings-log-path>.jsonl --execute <args-passed-to-each-tool>
 ./target/release/security-agent --plan-scan <engagement-config-path> --execute <args-passed-to-each-tool>
+./target/release/security-agent --plan-scan <engagement-config-path> --cognitive-review
+./target/release/security-agent --plan-scan <engagement-config-path> --cognitive-review --memory <findings-log-path>.jsonl
+./target/release/security-agent --record-findings <destination-log>.jsonl <source-log>.jsonl
 ./target/release/security-agent --view-audit <log-path>.jsonl
 ./target/release/security-agent --schedule-retest <findings-log-path>.jsonl
 ```
 
 - No argument and `--offline-status` report the same local runtime state,
   including a `capability_coverage=ok` (or `error: <reason>`) health check.
+- `--about` (alias `--version`) prints the package version, mission
+  statement, and the four roadmap phases.
 - `--list-skills` lists skills compiled into the binary: one general skill
   plus one per cataloged tool (90 total).
 - `--show-skill` prints the named embedded skill (e.g. `security-agent`, or
@@ -201,6 +207,16 @@ Run these from the repository root after `cargo build --release`:
 - `--plan-scan <config> --findings-log <path> --execute <args>` additionally
   appends every finding ingested from `--execute`'s tool output to `<path>`
   as an append-only JSON Lines file; a no-op without `--execute`.
+- `--plan-scan <config> --cognitive-review` prints the advisory cognitive
+  assessment and the deep cognitive deliberation (train of thought,
+  Bayesian beliefs, adversary model, attention, metacognition). Add
+  `--memory <findings-log>` to make it history-informed: it folds a prior
+  findings log (the same format `--findings-log` writes) into cognitive
+  memory so hypotheses, beliefs, and adversary payoffs sharpen across
+  engagements. A missing log is treated as empty history.
+- `--record-findings <destination-log> <source-log>` appends findings from
+  one findings log onto another (merging/curating logs). It never plans,
+  authorizes, or executes.
 - `--view-audit <path>` is a read-only view: it loads a persisted audit
   log and prints its records (operating under the least-privilege `Viewer`
   role). It never plans, authorizes, executes, or writes.

@@ -526,8 +526,13 @@ impl Default for ToolchainPackRegistry {
                 name: "mobile-backend-pack".to_string(),
                 use_case: UseCase::MobileBackend,
                 tools: cataloged_tools.clone(),
-                deprecated: false,
-                replacement_pack: None,
+                // A mobile backend is an API surface, tested with the same
+                // toolchain as any other API. The dedicated pack is retained
+                // for use-case coverage but is on its way out in favor of the
+                // api-core pack; this exercises the deprecation lifecycle
+                // (`deprecated_packs`, and the plan's DEPRECATED marker).
+                deprecated: true,
+                replacement_pack: Some("api-core-pack".to_string()),
             },
         );
 
@@ -573,11 +578,41 @@ impl ToolchainPackRegistry {
     pub fn by_use_case(&self, use_case: &UseCase) -> Option<&ToolchainPack> {
         self.packs.get(use_case)
     }
+
+    /// Every pack currently marked deprecated. Lets callers surface the
+    /// pack-lifecycle signal — e.g. warn that a selected pack is on its way
+    /// out and name the pack that supersedes it.
+    #[must_use]
+    pub fn deprecated_packs(&self) -> Vec<&ToolchainPack> {
+        let mut deprecated: Vec<&ToolchainPack> =
+            self.packs.values().filter(|pack| pack.deprecated).collect();
+        // Deterministic order regardless of the backing map's iteration order.
+        deprecated.sort_by(|a, b| a.name.cmp(&b.name));
+        deprecated
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deprecated_packs_returns_only_deprecated_packs_with_replacements() {
+        let registry = ToolchainPackRegistry::default();
+        let deprecated = registry.deprecated_packs();
+
+        assert!(
+            deprecated.iter().all(|pack| pack.deprecated),
+            "accessor must return only deprecated packs"
+        );
+        assert!(
+            deprecated
+                .iter()
+                .any(|pack| pack.name == "mobile-backend-pack"
+                    && pack.replacement_pack.as_deref() == Some("api-core-pack")),
+            "the deprecated mobile-backend-pack should name its replacement"
+        );
+    }
 
     #[test]
     fn execution_class_partitions_the_full_catalog_without_overlap() {

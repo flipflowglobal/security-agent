@@ -98,7 +98,7 @@ Federated model (not an unrestricted super-agent):
 - **Retest Scheduler** — drift-and-risk-based retest intervals derived from finding risk scores.
 - **Cognitive Layer** (`src/cognition.rs`) — advisory reasoning over an already-authorized plan: ranks tasks by expected risk yield, proposes ranked hypotheses about which technique is likely to find what per target type, and reflects on the plan to flag coverage gaps.
 - **Advanced Cognitive Architecture** (`src/cognitive_engine.rs`) — models the reasoning *process* itself as cooperating faculties: an explicit, provenance-linked **train of thought** (observe → hypothesize → imagine → decide → reflect), **Bayesian belief revision** with Shannon-entropy uncertainty, **adversary theory-of-mind** predicting an attacker's ranked next moves, salience-weighted **attention allocation**, and **metacognition** that self-assesses confidence, names knowledge gaps, and decides when to escalate to a human. Exposed via `--plan-scan <config> --cognitive-review`.
-- **Cognitive Memory** (`src/memory_store.rs`) — persists the finding history the cognitive layers learn from as an append-only JSON Lines ledger, so cognition **learns across engagements** instead of starting blank each run. Findings are folded into memory (`--record-findings`), and a later `--cognitive-review --memory <ledger>` reasons from the full accumulated history: hypothesis confidence and attention rise, beliefs get Bayesian-updated by real evidence, and metacognition stops flagging a well-evidenced target as a knowledge gap.
+- **Cognitive Memory** (`src/memory_store.rs`) — folds the single append-only findings log (`src/findings_log.rs`) into cognitive memory, so cognition **learns across engagements** instead of starting blank each run. A scan's findings log (written by `--findings-log`) loads directly as `--cognitive-review --memory <log>` input — one format across the whole loop — so hypothesis confidence and attention rise, beliefs get Bayesian-updated by real evidence, and metacognition stops flagging a well-evidenced target as a knowledge gap.
 
 Both cognitive layers are **purely advisory** — they reason over plans the `PolicyEngine`/`Coordinator` have already authorized, and never grant, restrict, execute, or bypass any authorization decision.
 
@@ -110,7 +110,7 @@ Both cognitive layers are **purely advisory** — they reason over plans the `Po
 |---|---|---|
 | `WebApp` | webapp-core-pack | PassiveRecon, ConfigurationAudit, DAST |
 | `Api` | api-core-pack | PassiveRecon, ConfigurationAudit, ApiSecurity |
-| `MobileBackend` | mobile-backend-pack | ConfigurationAudit, ApiSecurity, AndroidStaticAnalysis |
+| `MobileBackend` | mobile-backend-pack *(deprecated → api-core-pack)* | ConfigurationAudit, ApiSecurity, AndroidStaticAnalysis |
 | `MobileApp` | **android-mobile-pack** | AndroidStaticAnalysis, MobileRuntime, SecretScan, DependencyAudit |
 | `Cloud` | cloud-posture-pack | ConfigurationAudit, CloudPosture |
 | `Blockchain` | smart-contract-pack | SAST, ThreatModeling, AttackPathAnalysis |
@@ -172,13 +172,18 @@ The `MobileAndroid` specialist uses a dedicated tool set for APK/DEX analysis an
 | `src/execution.rs` | Bounded real execution of `StaticLocalAnalysis` cataloged tools, plus `execute_plan` |
 | `src/audit_log.rs` | Append-only on-disk persistence for the audit ledger |
 | `src/findings.rs` | Unified finding model and normalized risk scorer |
+| `src/ingest.rs` | Turns real tool output (semgrep, SARIF, JSONL) into scored `Finding`s |
+| `src/findings_log.rs` | Append-only on-disk findings log — the single findings format, reused by cognition |
+| `src/json.rs` | In-house JSON parser/writer (keeps the crate free of external runtime crates) |
 | `src/governance.rs` | Append-only audit ledger with role/action filtering |
+| `src/intensity_guard.rs` | Non-blocking intensity advisories for network-tool execution |
+| `src/integrity.rs` | Offline tool-integrity verification against a bundled manifest |
 | `src/advanced.rs` | Attack-path graph builder and retest scheduler |
 | `src/cognition.rs` | Advisory reasoning layer: risk-yield task prioritization, per-target-type hypothesis generation, and reflective plan critique |
 | `src/cognitive_engine.rs` | Advanced cognitive architecture: explicit chained reasoning (train of thought), Bayesian belief revision, adversary theory-of-mind, attention allocation, and metacognitive self-reflection |
-| `src/memory_store.rs` | Append-only, on-disk persistence of the cognitive layer's finding history, so cognition learns across engagements |
-| `src/compat.rs` | Integration adapter contracts and wire-format envelope |
-| `src/roadmap.rs` | Phased rollout model |
+| `src/memory_store.rs` | Folds the append-only findings log into cognitive memory, so cognition learns across engagements from one shared format |
+| `src/compat.rs` | Integration adapter contracts and wire-format envelope (audit + finding records) |
+| `src/roadmap.rs` | Phased rollout model (surfaced by `--about`) |
 | `src/main.rs` | Offline local runtime entry point (also cross-compiles for Android) |
 
 ---
@@ -235,6 +240,7 @@ external skill source:
 ```bash
 ./target/release/security-agent
 ./target/release/security-agent --offline-status
+./target/release/security-agent --about
 ./target/release/security-agent --list-skills
 ./target/release/security-agent --show-skill security-agent
 ./target/release/security-agent --show-skill nmap
@@ -242,6 +248,9 @@ external skill source:
 ./target/release/security-agent --run-tool autopsy <local-path>
 ./target/release/security-agent --run-tool autopsy <local-path> --output <report-path>.txt
 ```
+
+`--about` (alias `--version`) prints the package version, mission statement,
+and the four roadmap phases.
 
 Running without arguments is equivalent to `--offline-status`. To install the
 binary into Cargo's local binary directory, run `cargo install --path . --locked`;
@@ -393,36 +402,44 @@ by the library's tests, and prints the resulting scan plan:
   decides whether to escalate to a human. Add `--memory <ledger>` to make
   this history-informed (see below); without it the run is stateless and
   priors are type-based only.
-- `--memory <ledger>` loads the append-only findings ledger at `<ledger>`
-  (`src/memory_store.rs`) before running `--cognitive-review`, so cognition
-  reasons from history accumulated across prior engagements: the folded
-  memory boosts hypothesis confidence and attention, and the raw findings
-  drive Bayesian belief revision. A missing ledger is treated as empty
-  history (no error). Populate the ledger with `--record-findings`.
+- `--memory <log>` loads the append-only findings log at `<log>`
+  (`src/findings_log.rs`, via `src/memory_store.rs`) before running
+  `--cognitive-review`, so cognition reasons from history accumulated across
+  prior engagements: the folded memory boosts hypothesis confidence and
+  attention, and the raw findings drive Bayesian belief revision. A missing
+  log is treated as empty history (no error). Because there is one findings
+  format, a log written by `--findings-log` is valid `--memory` input
+  directly; `--record-findings` merges logs when needed.
 - `--execute <args>` additionally runs every approved, locally installed,
   `StaticLocalAnalysis`-classified tool in the plan via
   `execute_plan`, passing `<args>` to each invocation, and prints each
   outcome (success with exit code/duration, or the specific failure).
 - Flags may be combined, in this order: `--audit-log <path>`, then
-  `--cognitive-review`, then `--memory <ledger>`, then `--execute <args>...`.
+  `--cognitive-review`, then `--memory <log>`, then `--findings-log <path>`,
+  then `--execute <args>...`.
 
 ### Persisting cognitive memory across engagements
 
-The cognitive layers learn from an append-only findings ledger. Record an
-engagement's findings into it, then let a later engagement reason from the
-accumulated history:
+The cognitive layers learn from the single append-only findings log. A scan
+writes its scored findings with `--findings-log`; a later engagement reasons
+from that accumulated history by pointing `--memory` at the same file — no
+format conversion:
 
 ```bash
-# Fold a scan's findings (JSON Lines of Finding) into the memory ledger.
-./target/release/security-agent --record-findings memory.jsonl findings.jsonl
-
-# A later engagement reasons from the accumulated history: sharper
-# hypotheses, Bayesian-updated beliefs, higher adversary payoffs, and
-# metacognition that no longer flags well-evidenced targets as gaps.
+# Engagement 1: run tools and persist scored findings to the log.
 ./target/release/security-agent --plan-scan engagement.txt \
-  --cognitive-review --memory memory.jsonl
+  --findings-log findings.jsonl --execute <args>
+
+# Engagement 2: reason from the accumulated history — sharper hypotheses,
+# Bayesian-updated beliefs, higher adversary payoffs, and metacognition that
+# no longer flags well-evidenced targets as gaps.
+./target/release/security-agent --plan-scan engagement.txt \
+  --cognitive-review --memory findings.jsonl
+
+# Optional: merge/curate logs (append one log's findings onto another).
+./target/release/security-agent --record-findings combined.jsonl findings.jsonl
 ```
 
-The ledger is human-readable (one finding per line) and only ever grows —
-each engagement's findings accumulate on top of earlier ones, and cognition
-is always re-derived by folding the full ledger.
+The log is human-readable (one `finding_record` per line) and only ever
+grows — each engagement's findings accumulate on top of earlier ones, and
+cognition is always re-derived by folding the full log.

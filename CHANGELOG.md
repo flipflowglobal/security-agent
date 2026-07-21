@@ -10,17 +10,39 @@ conventions. Releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## [Unreleased]
 
 ### Added
-- **`src/memory_store.rs`** — append-only, on-disk persistence for the
-  cognitive layer's memory, so cognition learns across engagements instead
-  of starting blank each run. The "memory file" is an append-only JSON
-  Lines ledger of `Finding`s (mirroring `src/audit_log.rs`);
-  `CognitiveMemory` is always re-derived by folding the full ledger, so
-  persistence is lossless and never double-counts. `Finding`/`Severity`
-  gained `serde` derives. New CLI: `--record-findings <ledger> <findings>`
-  folds a findings file into the ledger, and `--plan-scan ...
-  --cognitive-review --memory <ledger>` loads accumulated history so
-  hypothesis confidence and attention rise and beliefs get
-  Bayesian-updated by real prior evidence.
+- **`--about` command** (alias `--version`) — surfaces the package version,
+  `MISSION_STATEMENT`, and the four `ROADMAP_PHASES`, which were exported
+  but shown by no command.
+- **Toolchain-pack deprecation lifecycle** — `ToolchainPackRegistry::deprecated_packs()`
+  enumerates deprecated packs, `ExecutionPlan`'s display renders
+  `- <name> (DEPRECATED -> <replacement>)`, and `mobile-backend-pack` is
+  now marked deprecated in favor of `api-core-pack` (a mobile backend is an
+  API surface). The previously inert `deprecated`/`replacement_pack` fields
+  now drive real behavior.
+- **`tests/cli.rs`** — black-box integration suite exercising the compiled
+  binary across `--offline-status`, `--about`, `--list-skills`,
+  `--show-skill`, `--list-tools`, an unknown command, and `--plan-scan`
+  (success and authorization-denied), using only built-in assets and temp
+  files.
+
+### Changed
+- **Unified the findings-persistence format.** `--memory`,
+  `--findings-log`, `--record-findings`, and `--schedule-retest` now all
+  use the single `finding_record` JSON Lines format (`src/findings_log.rs`).
+  Previously `--memory` read a separate `serde`-JSON format written by
+  `--record-findings`, so a `--findings-log` output silently failed to load
+  as `--memory` input. `src/memory_store.rs` is now a thin bridge that
+  folds the findings log into `CognitiveMemory`, and a scan's
+  `--findings-log` output is valid `--memory` input directly — closing the
+  intelligence loop end to end.
+
+### Removed
+- **`serde`, `serde_json`, and `anyhow` dependencies.** They were used only
+  by the now-removed second findings format (`anyhow` was entirely unused),
+  so `[dependencies]` is empty again and the crate uses no external runtime
+  crates — matching its in-house JSON/SHA-256/PCAP design. Removed the
+  `serde` derives on `Finding`/`Severity` and the stale `changelog`
+  `Cargo.toml` manifest key.
 - **`src/cognitive_engine.rs`** — advanced cognitive architecture that
   models the agent's reasoning *process* as cooperating faculties:
   `ReasoningChain` (an explicit, provenance-linked train of thought:

@@ -54,7 +54,12 @@ impl fmt::Display for ExecutionPlan {
             writeln!(formatter, "None")?;
         } else {
             for pack in &self.selected_packs {
-                writeln!(formatter, "- {}", pack.name)?;
+                if pack.deprecated {
+                    let replacement = pack.replacement_pack.as_deref().unwrap_or("no replacement");
+                    writeln!(formatter, "- {} (DEPRECATED -> {replacement})", pack.name)?;
+                } else {
+                    writeln!(formatter, "- {}", pack.name)?;
+                }
             }
         }
         writeln!(formatter)?;
@@ -362,5 +367,55 @@ fn default_techniques_for_target(target_type: &TargetType) -> Vec<Technique> {
         TargetType::Container => vec![Technique::ConfigurationAudit, Technique::ContainerPosture],
         TargetType::SourceCode => vec![Technique::Sast, Technique::SecretScan],
         TargetType::DependencyManifest => vec![Technique::DependencyAudit],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::registry::ToolchainPack;
+
+    #[test]
+    fn plan_display_marks_deprecated_packs_with_their_replacement() {
+        let plan = ExecutionPlan {
+            engagement_id: "eng-deprecation".to_string(),
+            workflow_stages: WorkflowStage::ordered().to_vec(),
+            tasks: vec![],
+            selected_packs: vec![ToolchainPack {
+                name: "mobile-backend-pack".to_string(),
+                use_case: UseCase::MobileBackend,
+                tools: vec![],
+                deprecated: true,
+                replacement_pack: Some("api-core-pack".to_string()),
+            }],
+            high_impact_tasks: 0,
+        };
+
+        let rendered = plan.to_string();
+        assert!(
+            rendered.contains("mobile-backend-pack (DEPRECATED -> api-core-pack)"),
+            "deprecated packs should render with their replacement:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn plan_display_leaves_active_packs_unmarked() {
+        let plan = ExecutionPlan {
+            engagement_id: "eng-active".to_string(),
+            workflow_stages: WorkflowStage::ordered().to_vec(),
+            tasks: vec![],
+            selected_packs: vec![ToolchainPack {
+                name: "api-core-pack".to_string(),
+                use_case: UseCase::Api,
+                tools: vec![],
+                deprecated: false,
+                replacement_pack: None,
+            }],
+            high_impact_tasks: 0,
+        };
+
+        let rendered = plan.to_string();
+        assert!(rendered.contains("- api-core-pack\n"));
+        assert!(!rendered.contains("DEPRECATED"));
     }
 }
