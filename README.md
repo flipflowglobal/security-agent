@@ -189,7 +189,7 @@ cargo build --release                # optimized host binary
 
 ### Offline local assets
 
-The skill is compiled into the Rust binary and the tool catalog is generated
+All skills are compiled into the Rust binary and the tool catalog is generated
 from the built-in registry. These commands do not use the network or read an
 external skill source:
 
@@ -198,6 +198,7 @@ external skill source:
 ./target/release/security-agent --offline-status
 ./target/release/security-agent --list-skills
 ./target/release/security-agent --show-skill security-agent
+./target/release/security-agent --show-skill nmap
 ./target/release/security-agent --list-tools
 ./target/release/security-agent --run-tool autopsy <local-path>
 ./target/release/security-agent --run-tool autopsy <local-path> --output <report-path>.txt
@@ -213,6 +214,25 @@ already present on the local `PATH`. Catalog presence does not imply that the
 third-party executable is installed or functional. Execution plans only
 approve tools found locally. Security-Agent does not download, contact, or
 silently execute external sources.
+
+### Per-tool skills
+
+Alongside the general `security-agent` skill, every one of the 89 cataloged
+tools has its own skill file under `.github/skills/<tool-name>/SKILL.md`,
+compiled into the binary the same way (`--list-skills` lists all 90;
+`--show-skill <tool-name>` prints one). Each tool's skill documents:
+
+- its `ExecutionClass` (`static-local-analysis`, `active-network`, or
+  `active-exploitation` — see `src/registry.rs`),
+- which specialist(s), if any, currently include it in their
+  `approved_tools` scope,
+- the authorization gate it falls under (`src/policy.rs`), and
+- whether Security-Agent can run it for real today (`--run-external-tool`,
+  currently wired for `semgrep`, `jadx`, `androguard`, `apktool`, `dex2jar`,
+  and `apksigner`) or catalog/detection only (`--list-tools`).
+
+`tool_skills_cover_every_cataloged_tool` in `src/local_assets.rs` asserts
+every cataloged tool has a matching skill, so the two stay in sync.
 
 The built-in Autopsy substitute inventories and hashes a local evidence path.
 It prints a human-readable report to the terminal, or writes the same report

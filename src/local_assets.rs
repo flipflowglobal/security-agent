@@ -6,6 +6,115 @@ use std::path::{Path, PathBuf};
 
 const SECURITY_AGENT_SKILL: &str = include_str!("../.github/skills/security-agent/SKILL.md");
 
+/// Builds a [`LocalSkill`] for a cataloged tool from its
+/// `.github/skills/<name>/SKILL.md` file, compiled into the binary.
+macro_rules! tool_skill {
+    ($name:literal) => {
+        LocalSkill {
+            name: $name,
+            content: include_str!(concat!("../.github/skills/", $name, "/SKILL.md")),
+        }
+    };
+}
+
+/// One embedded skill per cataloged tool (see `src/registry.rs`), covering
+/// its execution class, specialist approval, and authorization
+/// requirements. Kept in sync with the tool catalog by
+/// `tool_skills_cover_every_cataloged_tool` in this module's tests.
+fn tool_skills() -> Vec<LocalSkill> {
+    vec![
+        tool_skill!("aircrack-ng"),
+        tool_skill!("amass"),
+        tool_skill!("androguard"),
+        tool_skill!("apkleaks"),
+        tool_skill!("apksigner"),
+        tool_skill!("apktool"),
+        tool_skill!("autopsy"),
+        tool_skill!("beef-xss"),
+        tool_skill!("bettercap"),
+        tool_skill!("binwalk"),
+        tool_skill!("bulk_extractor"),
+        tool_skill!("burpsuite"),
+        tool_skill!("cewl"),
+        tool_skill!("chirpw"),
+        tool_skill!("chkrootkit"),
+        tool_skill!("crackmapexec"),
+        tool_skill!("crunch"),
+        tool_skill!("cutycapt"),
+        tool_skill!("dex2jar"),
+        tool_skill!("dirb"),
+        tool_skill!("dmitry"),
+        tool_skill!("driftnet"),
+        tool_skill!("drozer"),
+        tool_skill!("enum4linux"),
+        tool_skill!("ettercap"),
+        tool_skill!("evil-winrm"),
+        tool_skill!("feroxbuster"),
+        tool_skill!("ffuf"),
+        tool_skill!("foremost"),
+        tool_skill!("frida"),
+        tool_skill!("galleta"),
+        tool_skill!("giskismet"),
+        tool_skill!("gobuster"),
+        tool_skill!("hashcat"),
+        tool_skill!("hashdeep"),
+        tool_skill!("httrack"),
+        tool_skill!("hydra"),
+        tool_skill!("ike-scan"),
+        tool_skill!("jadx"),
+        tool_skill!("john"),
+        tool_skill!("keepnote"),
+        tool_skill!("kismet"),
+        tool_skill!("lynis"),
+        tool_skill!("macchanger"),
+        tool_skill!("mariana-trench"),
+        tool_skill!("masscan"),
+        tool_skill!("mdb-sql"),
+        tool_skill!("medusa"),
+        tool_skill!("mfoc"),
+        tool_skill!("mfterm"),
+        tool_skill!("mitmproxy"),
+        tool_skill!("mobsf"),
+        tool_skill!("msfconsole"),
+        tool_skill!("msfpc"),
+        tool_skill!("ncrack"),
+        tool_skill!("netdiscover"),
+        tool_skill!("netexec"),
+        tool_skill!("netsniff-ng"),
+        tool_skill!("nikto"),
+        tool_skill!("nmap"),
+        tool_skill!("nuclei"),
+        tool_skill!("objection"),
+        tool_skill!("ophcrack"),
+        tool_skill!("pyrit"),
+        tool_skill!("qark"),
+        tool_skill!("rcrack"),
+        tool_skill!("reaver"),
+        tool_skill!("recordmydesktop"),
+        tool_skill!("searchsploit"),
+        tool_skill!("semgrep"),
+        tool_skill!("setoolkit"),
+        tool_skill!("skipfish"),
+        tool_skill!("smbmap"),
+        tool_skill!("sqlitebrowser"),
+        tool_skill!("sqlmap"),
+        tool_skill!("subfinder"),
+        tool_skill!("tcpdump"),
+        tool_skill!("termineter"),
+        tool_skill!("thc-ipv6"),
+        tool_skill!("trueseeing"),
+        tool_skill!("volatility"),
+        tool_skill!("wafw00f"),
+        tool_skill!("wfuzz"),
+        tool_skill!("whatweb"),
+        tool_skill!("wifite"),
+        tool_skill!("wireshark"),
+        tool_skill!("wpscan"),
+        tool_skill!("yersinia"),
+        tool_skill!("zenmap"),
+    ]
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LocalSkill {
     pub name: &'static str,
@@ -46,10 +155,11 @@ impl Default for LocalAgentAssets {
 impl LocalAgentAssets {
     #[must_use]
     pub fn bundled() -> Self {
-        let skills = vec![LocalSkill {
+        let mut skills = vec![LocalSkill {
             name: "security-agent",
             content: SECURITY_AGENT_SKILL,
         }];
+        skills.extend(tool_skills());
 
         let registry = ToolchainPackRegistry::default();
         let definitions = registry
@@ -156,6 +266,32 @@ mod tests {
 
         assert!(skill.content.contains("Plan defensive security work"));
         assert!(skill.content.contains("runtime: offline"));
+    }
+
+    #[test]
+    fn tool_skills_cover_every_cataloged_tool() {
+        let assets = LocalAgentAssets::bundled();
+
+        assert_eq!(
+            assets.skills().len(),
+            90,
+            "one general skill plus one per cataloged tool"
+        );
+
+        for tool in assets.tools() {
+            let name = &tool.definition.name;
+            let skill = assets
+                .skill(name)
+                .unwrap_or_else(|| panic!("missing skill for cataloged tool: {name}"));
+            assert!(
+                skill.content.contains(name.as_str()),
+                "skill for {name} should mention the tool name"
+            );
+            assert!(
+                skill.content.contains("execution_class"),
+                "skill for {name} should document its execution class"
+            );
+        }
     }
 
     #[test]
