@@ -219,13 +219,27 @@ impl fmt::Display for PlanScanError {
 /// against it. Separated from [`plan_scan_command`] so the outcome can be
 /// asserted on directly in tests instead of through an `ExitCode`, which
 /// does not implement `PartialEq`.
+///
+/// If the argument immediately after the config path is the literal
+/// `--execute`, every remaining argument is passed through to
+/// [`security_agent::execute_plan`], which runs each planned task's
+/// approved `StaticLocalAnalysis` tools and returns their outcomes
+/// alongside the plan.
 fn plan_scan(
     arguments: &mut impl Iterator<Item = String>,
-) -> Result<security_agent::ExecutionPlan, PlanScanError> {
+) -> Result<
+    (
+        security_agent::ExecutionPlan,
+        Option<Vec<security_agent::TaskExecutionOutcome>>,
+    ),
+    PlanScanError,
+> {
     let config_path = arguments.next().ok_or(PlanScanError::MissingConfigPath)?;
-    if let Some(argument) = arguments.next() {
-        return Err(PlanScanError::UnexpectedArgument(argument));
-    }
+    let tool_arguments = match arguments.next() {
+        None => None,
+        Some(flag) if flag == "--execute" => Some(arguments.collect::<Vec<String>>()),
+        Some(other) => return Err(PlanScanError::UnexpectedArgument(other)),
+    };
 
     let (profile, targets) = load_engagement_config(Path::new(&config_path))
         .map_err(|error| PlanScanError::ConfigLoad(error.to_string()))?;
@@ -236,17 +250,37 @@ fn plan_scan(
         PolicyEngine::default(),
     );
 
-    coordinator
+    let plan = coordinator
         .plan_authorized_scan(profile, targets, current_epoch_seconds())
-        .map_err(|error| PlanScanError::AuthorizationDenied(error.to_string()))
+        .map_err(|error| PlanScanError::AuthorizationDenied(error.to_string()))?;
+
+    let outcomes = tool_arguments.map(|tool_arguments| {
+        let assets = LocalAgentAssets::bundled();
+        security_agent::execute_plan(&plan, &assets, &tool_arguments)
+    });
+
+    Ok((plan, outcomes))
 }
 
-/// CLI entry point for `--plan-scan <config-file>`; prints the resulting
-/// [`security_agent::ExecutionPlan`] on success.
+/// CLI entry point for `--plan-scan <config-file> [--execute <args>...]`;
+/// prints the resulting [`security_agent::ExecutionPlan`], and — when
+/// `--execute` was given — each task's tool execution outcomes.
 fn plan_scan_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
     match plan_scan(arguments) {
-        Ok(plan) => {
+        Ok((plan, outcomes)) => {
             print!("{plan}");
+            if let Some(outcomes) = outcomes {
+                println!();
+                println!("Execution Outcomes");
+                println!("==================");
+                if outcomes.is_empty() {
+                    println!("None (no approved tools were locally installed)");
+                } else {
+                    for outcome in &outcomes {
+                        println!("{outcome}");
+                    }
+                }
+            }
             ExitCode::SUCCESS
         }
         Err(PlanScanError::AuthorizationDenied(message)) => {
@@ -358,9 +392,50 @@ criticality=3
         let result = plan_scan(&mut arguments);
         fs::remove_file(&path).expect("remove temp config");
 
-        let plan = result.expect("valid config should authorize and plan");
+        let (plan, outcomes) = result.expect("valid config should authorize and plan");
         assert_eq!(plan.engagement_id, "eng-cli-test");
         assert!(!plan.tasks.is_empty());
+        assert!(outcomes.is_none(), "no --execute flag was given");
+    }
+
+    #[test]
+    fn plan_scan_executes_when_flag_is_given() {
+        let path = std::env::temp_dir().join(format!(
+            "security-agent-main-plan-scan-execute-{}.txt",
+            std::process::id()
+        ));
+        fs::write(
+            &path,
+            "\
+engagement_id=eng-cli-execute
+authorized_by=jane.doe
+authorized_by_role=SecurityAdmin
+time_window_start=0
+time_window_end=99999999999
+in_scope_targets=api-staging
+allowed_techniques=PassiveRecon,ConfigurationAudit,ApiSecurity
+max_intensity=Standard
+high_impact_approved=false
+penetrative_testing_approved=true
+
+[target]
+id=api-staging
+target_type=Api
+criticality=3
+",
+        )
+        .expect("write temp config");
+
+        let mut arguments =
+            vec![path.to_string_lossy().into_owned(), "--execute".to_string()].into_iter();
+        let result = plan_scan(&mut arguments);
+        fs::remove_file(&path).expect("remove temp config");
+
+        let (_, outcomes) = result.expect("valid config should authorize and plan");
+        assert!(
+            outcomes.is_some(),
+            "--execute should produce Some(outcomes), even if empty"
+        );
     }
 
     #[test]

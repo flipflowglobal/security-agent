@@ -31,8 +31,8 @@ pub use engagement_config::{
     EngagementConfigError, load_engagement_config, parse_engagement_config,
 };
 pub use execution::{
-    DEFAULT_TIMEOUT, ToolExecutionError, ToolExecutionReport, run_external_tool,
-    run_external_tool_with_default_timeout,
+    DEFAULT_TIMEOUT, TaskExecutionOutcome, ToolExecutionError, ToolExecutionReport, execute_plan,
+    run_external_tool, run_external_tool_with_default_timeout,
 };
 pub use findings::{Finding, RiskScoreCalculator, Severity};
 pub use governance::{AuditLedger, AuditRecord, Role};

@@ -11,6 +11,8 @@
 //! confirmation/rate-limit design layered on
 //! [`crate::policy::AuthorizationOutcome`], which does not exist yet.
 
+use crate::coordinator::ExecutionPlan;
+use crate::local_assets::LocalAgentAssets;
 use crate::local_assets::LocalTool;
 use crate::registry::ExecutionClass;
 use std::fmt;
@@ -172,6 +174,67 @@ pub fn run_external_tool_with_default_timeout(
     run_external_tool(tool, arguments, DEFAULT_TIMEOUT)
 }
 
+/// The result of attempting to run one approved tool for one planned task.
+#[derive(Debug)]
+pub struct TaskExecutionOutcome {
+    pub target_id: String,
+    pub tool: String,
+    pub result: Result<ToolExecutionReport, ToolExecutionError>,
+}
+
+impl fmt::Display for TaskExecutionOutcome {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.result {
+            Ok(report) => write!(
+                formatter,
+                "target={} tool={} exit_code={} duration={:.3}s",
+                self.target_id,
+                self.tool,
+                report
+                    .exit_code
+                    .map_or_else(|| "unknown".to_string(), |code| code.to_string()),
+                report.duration.as_secs_f64()
+            ),
+            Err(error) => write!(
+                formatter,
+                "target={} tool={} error: {error}",
+                self.target_id, self.tool
+            ),
+        }
+    }
+}
+
+/// Attempts to run every approved tool for every task in `plan`, passing
+/// the same `arguments` to each invocation.
+///
+/// This only actually executes tools the coordinator approved for a task
+/// (`ScanTask::approved_tools`, which is already filtered to what's locally
+/// installed) — it never expands scope beyond what was planned. Tools not
+/// classified [`ExecutionClass::StaticLocalAnalysis`] are still attempted
+/// (so the caller sees why, via [`ToolExecutionError::NotStaticLocalAnalysis`]
+/// in the outcome) rather than silently skipped.
+#[must_use]
+pub fn execute_plan(
+    plan: &ExecutionPlan,
+    assets: &LocalAgentAssets,
+    arguments: &[String],
+) -> Vec<TaskExecutionOutcome> {
+    let mut outcomes = Vec::new();
+    for task in &plan.tasks {
+        for tool_name in &task.approved_tools {
+            let Some(tool) = assets.tool(tool_name) else {
+                continue;
+            };
+            outcomes.push(TaskExecutionOutcome {
+                target_id: task.target_id.clone(),
+                tool: tool_name.clone(),
+                result: run_external_tool_with_default_timeout(tool, arguments),
+            });
+        }
+    }
+    outcomes
+}
+
 fn read_all<R: Read>(pipe: &mut Option<R>) -> String {
     let mut buffer = Vec::new();
     if let Some(reader) = pipe {
@@ -204,9 +267,13 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     fn tool_at(path: &str, execution_class: ExecutionClass) -> LocalTool {
+        tool_named("test-tool", path, execution_class)
+    }
+
+    fn tool_named(name: &str, path: &str, execution_class: ExecutionClass) -> LocalTool {
         LocalTool {
             definition: ToolDefinition {
-                name: "test-tool".to_string(),
+                name: name.to_string(),
                 version: "not-detected".to_string(),
                 signed: false,
                 vulnerability_reviewed: false,
@@ -215,6 +282,42 @@ mod tests {
             },
             built_in: false,
             executable: Some(PathBuf::from(path)),
+        }
+    }
+
+    fn assets_with(tools: Vec<LocalTool>) -> LocalAgentAssets {
+        LocalAgentAssets {
+            skills: Vec::new(),
+            tools,
+        }
+    }
+
+    fn minimal_task(target_id: &str, approved_tools: Vec<String>) -> crate::coordinator::ScanTask {
+        use crate::model::{SpecialistKind, TestIntensity};
+        use crate::registry::SpecialistCapability;
+
+        crate::coordinator::ScanTask {
+            target_id: target_id.to_string(),
+            specialist: SpecialistCapability {
+                specialist: SpecialistKind::Sast,
+                target_types: Vec::new(),
+                approved_tools: Vec::new(),
+                supported_techniques: Vec::new(),
+                max_intensity: TestIntensity::Passive,
+            },
+            techniques: Vec::new(),
+            approved_tools,
+            intensity: TestIntensity::Passive,
+        }
+    }
+
+    fn minimal_plan(tasks: Vec<crate::coordinator::ScanTask>) -> ExecutionPlan {
+        ExecutionPlan {
+            engagement_id: "eng-test".to_string(),
+            workflow_stages: Vec::new(),
+            tasks,
+            selected_packs: Vec::new(),
+            high_impact_tasks: 0,
         }
     }
 
@@ -296,5 +399,83 @@ mod tests {
             result,
             Err(ToolExecutionError::TimedOut { tool, .. }) if tool == "test-tool"
         ));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn execute_plan_runs_every_approved_tool_and_skips_uncataloged_names() {
+        if !Path::new("/bin/true").exists() {
+            return;
+        }
+        let assets = assets_with(vec![tool_named(
+            "tool-a",
+            "/bin/true",
+            ExecutionClass::StaticLocalAnalysis,
+        )]);
+        let plan = minimal_plan(vec![minimal_task(
+            "target-a",
+            vec!["tool-a".to_string(), "not-cataloged".to_string()],
+        )]);
+
+        let outcomes = execute_plan(&plan, &assets, &[]);
+
+        // "not-cataloged" isn't in `assets`, so it's skipped rather than
+        // producing a spurious outcome.
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].target_id, "target-a");
+        assert_eq!(outcomes[0].tool, "tool-a");
+        assert!(matches!(&outcomes[0].result, Ok(report) if report.exit_code == Some(0)));
+    }
+
+    #[test]
+    fn execute_plan_covers_every_task_and_reports_per_tool_failures() {
+        let assets = assets_with(vec![
+            tool_named(
+                "tool-a",
+                "/nonexistent/tool-a",
+                ExecutionClass::StaticLocalAnalysis,
+            ),
+            tool_named(
+                "tool-b",
+                "/nonexistent/tool-b",
+                ExecutionClass::ActiveNetwork,
+            ),
+        ]);
+        let plan = minimal_plan(vec![
+            minimal_task("target-a", vec!["tool-a".to_string()]),
+            minimal_task("target-b", vec!["tool-b".to_string()]),
+        ]);
+
+        let outcomes = execute_plan(&plan, &assets, &[]);
+
+        assert_eq!(outcomes.len(), 2);
+        assert_eq!(outcomes[0].target_id, "target-a");
+        assert_eq!(outcomes[1].target_id, "target-b");
+    }
+
+    #[test]
+    fn task_execution_outcome_display_renders_success_and_failure() {
+        let success = TaskExecutionOutcome {
+            target_id: "target-a".to_string(),
+            tool: "tool-a".to_string(),
+            result: Ok(ToolExecutionReport {
+                tool: "tool-a".to_string(),
+                arguments: Vec::new(),
+                exit_code: Some(0),
+                stdout: String::new(),
+                stderr: String::new(),
+                duration: Duration::from_millis(5),
+            }),
+        };
+        assert!(success.to_string().contains("target=target-a"));
+        assert!(success.to_string().contains("tool=tool-a"));
+        assert!(success.to_string().contains("exit_code=0"));
+
+        let failure = TaskExecutionOutcome {
+            target_id: "target-b".to_string(),
+            tool: "tool-b".to_string(),
+            result: Err(ToolExecutionError::NotInstalled("tool-b".to_string())),
+        };
+        assert!(failure.to_string().contains("error:"));
     }
 }

@@ -142,8 +142,8 @@ impl LocalTool {
 
 #[derive(Debug, Clone)]
 pub struct LocalAgentAssets {
-    skills: Vec<LocalSkill>,
-    tools: Vec<LocalTool>,
+    pub(crate) skills: Vec<LocalSkill>,
+    pub(crate) tools: Vec<LocalTool>,
 }
 
 impl Default for LocalAgentAssets {
