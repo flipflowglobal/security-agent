@@ -63,7 +63,7 @@ pub use governance::{AuditLedger, AuditRecord, Role};
 pub use integrity::{IntegrityManifest, IntegrityStatus, verify};
 pub use intensity_guard::{IntensityAdvisory, advise};
 pub use local_assets::{LocalAgentAssets, LocalSkill, LocalTool};
-pub use memory_store::{MemoryStoreError, append_findings, load_findings, load_memory};
+pub use memory_store::{MemoryStoreError, load_memory};
 pub use mission::MISSION_STATEMENT;
 pub use model::{
     EngagementProfile, SpecialistKind, Target, TargetType, Technique, TestIntensity, TimeWindow,

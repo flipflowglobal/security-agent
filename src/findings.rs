@@ -9,6 +9,53 @@ pub enum Severity {
     Informational,
 }
 
+impl std::fmt::Display for Severity {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            Self::Critical => "Critical",
+            Self::High => "High",
+            Self::Medium => "Medium",
+            Self::Low => "Low",
+            Self::Informational => "Informational",
+        };
+        formatter.write_str(name)
+    }
+}
+
+impl std::str::FromStr for Severity {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "Critical" => Ok(Self::Critical),
+            "High" => Ok(Self::High),
+            "Medium" => Ok(Self::Medium),
+            "Low" => Ok(Self::Low),
+            "Informational" => Ok(Self::Informational),
+            other => Err(format!("unknown severity: {other}")),
+        }
+    }
+}
+
+/// Maps a third-party tool's own severity/level vocabulary onto this
+/// crate's [`Severity`] scale. Covers the common vocabularies seen in
+/// tool-emitted JSON: `critical`/`high`/`medium`/`low`/`info`(`rmational`),
+/// SARIF's `error`/`warning`/`note`, and semgrep's `ERROR`/`WARNING`/`INFO`
+/// (case-insensitively). An unrecognized label maps to
+/// [`Severity::Informational`] rather than failing — ingesting untrusted
+/// tool output should fail safe toward low noise, never panic or reject
+/// the whole report over one unfamiliar label.
+#[must_use]
+pub(crate) fn severity_from_label(label: &str) -> Severity {
+    match label.to_ascii_lowercase().as_str() {
+        "critical" => Severity::Critical,
+        "high" | "error" => Severity::High,
+        "medium" | "warning" | "moderate" => Severity::Medium,
+        "low" => Severity::Low,
+        _ => Severity::Informational,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Finding {
     pub finding_id: String,
