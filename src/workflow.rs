@@ -9,14 +9,15 @@ pub enum WorkflowStage {
 }
 
 impl WorkflowStage {
-    pub fn ordered() -> [WorkflowStage; 6] {
+    #[must_use]
+    pub const fn ordered() -> [Self; 6] {
         [
-            WorkflowStage::DiscoveryAndInventory,
-            WorkflowStage::PassiveReconAndConfigChecks,
-            WorkflowStage::SourceDependencyStaticAnalysis,
-            WorkflowStage::RuntimeAppAndApiScanning,
-            WorkflowStage::CloudContainerInfrastructurePosture,
-            WorkflowStage::CorrelationAndRiskScoring,
+            Self::DiscoveryAndInventory,
+            Self::PassiveReconAndConfigChecks,
+            Self::SourceDependencyStaticAnalysis,
+            Self::RuntimeAppAndApiScanning,
+            Self::CloudContainerInfrastructurePosture,
+            Self::CorrelationAndRiskScoring,
         ]
     }
 }

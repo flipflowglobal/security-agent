@@ -1,6 +1,7 @@
 use crate::coordinator::ExecutionPlan;
 use crate::findings::{Finding, Severity};
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 
 #[derive(Debug, Clone)]
 pub struct CompatibilityEnvelope {
@@ -11,13 +12,14 @@ pub struct CompatibilityEnvelope {
 }
 
 impl CompatibilityEnvelope {
+    #[must_use]
     pub fn to_wire_format(&self) -> String {
         let mut out = format!(
             "version={}\nproducer={}\nkind={}\n",
             self.protocol_version, self.producer, self.payload_kind
         );
         for (k, v) in &self.fields {
-            out.push_str(&format!("{k}={v}\n"));
+            let _ = writeln!(out, "{k}={v}");
         }
         out
     }

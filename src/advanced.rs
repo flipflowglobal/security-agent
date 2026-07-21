@@ -24,8 +24,9 @@ impl AttackPathGraph {
     /// Populate the graph by creating a node per unique target in `findings`
     /// and an edge for each finding connecting the attacker entry point to the
     /// affected target via the source tool that identified it.
+    #[must_use]
     pub fn build_from_findings(findings: &[Finding]) -> Self {
-        let mut graph = AttackPathGraph::default();
+        let mut graph = Self::default();
 
         // Single attacker entry-point node.
         graph.nodes.push(ThreatModelNode {
@@ -63,6 +64,7 @@ pub struct RetestSchedule {
     pub reason: String,
 }
 
+#[must_use]
 pub fn propose_retest_schedule(finding: &Finding, now_epoch_seconds: u64) -> RetestSchedule {
     let offset = if finding.normalized_risk_score >= 8.0 {
         60 * 60 * 24

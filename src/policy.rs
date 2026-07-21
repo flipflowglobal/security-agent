@@ -11,6 +11,11 @@ pub enum AuthorizationError {
     HighImpactRequiresApproval,
 }
 
+// Each flag is an independently meaningful least-privilege requirement
+// (see the README's "Least-privilege defaults" section); folding them into
+// a bitflags/enum would save one clippy warning at the cost of making
+// every call site (`outcome.ephemeral_runner_required`, etc.) less direct.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorizationOutcome {
     pub authorized: bool,
@@ -33,6 +38,16 @@ impl Default for PolicyEngine {
 }
 
 impl PolicyEngine {
+    /// Authorizes a single target/technique/intensity combination against
+    /// `profile` at `now_epoch_seconds`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first applicable [`AuthorizationError`]: an expired or
+    /// not-yet-active engagement window, a target outside scope or on the
+    /// deny-list, a disallowed or unapproved-penetrative technique, an
+    /// intensity above the profile's cap, or a high-impact target lacking
+    /// explicit approval.
     pub fn authorize_target_scan(
         &self,
         profile: &EngagementProfile,
@@ -94,7 +109,7 @@ impl PolicyEngine {
     }
 }
 
-fn is_penetrative_technique(technique: &Technique) -> bool {
+const fn is_penetrative_technique(technique: &Technique) -> bool {
     matches!(
         technique,
         Technique::Dast

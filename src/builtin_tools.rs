@@ -1,4 +1,5 @@
 use std::fmt;
+use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -158,10 +159,19 @@ impl fmt::Display for BuiltInToolError {
 
 impl std::error::Error for BuiltInToolError {}
 
+#[must_use]
 pub fn is_builtin_tool(name: &str) -> bool {
     matches!(name, "autopsy" | "volatility" | "wireshark")
 }
 
+/// Runs the built-in substitute named `name` against `input` and renders
+/// its report as a display string.
+///
+/// # Errors
+///
+/// Returns [`BuiltInToolError::UnsupportedTool`] if `name` has no built-in
+/// substitute, or whatever error the underlying tool returns (invalid
+/// input, I/O failure, or an internal limit being exceeded).
 pub fn run_builtin_tool(name: &str, input: &Path) -> Result<String, BuiltInToolError> {
     match name {
         "autopsy" => Ok(run_autopsy(input)?.to_string()),
@@ -171,6 +181,15 @@ pub fn run_builtin_tool(name: &str, input: &Path) -> Result<String, BuiltInToolE
     }
 }
 
+/// Inventories and hashes the evidence file or directory at `input`.
+///
+/// # Errors
+///
+/// Returns [`BuiltInToolError::InvalidInput`] if `input` is a symbolic link
+/// or neither a regular file nor a directory, [`BuiltInToolError::Io`] on
+/// any filesystem failure, and [`BuiltInToolError::FileLimitExceeded`] or
+/// [`BuiltInToolError::SizeOverflow`] if the evidence set exceeds internal
+/// bounds.
 pub fn run_autopsy(input: &Path) -> Result<AutopsyReport, BuiltInToolError> {
     let input_metadata = fs::symlink_metadata(input).map_err(|source| BuiltInToolError::Io {
         path: input.to_path_buf(),
@@ -216,6 +235,16 @@ pub fn run_autopsy(input: &Path) -> Result<AutopsyReport, BuiltInToolError> {
     Ok(report)
 }
 
+/// Analyzes the memory image or binary at `input`: hashes it, estimates
+/// its byte entropy, detects embedded ELF/PE/ZIP signatures, and extracts
+/// bounded printable strings.
+///
+/// # Errors
+///
+/// Returns [`BuiltInToolError::InvalidInput`] if `input` is a symbolic link
+/// or not a regular file, [`BuiltInToolError::Io`] on any filesystem
+/// failure, and [`BuiltInToolError::SizeOverflow`] if the image is larger
+/// than `u64::MAX` bytes.
 pub fn run_volatility(input: &Path) -> Result<VolatilityReport, BuiltInToolError> {
     let input_metadata = fs::symlink_metadata(input).map_err(|source| BuiltInToolError::Io {
         path: input.to_path_buf(),
@@ -245,18 +274,11 @@ pub fn run_volatility(input: &Path) -> Result<VolatilityReport, BuiltInToolError
     let mut sha256 = Sha256::new();
     let mut frequencies = [0_u64; 256];
     let mut bytes = 0_u64;
-    let mut printable_bytes = 0_u64;
-    let mut strings_found = 0_u64;
-    let mut strings = Vec::new();
-    let mut string_start = 0_u64;
-    let mut string_length = 0_usize;
-    let mut string_bytes = Vec::with_capacity(VOLATILITY_MAX_STRING_LENGTH);
-    let mut rolling = [0_u8; 4];
-    let mut rolling_len = 0_usize;
-    let mut mz = (0_u64, 0_u64);
-    let mut elf = (0_u64, 0_u64);
-    let mut zip = (0_u64, 0_u64);
-    let mut buffer = [0_u8; 64 * 1024];
+    let mut strings = StringScan::new();
+    let mut signatures = SignatureScan::new();
+    // Heap-allocated: a 64KiB array on the stack trips clippy's
+    // large-stack-arrays lint and needlessly grows every call frame.
+    let mut buffer = vec![0_u8; 64 * 1024];
 
     loop {
         let bytes_read = file
@@ -269,63 +291,15 @@ pub fn run_volatility(input: &Path) -> Result<VolatilityReport, BuiltInToolError
             break;
         }
         sha256.update(&buffer[..bytes_read]);
-        for byte in &buffer[..bytes_read] {
+        for &byte in &buffer[..bytes_read] {
             let offset = bytes;
             bytes = bytes.checked_add(1).ok_or(BuiltInToolError::SizeOverflow)?;
-            frequencies[*byte as usize] += 1;
-
-            if byte.is_ascii_graphic() || *byte == b' ' {
-                printable_bytes += 1;
-                if string_length == 0 {
-                    string_start = offset;
-                }
-                string_length += 1;
-                if string_bytes.len() < VOLATILITY_MAX_STRING_LENGTH {
-                    string_bytes.push(*byte);
-                }
-            } else {
-                finish_memory_string(
-                    string_start,
-                    string_length,
-                    &mut string_bytes,
-                    &mut strings_found,
-                    &mut strings,
-                );
-                string_length = 0;
-            }
-
-            if rolling_len < rolling.len() {
-                rolling[rolling_len] = *byte;
-                rolling_len += 1;
-            } else {
-                rolling.copy_within(1.., 0);
-                rolling[3] = *byte;
-            }
-            if rolling_len >= 2 && rolling[rolling_len - 2..rolling_len] == *b"MZ" {
-                record_signature(&mut mz, offset - 1);
-            }
-            if rolling_len == 4 {
-                if rolling == *b"\x7fELF" {
-                    record_signature(&mut elf, offset - 3);
-                }
-                if rolling == *b"PK\x03\x04" {
-                    record_signature(&mut zip, offset - 3);
-                }
-            }
+            frequencies[byte as usize] += 1;
+            strings.observe(byte, offset);
+            signatures.observe(byte, offset);
         }
     }
-    finish_memory_string(
-        string_start,
-        string_length,
-        &mut string_bytes,
-        &mut strings_found,
-        &mut strings,
-    );
-
-    let mut signatures = Vec::new();
-    append_signature(&mut signatures, "PE/COFF MZ", mz);
-    append_signature(&mut signatures, "ELF", elf);
-    append_signature(&mut signatures, "ZIP", zip);
+    strings.finish_current();
 
     Ok(VolatilityReport {
         image,
@@ -333,54 +307,144 @@ pub fn run_volatility(input: &Path) -> Result<VolatilityReport, BuiltInToolError
         sha256: sha256.finalize_hex(),
         shannon_entropy: shannon_entropy(&frequencies, bytes),
         zero_bytes: frequencies[0],
-        printable_bytes,
-        signatures,
-        strings_found,
-        strings,
+        printable_bytes: strings.printable_bytes,
+        signatures: signatures.into_signatures(),
+        strings_found: strings.found,
+        strings: strings.reported,
     })
 }
 
-fn finish_memory_string(
-    offset: u64,
+/// Incrementally finds printable-ASCII runs in a byte stream, matching the
+/// same min-length/max-reported/max-length bounds as the original inline
+/// scan in `run_volatility`.
+struct StringScan {
+    printable_bytes: u64,
+    found: u64,
+    reported: Vec<MemoryString>,
+    start: u64,
     length: usize,
-    bytes: &mut Vec<u8>,
-    strings_found: &mut u64,
-    strings: &mut Vec<MemoryString>,
-) {
-    if length >= VOLATILITY_MIN_STRING_LENGTH {
-        *strings_found += 1;
-        if strings.len() < VOLATILITY_MAX_REPORTED_STRINGS {
-            strings.push(MemoryString {
-                offset,
-                text: String::from_utf8_lossy(bytes).into_owned(),
-                truncated: length > bytes.len(),
+    bytes: Vec<u8>,
+}
+
+impl StringScan {
+    fn new() -> Self {
+        Self {
+            printable_bytes: 0,
+            found: 0,
+            reported: Vec::new(),
+            start: 0,
+            length: 0,
+            bytes: Vec::with_capacity(VOLATILITY_MAX_STRING_LENGTH),
+        }
+    }
+
+    fn observe(&mut self, byte: u8, offset: u64) {
+        if byte.is_ascii_graphic() || byte == b' ' {
+            self.printable_bytes += 1;
+            if self.length == 0 {
+                self.start = offset;
+            }
+            self.length += 1;
+            if self.bytes.len() < VOLATILITY_MAX_STRING_LENGTH {
+                self.bytes.push(byte);
+            }
+        } else {
+            self.finish_current();
+        }
+    }
+
+    fn finish_current(&mut self) {
+        if self.length >= VOLATILITY_MIN_STRING_LENGTH {
+            self.found += 1;
+            if self.reported.len() < VOLATILITY_MAX_REPORTED_STRINGS {
+                self.reported.push(MemoryString {
+                    offset: self.start,
+                    text: String::from_utf8_lossy(&self.bytes).into_owned(),
+                    truncated: self.length > self.bytes.len(),
+                });
+            }
+        }
+        self.bytes.clear();
+        self.length = 0;
+    }
+}
+
+/// Incrementally detects embedded MZ/ELF/ZIP signatures via a 4-byte rolling
+/// window, matching the same detection logic as the original inline scan.
+struct SignatureScan {
+    rolling: [u8; 4],
+    rolling_len: usize,
+    mz: (u64, u64),
+    elf: (u64, u64),
+    zip: (u64, u64),
+}
+
+impl SignatureScan {
+    const fn new() -> Self {
+        Self {
+            rolling: [0; 4],
+            rolling_len: 0,
+            mz: (0, 0),
+            elf: (0, 0),
+            zip: (0, 0),
+        }
+    }
+
+    fn observe(&mut self, byte: u8, offset: u64) {
+        if self.rolling_len < self.rolling.len() {
+            self.rolling[self.rolling_len] = byte;
+            self.rolling_len += 1;
+        } else {
+            self.rolling.copy_within(1.., 0);
+            self.rolling[3] = byte;
+        }
+        if self.rolling_len >= 2 && self.rolling[self.rolling_len - 2..self.rolling_len] == *b"MZ" {
+            Self::record_signature(&mut self.mz, offset - 1);
+        }
+        if self.rolling_len == 4 {
+            if self.rolling == *b"\x7fELF" {
+                Self::record_signature(&mut self.elf, offset - 3);
+            }
+            if self.rolling == *b"PK\x03\x04" {
+                Self::record_signature(&mut self.zip, offset - 3);
+            }
+        }
+    }
+
+    fn into_signatures(self) -> Vec<EmbeddedSignature> {
+        let mut signatures = Vec::new();
+        Self::append_signature(&mut signatures, "PE/COFF MZ", self.mz);
+        Self::append_signature(&mut signatures, "ELF", self.elf);
+        Self::append_signature(&mut signatures, "ZIP", self.zip);
+        signatures
+    }
+
+    const fn record_signature(signature: &mut (u64, u64), offset: u64) {
+        if signature.0 == 0 {
+            signature.1 = offset;
+        }
+        signature.0 += 1;
+    }
+
+    fn append_signature(
+        signatures: &mut Vec<EmbeddedSignature>,
+        kind: &'static str,
+        signature: (u64, u64),
+    ) {
+        if signature.0 > 0 {
+            signatures.push(EmbeddedSignature {
+                kind,
+                occurrences: signature.0,
+                first_offset: signature.1,
             });
         }
     }
-    bytes.clear();
 }
 
-fn record_signature(signature: &mut (u64, u64), offset: u64) {
-    if signature.0 == 0 {
-        signature.1 = offset;
-    }
-    signature.0 += 1;
-}
-
-fn append_signature(
-    signatures: &mut Vec<EmbeddedSignature>,
-    kind: &'static str,
-    signature: (u64, u64),
-) {
-    if signature.0 > 0 {
-        signatures.push(EmbeddedSignature {
-            kind,
-            occurrences: signature.0,
-            first_offset: signature.1,
-        });
-    }
-}
-
+// Byte counts are bounded by the size of a local file/memory image; the
+// precision loss from converting to f64 for an entropy estimate only
+// matters above 2^52 bytes, far beyond anything this tool will ever read.
+#[allow(clippy::cast_precision_loss)]
 fn shannon_entropy(frequencies: &[u64; 256], bytes: u64) -> f64 {
     if bytes == 0 {
         return 0.0;
@@ -453,8 +517,7 @@ fn add_evidence_file(
         .ok_or(BuiltInToolError::SizeOverflow)?;
     let relative_path = if root == path {
         path.file_name()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| path.to_path_buf())
+            .map_or_else(|| path.to_path_buf(), PathBuf::from)
     } else {
         path.strip_prefix(root).map(PathBuf::from).map_err(|_| {
             BuiltInToolError::InvalidInput(format!(
@@ -478,7 +541,7 @@ pub(crate) fn sha256_file(path: &Path) -> Result<String, BuiltInToolError> {
         source,
     })?;
     let mut sha256 = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
+    let mut buffer = vec![0_u8; 64 * 1024];
     loop {
         let bytes_read = file
             .read(&mut buffer)
@@ -502,11 +565,17 @@ struct Sha256 {
 }
 
 impl Sha256 {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             state: [
-                0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
-                0x5be0cd19,
+                0x6a09_e667,
+                0xbb67_ae85,
+                0x3c6e_f372,
+                0xa54f_f53a,
+                0x510e_527f,
+                0x9b05_688c,
+                0x1f83_d9ab,
+                0x5be0_cd19,
             ],
             buffer: [0; 64],
             buffer_len: 0,
@@ -553,24 +622,85 @@ impl Sha256 {
         let block = self.buffer;
         self.transform(&block);
 
-        self.state
-            .iter()
-            .map(|word| format!("{word:08x}"))
-            .collect()
+        let mut hex = String::with_capacity(self.state.len() * 8);
+        for word in &self.state {
+            let _ = write!(hex, "{word:08x}");
+        }
+        hex
     }
 
+    // Variable names (a-h, s0/s1, k, w) mirror FIPS 180-4 section 6.2.2
+    // directly; renaming them would make this harder to check against the
+    // spec, not easier. The 64-round compression loop and its constant
+    // table are why this exceeds the line-count lint; splitting it up
+    // would fragment one contiguous algorithm step across functions.
+    #[allow(clippy::many_single_char_names, clippy::too_many_lines)]
     fn transform(&mut self, block: &[u8]) {
         const K: [u32; 64] = [
-            0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
-            0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
-            0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
-            0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
-            0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
-            0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
-            0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
-            0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-            0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
-            0xc67178f2,
+            0x428a_2f98,
+            0x7137_4491,
+            0xb5c0_fbcf,
+            0xe9b5_dba5,
+            0x3956_c25b,
+            0x59f1_11f1,
+            0x923f_82a4,
+            0xab1c_5ed5,
+            0xd807_aa98,
+            0x1283_5b01,
+            0x2431_85be,
+            0x550c_7dc3,
+            0x72be_5d74,
+            0x80de_b1fe,
+            0x9bdc_06a7,
+            0xc19b_f174,
+            0xe49b_69c1,
+            0xefbe_4786,
+            0x0fc1_9dc6,
+            0x240c_a1cc,
+            0x2de9_2c6f,
+            0x4a74_84aa,
+            0x5cb0_a9dc,
+            0x76f9_88da,
+            0x983e_5152,
+            0xa831_c66d,
+            0xb003_27c8,
+            0xbf59_7fc7,
+            0xc6e0_0bf3,
+            0xd5a7_9147,
+            0x06ca_6351,
+            0x1429_2967,
+            0x27b7_0a85,
+            0x2e1b_2138,
+            0x4d2c_6dfc,
+            0x5338_0d13,
+            0x650a_7354,
+            0x766a_0abb,
+            0x81c2_c92e,
+            0x9272_2c85,
+            0xa2bf_e8a1,
+            0xa81a_664b,
+            0xc24b_8b70,
+            0xc76c_51a3,
+            0xd192_e819,
+            0xd699_0624,
+            0xf40e_3585,
+            0x106a_a070,
+            0x19a4_c116,
+            0x1e37_6c08,
+            0x2748_774c,
+            0x34b0_bcb5,
+            0x391c_0cb3,
+            0x4ed8_aa4a,
+            0x5b9c_ca4f,
+            0x682e_6ff3,
+            0x748f_82ee,
+            0x78a5_636f,
+            0x84c8_7814,
+            0x8cc7_0208,
+            0x90be_fffa,
+            0xa450_6ceb,
+            0xbef9_a3f7,
+            0xc671_78f2,
         ];
         let mut words = [0_u32; 64];
         for (index, chunk) in block.chunks_exact(4).take(16).enumerate() {
@@ -628,6 +758,28 @@ mod tests {
         assert_eq!(
             sha256.finalize_hex(),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn sha256_matches_empty_string_vector() {
+        let sha256 = Sha256::new();
+        assert_eq!(
+            sha256.finalize_hex(),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    fn sha256_matches_one_million_a_vector() {
+        let mut sha256 = Sha256::new();
+        let chunk = [b'a'; 1000];
+        for _ in 0..1000 {
+            sha256.update(&chunk);
+        }
+        assert_eq!(
+            sha256.finalize_hex(),
+            "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
         );
     }
 

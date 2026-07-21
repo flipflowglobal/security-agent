@@ -61,7 +61,8 @@ impl Default for CapabilityGraph {
 }
 
 impl CapabilityGraph {
-    pub fn function_first_order() -> [FunctionFamily; 6] {
+    #[must_use]
+    pub const fn function_first_order() -> [FunctionFamily; 6] {
         [
             FunctionFamily::DiscoveryInventory,
             FunctionFamily::StaticSourceDependencyAnalysis,
@@ -72,6 +73,13 @@ impl CapabilityGraph {
         ]
     }
 
+    /// Checks that every target type has at least one specialist and one
+    /// toolchain pack registered for it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message naming the first target type or use case
+    /// found to have no coverage.
     pub fn validate_coverage(
         capability_registry: &CapabilityRegistry,
         pack_registry: &ToolchainPackRegistry,
@@ -98,7 +106,9 @@ impl CapabilityGraph {
             }
 
             let use_case = match target_type {
-                TargetType::WebApp => UseCase::WebApp,
+                TargetType::WebApp | TargetType::SourceCode | TargetType::DependencyManifest => {
+                    UseCase::WebApp
+                }
                 TargetType::Api => UseCase::Api,
                 TargetType::MobileBackend => UseCase::MobileBackend,
                 TargetType::MobileApp => UseCase::MobileApp,
@@ -106,7 +116,6 @@ impl CapabilityGraph {
                     UseCase::Cloud
                 }
                 TargetType::Blockchain => UseCase::BlockchainSmartContract,
-                TargetType::SourceCode | TargetType::DependencyManifest => UseCase::WebApp,
             };
             if pack_registry.by_use_case(&use_case).is_none() {
                 return Err(format!(

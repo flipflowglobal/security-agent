@@ -3,6 +3,7 @@ pub mod builtin_tools;
 pub mod capability_graph;
 pub mod compat;
 pub mod coordinator;
+pub mod execution;
 pub mod findings;
 pub mod governance;
 pub mod local_assets;
@@ -25,6 +26,10 @@ pub use builtin_tools::{
 pub use capability_graph::{CapabilityGraph, CapabilityNode, CapabilityStage, FunctionFamily};
 pub use compat::{CompatibilityEnvelope, IntegrationAdapter, JsonLineAdapter};
 pub use coordinator::{Coordinator, ExecutionPlan, ScanTask};
+pub use execution::{
+    DEFAULT_TIMEOUT, ToolExecutionError, ToolExecutionReport, run_external_tool,
+    run_external_tool_with_default_timeout,
+};
 pub use findings::{Finding, RiskScoreCalculator, Severity};
 pub use governance::{AuditLedger, AuditRecord, Role};
 pub use local_assets::{LocalAgentAssets, LocalSkill, LocalTool};
@@ -35,8 +40,8 @@ pub use model::{
 pub use pcap::{CaptureTimestamp, ProtocolCounts, WiresharkReport, run_wireshark};
 pub use policy::{AuthorizationError, AuthorizationOutcome, PolicyEngine};
 pub use registry::{
-    CapabilityRegistry, SpecialistCapability, ToolDefinition, ToolchainPack, ToolchainPackRegistry,
-    UseCase,
+    CapabilityRegistry, ExecutionClass, SpecialistCapability, ToolDefinition, ToolchainPack,
+    ToolchainPackRegistry, UseCase,
 };
 pub use roadmap::{ROADMAP_PHASES, RoadmapPhase};
 pub use tagged_run::{TaggedTestRun, TestEnvironment, TestRunReport};
@@ -158,6 +163,98 @@ mod tests {
     }
 
     #[test]
+    fn coordinator_requests_aggressive_intensity_when_authorized() {
+        let mut coordinator = Coordinator::new(
+            CapabilityRegistry::default(),
+            ToolchainPackRegistry::default(),
+            PolicyEngine::default(),
+        );
+
+        let profile = EngagementProfile {
+            engagement_id: "eng-aggressive".to_string(),
+            authorized_by: "ciso".to_string(),
+            time_window: TimeWindow {
+                start_epoch_seconds: 0,
+                end_epoch_seconds: u64::MAX,
+            },
+            in_scope_targets: vec!["api-critical".to_string()],
+            allowed_techniques: vec![
+                Technique::PassiveRecon,
+                Technique::ConfigurationAudit,
+                Technique::ApiSecurity,
+            ],
+            deny_list_targets: vec![],
+            max_intensity: TestIntensity::Aggressive,
+            high_impact_approved: true,
+            penetrative_testing_approved: true,
+        };
+        let targets = vec![Target {
+            id: "api-critical".to_string(),
+            target_type: TargetType::Api,
+            criticality: 9,
+        }];
+
+        let plan = coordinator
+            .plan_authorized_scan(profile, targets, 10)
+            .expect("aggressive-authorized plan should succeed");
+
+        assert_eq!(plan.high_impact_tasks, 1);
+        assert!(
+            plan.tasks
+                .iter()
+                .all(|task| task.intensity == TestIntensity::Aggressive),
+            "tasks for a high-criticality target under an Aggressive-capped, \
+             high-impact-approved profile should run at Aggressive intensity"
+        );
+    }
+
+    #[test]
+    fn coordinator_caps_at_standard_when_profile_not_aggressive() {
+        // Same high-criticality target and approvals, but the profile caps at
+        // Standard: intensity must not silently escalate to Aggressive.
+        let mut coordinator = Coordinator::new(
+            CapabilityRegistry::default(),
+            ToolchainPackRegistry::default(),
+            PolicyEngine::default(),
+        );
+
+        let profile = EngagementProfile {
+            engagement_id: "eng-standard-cap".to_string(),
+            authorized_by: "ciso".to_string(),
+            time_window: TimeWindow {
+                start_epoch_seconds: 0,
+                end_epoch_seconds: u64::MAX,
+            },
+            in_scope_targets: vec!["api-critical".to_string()],
+            allowed_techniques: vec![
+                Technique::PassiveRecon,
+                Technique::ConfigurationAudit,
+                Technique::ApiSecurity,
+            ],
+            deny_list_targets: vec![],
+            max_intensity: TestIntensity::Standard,
+            high_impact_approved: true,
+            penetrative_testing_approved: true,
+        };
+        let targets = vec![Target {
+            id: "api-critical".to_string(),
+            target_type: TargetType::Api,
+            criticality: 9,
+        }];
+
+        let plan = coordinator
+            .plan_authorized_scan(profile, targets, 10)
+            .expect("standard-capped plan should succeed");
+
+        assert!(
+            plan.tasks
+                .iter()
+                .all(|task| task.intensity == TestIntensity::Standard),
+            "a profile capped at Standard must never produce Aggressive tasks"
+        );
+    }
+
+    #[test]
     fn risk_score_normalizes_severity_and_confidence() {
         let score = RiskScoreCalculator::normalized_score(Severity::High, 80, true);
         assert!(score > 0.0);
@@ -200,9 +297,9 @@ mod tests {
             .flat_map(|t| t.approved_tools.iter())
             .collect();
         assert!(
-            all_tools.iter().all(|name| local_assets
-                .tool(name)
-                .is_some_and(|tool| tool.is_installed())),
+            all_tools
+                .iter()
+                .all(|name| local_assets.tool(name).is_some_and(LocalTool::is_installed)),
             "execution plans must not approve unavailable tools"
         );
     }
@@ -658,7 +755,7 @@ mod tests {
     fn risk_score_caps_at_ten() {
         // 10.0 * 1.0 * 1.15 > 10.0, should be capped.
         let score = RiskScoreCalculator::normalized_score(Severity::Critical, 100, true);
-        assert_eq!(score, 10.0);
+        assert!((score - 10.0).abs() < f32::EPSILON);
     }
 
     #[test]

@@ -78,12 +78,12 @@ impl fmt::Display for WiresharkReport {
         writeln!(
             formatter,
             "First timestamp: {}",
-            optional_timestamp(&self.first_timestamp)
+            optional_timestamp(self.first_timestamp.as_ref())
         )?;
         writeln!(
             formatter,
             "Last timestamp : {}",
-            optional_timestamp(&self.last_timestamp)
+            optional_timestamp(self.last_timestamp.as_ref())
         )?;
         writeln!(formatter)?;
         writeln!(formatter, "Protocol Counts")?;
@@ -113,6 +113,134 @@ enum ByteOrder {
     Big,
 }
 
+struct GlobalHeader {
+    order: ByteOrder,
+    nanosecond_resolution: bool,
+    format: &'static str,
+    version_major: u16,
+    version_minor: u16,
+    snaplen: u32,
+    link_type: u32,
+}
+
+fn read_global_header(file: &mut File, capture: &Path) -> Result<GlobalHeader, BuiltInToolError> {
+    let mut global = [0_u8; 24];
+    read_exact_capture(file, &mut global, capture, "truncated PCAP global header")?;
+    let (order, nanosecond_resolution, format) =
+        parse_magic([global[0], global[1], global[2], global[3]])?;
+    let version_major = read_u16(&global[4..6], order);
+    let version_minor = read_u16(&global[6..8], order);
+    if version_major != 2 || version_minor != 4 {
+        return Err(BuiltInToolError::InvalidInput(format!(
+            "unsupported PCAP version {version_major}.{version_minor}"
+        )));
+    }
+    let snaplen = read_u32(&global[16..20], order);
+    if snaplen == 0 {
+        return Err(BuiltInToolError::InvalidInput(
+            "PCAP snapshot length must be greater than zero".to_string(),
+        ));
+    }
+    let link_type = read_u32(&global[20..24], order);
+    Ok(GlobalHeader {
+        order,
+        nanosecond_resolution,
+        format,
+        version_major,
+        version_minor,
+        snaplen,
+        link_type,
+    })
+}
+
+struct PacketRecord {
+    timestamp: CaptureTimestamp,
+    captured_length: u32,
+    original_length: u32,
+    data: Vec<u8>,
+}
+
+/// Reads the next packet record, or `Ok(None)` at a clean end of capture.
+fn read_packet_record(
+    file: &mut File,
+    capture: &Path,
+    header: &GlobalHeader,
+    packets_so_far: u64,
+) -> Result<Option<PacketRecord>, BuiltInToolError> {
+    let mut packet_header = [0_u8; 16];
+    let first_byte = read_capture(file, &mut packet_header[..1], capture)?;
+    if first_byte == 0 {
+        return Ok(None);
+    }
+    read_exact_capture(
+        file,
+        &mut packet_header[1..],
+        capture,
+        "truncated PCAP packet header",
+    )?;
+    if packets_so_far >= MAX_PACKETS {
+        return Err(BuiltInToolError::InvalidInput(format!(
+            "PCAP packet limit exceeded: {MAX_PACKETS}"
+        )));
+    }
+    let packet_number = packets_so_far + 1;
+
+    let seconds = read_u32(&packet_header[0..4], header.order);
+    let fraction = read_u32(&packet_header[4..8], header.order);
+    let captured_length = read_u32(&packet_header[8..12], header.order);
+    let original_length = read_u32(&packet_header[12..16], header.order);
+    if captured_length > header.snaplen {
+        return Err(BuiltInToolError::InvalidInput(format!(
+            "packet {packet_number} captured length {captured_length} exceeds snapshot length {}",
+            header.snaplen
+        )));
+    }
+    if captured_length > original_length {
+        return Err(BuiltInToolError::InvalidInput(format!(
+            "packet {packet_number} captured length {captured_length} exceeds original length {original_length}"
+        )));
+    }
+    let captured_length_usize = captured_length as usize;
+    if captured_length_usize > MAX_CAPTURED_PACKET_BYTES {
+        return Err(BuiltInToolError::InvalidInput(format!(
+            "packet {packet_number} exceeds local packet-size limit"
+        )));
+    }
+    let nanoseconds = if header.nanosecond_resolution {
+        fraction
+    } else {
+        fraction.checked_mul(1_000).ok_or_else(|| {
+            BuiltInToolError::InvalidInput("invalid PCAP microsecond timestamp".to_string())
+        })?
+    };
+    if nanoseconds >= 1_000_000_000 {
+        return Err(BuiltInToolError::InvalidInput(format!(
+            "packet {packet_number} has invalid fractional timestamp"
+        )));
+    }
+
+    let mut data = vec![0_u8; captured_length_usize];
+    read_exact_capture(file, &mut data, capture, "truncated PCAP packet data")?;
+
+    Ok(Some(PacketRecord {
+        timestamp: CaptureTimestamp {
+            seconds,
+            nanoseconds,
+        },
+        captured_length,
+        original_length,
+        data,
+    }))
+}
+
+/// Parses the classic PCAP file at `input` into a [`WiresharkReport`].
+///
+/// # Errors
+///
+/// Returns [`BuiltInToolError::InvalidInput`] if `input` is a symbolic link,
+/// not a regular file, not classic PCAP, uses an unsupported version, or
+/// contains a malformed/oversized/truncated packet; and
+/// [`BuiltInToolError::Io`] on any filesystem failure.
 pub fn run_wireshark(input: &Path) -> Result<WiresharkReport, BuiltInToolError> {
     let input_metadata = fs::symlink_metadata(input).map_err(|source| BuiltInToolError::Io {
         path: input.to_path_buf(),
@@ -139,38 +267,16 @@ pub fn run_wireshark(input: &Path) -> Result<WiresharkReport, BuiltInToolError> 
         path: capture.clone(),
         source,
     })?;
-    let mut global = [0_u8; 24];
-    read_exact_capture(
-        &mut file,
-        &mut global,
-        &capture,
-        "truncated PCAP global header",
-    )?;
-    let (order, nanosecond_resolution, format) =
-        parse_magic([global[0], global[1], global[2], global[3]])?;
-    let version_major = read_u16(&global[4..6], order);
-    let version_minor = read_u16(&global[6..8], order);
-    if version_major != 2 || version_minor != 4 {
-        return Err(BuiltInToolError::InvalidInput(format!(
-            "unsupported PCAP version {version_major}.{version_minor}"
-        )));
-    }
-    let snaplen = read_u32(&global[16..20], order);
-    if snaplen == 0 {
-        return Err(BuiltInToolError::InvalidInput(
-            "PCAP snapshot length must be greater than zero".to_string(),
-        ));
-    }
-    let link_type = read_u32(&global[20..24], order);
+    let header = read_global_header(&mut file, &capture)?;
 
     let mut report = WiresharkReport {
         capture: capture.clone(),
         sha256: String::new(),
-        format,
-        version_major,
-        version_minor,
-        snaplen,
-        link_type,
+        format: header.format,
+        version_major: header.version_major,
+        version_minor: header.version_minor,
+        snaplen: header.snaplen,
+        link_type: header.link_type,
         packets: 0,
         captured_bytes: 0,
         original_bytes: 0,
@@ -180,89 +286,24 @@ pub fn run_wireshark(input: &Path) -> Result<WiresharkReport, BuiltInToolError> 
         protocols: ProtocolCounts::default(),
     };
 
-    loop {
-        let mut packet_header = [0_u8; 16];
-        let first_byte = read_capture(&mut file, &mut packet_header[..1], &capture)?;
-        if first_byte == 0 {
-            break;
-        }
-        read_exact_capture(
-            &mut file,
-            &mut packet_header[1..],
-            &capture,
-            "truncated PCAP packet header",
-        )?;
-        if report.packets >= MAX_PACKETS {
-            return Err(BuiltInToolError::InvalidInput(format!(
-                "PCAP packet limit exceeded: {MAX_PACKETS}"
-            )));
-        }
-
-        let seconds = read_u32(&packet_header[0..4], order);
-        let fraction = read_u32(&packet_header[4..8], order);
-        let captured_length = read_u32(&packet_header[8..12], order);
-        let original_length = read_u32(&packet_header[12..16], order);
-        if captured_length > snaplen {
-            return Err(BuiltInToolError::InvalidInput(format!(
-                "packet {} captured length {captured_length} exceeds snapshot length {snaplen}",
-                report.packets + 1
-            )));
-        }
-        if captured_length > original_length {
-            return Err(BuiltInToolError::InvalidInput(format!(
-                "packet {} captured length {captured_length} exceeds original length {original_length}",
-                report.packets + 1
-            )));
-        }
-        let captured_length_usize = captured_length as usize;
-        if captured_length_usize > MAX_CAPTURED_PACKET_BYTES {
-            return Err(BuiltInToolError::InvalidInput(format!(
-                "packet {} exceeds local packet-size limit",
-                report.packets + 1
-            )));
-        }
-        let nanoseconds = if nanosecond_resolution {
-            fraction
-        } else {
-            fraction.checked_mul(1_000).ok_or_else(|| {
-                BuiltInToolError::InvalidInput("invalid PCAP microsecond timestamp".to_string())
-            })?
-        };
-        if nanoseconds >= 1_000_000_000 {
-            return Err(BuiltInToolError::InvalidInput(format!(
-                "packet {} has invalid fractional timestamp",
-                report.packets + 1
-            )));
-        }
-        let timestamp = CaptureTimestamp {
-            seconds,
-            nanoseconds,
-        };
+    while let Some(packet) = read_packet_record(&mut file, &capture, &header, report.packets)? {
         if report.first_timestamp.is_none() {
-            report.first_timestamp = Some(timestamp.clone());
+            report.first_timestamp = Some(packet.timestamp.clone());
         }
-        report.last_timestamp = Some(timestamp);
-
-        let mut packet = vec![0_u8; captured_length_usize];
-        read_exact_capture(
-            &mut file,
-            &mut packet,
-            &capture,
-            "truncated PCAP packet data",
-        )?;
+        report.last_timestamp = Some(packet.timestamp);
         report.packets += 1;
         report.captured_bytes = report
             .captured_bytes
-            .checked_add(u64::from(captured_length))
+            .checked_add(u64::from(packet.captured_length))
             .ok_or(BuiltInToolError::SizeOverflow)?;
         report.original_bytes = report
             .original_bytes
-            .checked_add(u64::from(original_length))
+            .checked_add(u64::from(packet.original_length))
             .ok_or(BuiltInToolError::SizeOverflow)?;
-        if captured_length < original_length {
+        if packet.captured_length < packet.original_length {
             report.truncated_packets += 1;
         }
-        classify_packet(link_type, &packet, &mut report.protocols);
+        classify_packet(header.link_type, &packet.data, &mut report.protocols);
     }
 
     report.sha256 = sha256_file(&capture)?;
@@ -333,7 +374,7 @@ fn classify_ipv6(packet: &[u8], offset: usize, counts: &mut ProtocolCounts) {
     classify_transport(packet[offset + 6], counts);
 }
 
-fn classify_transport(protocol: u8, counts: &mut ProtocolCounts) {
+const fn classify_transport(protocol: u8, counts: &mut ProtocolCounts) {
     match protocol {
         1 => counts.icmp += 1,
         6 => counts.tcp += 1,
@@ -388,11 +429,8 @@ fn read_exact_capture(
     })
 }
 
-fn optional_timestamp(timestamp: &Option<CaptureTimestamp>) -> String {
-    timestamp
-        .as_ref()
-        .map(ToString::to_string)
-        .unwrap_or_else(|| "not present".to_string())
+fn optional_timestamp(timestamp: Option<&CaptureTimestamp>) -> String {
+    timestamp.map_or_else(|| "not present".to_string(), ToString::to_string)
 }
 
 #[cfg(test)]
