@@ -35,7 +35,7 @@ impl FromStr for Role {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuditRecord {
     pub timestamp_epoch_seconds: u64,
     pub actor: String,

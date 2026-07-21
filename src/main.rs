@@ -195,21 +195,27 @@ fn run_external_tool_command(
 #[derive(Debug, PartialEq, Eq)]
 enum PlanScanError {
     MissingConfigPath,
+    MissingAuditLogPath,
     UnexpectedArgument(String),
     ConfigLoad(String),
     AuthorizationDenied(String),
+    AuditLogWrite(String),
 }
 
 impl fmt::Display for PlanScanError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingConfigPath => formatter.write_str("missing engagement config file path"),
+            Self::MissingAuditLogPath => formatter.write_str("missing --audit-log file path"),
             Self::UnexpectedArgument(argument) => {
                 write!(formatter, "unexpected argument: {argument}")
             }
             Self::ConfigLoad(message) => write!(formatter, "failed to load config: {message}"),
             Self::AuthorizationDenied(message) => {
                 write!(formatter, "authorization denied: {message}")
+            }
+            Self::AuditLogWrite(message) => {
+                write!(formatter, "failed to write audit log: {message}")
             }
         }
     }
@@ -220,8 +226,10 @@ impl fmt::Display for PlanScanError {
 /// asserted on directly in tests instead of through an `ExitCode`, which
 /// does not implement `PartialEq`.
 ///
-/// If the argument immediately after the config path is the literal
-/// `--execute`, every remaining argument is passed through to
+/// Recognizes two optional trailing arguments, in order: `--audit-log
+/// <path>` appends the new audit ledger records this call produced to
+/// `<path>` (see [`security_agent::append_audit_records`]); `--execute
+/// <args>...` passes every remaining argument through to
 /// [`security_agent::execute_plan`], which runs each planned task's
 /// approved `StaticLocalAnalysis` tools and returns their outcomes
 /// alongside the plan.
@@ -235,7 +243,16 @@ fn plan_scan(
     PlanScanError,
 > {
     let config_path = arguments.next().ok_or(PlanScanError::MissingConfigPath)?;
-    let tool_arguments = match arguments.next() {
+
+    let mut next_argument = arguments.next();
+    let audit_log_path = if next_argument.as_deref() == Some("--audit-log") {
+        let path = arguments.next().ok_or(PlanScanError::MissingAuditLogPath)?;
+        next_argument = arguments.next();
+        Some(path)
+    } else {
+        None
+    };
+    let tool_arguments = match next_argument {
         None => None,
         Some(flag) if flag == "--execute" => Some(arguments.collect::<Vec<String>>()),
         Some(other) => return Err(PlanScanError::UnexpectedArgument(other)),
@@ -254,6 +271,11 @@ fn plan_scan(
         .plan_authorized_scan(profile, targets, current_epoch_seconds())
         .map_err(|error| PlanScanError::AuthorizationDenied(error.to_string()))?;
 
+    if let Some(path) = audit_log_path {
+        security_agent::append_audit_records(Path::new(&path), coordinator.audit_ledger.records())
+            .map_err(|error| PlanScanError::AuditLogWrite(error.to_string()))?;
+    }
+
     let outcomes = tool_arguments.map(|tool_arguments| {
         let assets = LocalAgentAssets::bundled();
         security_agent::execute_plan(&plan, &assets, &tool_arguments)
@@ -262,9 +284,10 @@ fn plan_scan(
     Ok((plan, outcomes))
 }
 
-/// CLI entry point for `--plan-scan <config-file> [--execute <args>...]`;
-/// prints the resulting [`security_agent::ExecutionPlan`], and — when
-/// `--execute` was given — each task's tool execution outcomes.
+/// CLI entry point for `--plan-scan <config-file> [--audit-log <path>]
+/// [--execute <args>...]`; prints the resulting
+/// [`security_agent::ExecutionPlan`], and — when `--execute` was given —
+/// each task's tool execution outcomes.
 fn plan_scan_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
     match plan_scan(arguments) {
         Ok((plan, outcomes)) => {
@@ -436,6 +459,67 @@ criticality=3
             outcomes.is_some(),
             "--execute should produce Some(outcomes), even if empty"
         );
+    }
+
+    #[test]
+    fn plan_scan_writes_audit_log_when_flag_is_given() {
+        let config_path = std::env::temp_dir().join(format!(
+            "security-agent-main-plan-scan-audit-config-{}.txt",
+            std::process::id()
+        ));
+        let log_path = std::env::temp_dir().join(format!(
+            "security-agent-main-plan-scan-audit-log-{}.jsonl",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&log_path);
+        fs::write(
+            &config_path,
+            "\
+engagement_id=eng-cli-audit
+authorized_by=jane.doe
+authorized_by_role=Auditor
+time_window_start=0
+time_window_end=99999999999
+in_scope_targets=api-staging
+allowed_techniques=PassiveRecon,ConfigurationAudit,ApiSecurity
+max_intensity=Standard
+high_impact_approved=false
+penetrative_testing_approved=true
+
+[target]
+id=api-staging
+target_type=Api
+criticality=3
+",
+        )
+        .expect("write temp config");
+
+        let mut arguments = vec![
+            config_path.to_string_lossy().into_owned(),
+            "--audit-log".to_string(),
+            log_path.to_string_lossy().into_owned(),
+        ]
+        .into_iter();
+        let result = plan_scan(&mut arguments);
+        fs::remove_file(&config_path).expect("remove temp config");
+
+        result.expect("valid config should authorize, plan, and log");
+
+        let records = security_agent::load_audit_records(&log_path).expect("load audit log");
+        fs::remove_file(&log_path).expect("remove temp audit log");
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].action, "plan_authorized_scan");
+        assert_eq!(records[0].role, security_agent::Role::Auditor);
+    }
+
+    #[test]
+    fn plan_scan_reports_missing_audit_log_path() {
+        let mut arguments = vec!["config.txt".to_string(), "--audit-log".to_string()].into_iter();
+        assert!(matches!(
+            plan_scan(&mut arguments),
+            Err(PlanScanError::MissingAuditLogPath)
+        ));
     }
 
     #[test]

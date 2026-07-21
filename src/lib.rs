@@ -1,4 +1,5 @@
 pub mod advanced;
+pub mod audit_log;
 pub mod builtin_tools;
 pub mod capability_graph;
 pub mod compat;
@@ -20,12 +21,16 @@ pub mod workflow;
 pub use advanced::{
     AttackPathEdge, AttackPathGraph, RetestSchedule, ThreatModelNode, propose_retest_schedule,
 };
+pub use audit_log::{AuditLogError, append_audit_records, load_audit_records};
 pub use builtin_tools::{
     AutopsyReport, BuiltInToolError, EmbeddedSignature, EvidenceFile, MemoryString,
     VolatilityReport, is_builtin_tool, run_autopsy, run_builtin_tool, run_volatility,
 };
 pub use capability_graph::{CapabilityGraph, CapabilityNode, CapabilityStage, FunctionFamily};
-pub use compat::{CompatibilityEnvelope, IntegrationAdapter, JsonLineAdapter};
+pub use compat::{
+    CompatibilityEnvelope, IntegrationAdapter, JsonLineAdapter, audit_record_to_envelope,
+    envelope_to_audit_record,
+};
 pub use coordinator::{Coordinator, ExecutionPlan, ScanTask};
 pub use engagement_config::{
     EngagementConfigError, load_engagement_config, parse_engagement_config,

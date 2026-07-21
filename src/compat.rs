@@ -1,5 +1,6 @@
 use crate::coordinator::ExecutionPlan;
 use crate::findings::{Finding, Severity};
+use crate::governance::AuditRecord;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::iter::Peekable;
@@ -186,6 +187,57 @@ fn parse_json_string_object(chars: &mut Peekable<Chars<'_>>) -> Option<BTreeMap<
     }
 }
 
+/// Converts an [`AuditRecord`] to a [`CompatibilityEnvelope`].
+///
+/// The result is suitable for [`CompatibilityEnvelope::to_wire_format`],
+/// used to persist the audit ledger to an append-only JSON Lines file
+/// (see `crate::audit_log`).
+#[must_use]
+pub fn audit_record_to_envelope(record: &AuditRecord) -> CompatibilityEnvelope {
+    let mut fields = BTreeMap::new();
+    fields.insert(
+        "timestamp_epoch_seconds".to_string(),
+        record.timestamp_epoch_seconds.to_string(),
+    );
+    fields.insert("actor".to_string(), record.actor.clone());
+    fields.insert("role".to_string(), record.role.to_string());
+    fields.insert("action".to_string(), record.action.clone());
+    fields.insert("target".to_string(), record.target.clone());
+    fields.insert("details".to_string(), record.details.clone());
+    if let Some(test_run_id) = &record.test_run_id {
+        fields.insert("test_run_id".to_string(), test_run_id.clone());
+    }
+    CompatibilityEnvelope {
+        protocol_version: "1".to_string(),
+        producer: "security-agent".to_string(),
+        payload_kind: "audit_record".to_string(),
+        fields,
+    }
+}
+
+/// The inverse of [`audit_record_to_envelope`]. Returns `None` if
+/// `envelope` isn't an `audit_record` payload or is missing a required
+/// field.
+#[must_use]
+pub fn envelope_to_audit_record(envelope: &CompatibilityEnvelope) -> Option<AuditRecord> {
+    if envelope.payload_kind != "audit_record" {
+        return None;
+    }
+    Some(AuditRecord {
+        timestamp_epoch_seconds: envelope
+            .fields
+            .get("timestamp_epoch_seconds")?
+            .parse()
+            .ok()?,
+        actor: envelope.fields.get("actor")?.clone(),
+        role: envelope.fields.get("role")?.parse().ok()?,
+        action: envelope.fields.get("action")?.clone(),
+        target: envelope.fields.get("target")?.clone(),
+        details: envelope.fields.get("details")?.clone(),
+        test_run_id: envelope.fields.get("test_run_id").cloned(),
+    })
+}
+
 pub trait IntegrationAdapter {
     fn name(&self) -> &'static str;
     fn export_execution_plan(&self, plan: &ExecutionPlan) -> CompatibilityEnvelope;
@@ -321,5 +373,59 @@ mod tests {
         assert!(CompatibilityEnvelope::from_wire_format("not json").is_none());
         assert!(CompatibilityEnvelope::from_wire_format("{\"version\":\"1\"").is_none());
         assert!(CompatibilityEnvelope::from_wire_format("{\"fields\":{}}").is_none());
+    }
+
+    #[test]
+    fn audit_record_round_trips_through_envelope_and_wire_format() {
+        use crate::governance::Role;
+
+        let record = AuditRecord {
+            timestamp_epoch_seconds: 12345,
+            actor: "jane.doe".to_string(),
+            role: Role::SecurityEngineer,
+            action: "plan_tagged_scan".to_string(),
+            target: "eng-1".to_string(),
+            details: "tasks=2 high_impact=0".to_string(),
+            test_run_id: Some("run-abc".to_string()),
+        };
+
+        let envelope = audit_record_to_envelope(&record);
+        assert_eq!(envelope.payload_kind, "audit_record");
+        let parsed = envelope_to_audit_record(&envelope).expect("should convert back");
+        assert_eq!(parsed, record);
+
+        // And through the wire format too.
+        let line = envelope.to_wire_format();
+        let reparsed_envelope =
+            CompatibilityEnvelope::from_wire_format(&line).expect("should parse wire format");
+        let reparsed_record =
+            envelope_to_audit_record(&reparsed_envelope).expect("should convert back");
+        assert_eq!(reparsed_record, record);
+    }
+
+    #[test]
+    fn audit_record_without_test_run_id_round_trips() {
+        use crate::governance::Role;
+
+        let record = AuditRecord {
+            timestamp_epoch_seconds: 1,
+            actor: "secops".to_string(),
+            role: Role::SecurityAdmin,
+            action: "plan_authorized_scan".to_string(),
+            target: "eng-2".to_string(),
+            details: "tasks=1 high_impact=0".to_string(),
+            test_run_id: None,
+        };
+
+        let envelope = audit_record_to_envelope(&record);
+        assert!(!envelope.fields.contains_key("test_run_id"));
+        let parsed = envelope_to_audit_record(&envelope).expect("should convert back");
+        assert_eq!(parsed, record);
+    }
+
+    #[test]
+    fn envelope_to_audit_record_rejects_wrong_payload_kind() {
+        let envelope = sample_envelope();
+        assert!(envelope_to_audit_record(&envelope).is_none());
     }
 }
