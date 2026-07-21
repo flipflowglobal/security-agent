@@ -180,6 +180,13 @@ fn run_external_tool_command(
     };
     let tool_arguments: Vec<String> = arguments.collect();
 
+    // The direct CLI path has no declared engagement, so advise against a
+    // default Standard ceiling. Advisory only for tools that actually reach
+    // a live target — static-local tools never touch the network.
+    if tool.definition.execution_class != security_agent::ExecutionClass::StaticLocalAnalysis {
+        print_intensity_advisories(&tool_arguments, security_agent::TestIntensity::Standard);
+    }
+
     match run_external_tool_with_default_timeout(tool, &tool_arguments) {
         Ok(report) => {
             print!("{report}");
@@ -263,6 +270,10 @@ fn plan_scan(
     let (profile, targets) = load_engagement_config(Path::new(&config_path))
         .map_err(|error| PlanScanError::ConfigLoad(error.to_string()))?;
 
+    // Captured before `profile` is moved into planning; used to advise on
+    // over-aggressive `--execute` arguments against the declared ceiling.
+    let declared_ceiling = profile.max_intensity;
+
     let mut coordinator = Coordinator::new(
         CapabilityRegistry::default(),
         ToolchainPackRegistry::default(),
@@ -276,6 +287,10 @@ fn plan_scan(
     if let Some(path) = audit_log_path {
         security_agent::append_audit_records(Path::new(&path), coordinator.audit_ledger.records())
             .map_err(|error| PlanScanError::AuditLogWrite(error.to_string()))?;
+    }
+
+    if let Some(tool_arguments) = &tool_arguments {
+        print_intensity_advisories(tool_arguments, declared_ceiling);
     }
 
     let outcomes = tool_arguments.map(|tool_arguments| {
@@ -316,6 +331,16 @@ fn plan_scan_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
             eprintln!("{error}");
             ExitCode::from(2)
         }
+    }
+}
+
+/// Prints one non-blocking intensity advisory per over-aggressive argument
+/// to stderr (see `security_agent::intensity_guard`). Never changes control
+/// flow or exit codes — it only makes a scope/aggressiveness mismatch
+/// visible to the operator.
+fn print_intensity_advisories(arguments: &[String], ceiling: security_agent::TestIntensity) {
+    for advisory in security_agent::advise(arguments, ceiling) {
+        eprintln!("intensity advisory: {}", advisory.message);
     }
 }
 
