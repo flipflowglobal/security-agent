@@ -3,6 +3,7 @@ pub mod builtin_tools;
 pub mod capability_graph;
 pub mod compat;
 pub mod coordinator;
+pub mod engagement_config;
 pub mod execution;
 pub mod findings;
 pub mod governance;
@@ -26,6 +27,9 @@ pub use builtin_tools::{
 pub use capability_graph::{CapabilityGraph, CapabilityNode, CapabilityStage, FunctionFamily};
 pub use compat::{CompatibilityEnvelope, IntegrationAdapter, JsonLineAdapter};
 pub use coordinator::{Coordinator, ExecutionPlan, ScanTask};
+pub use engagement_config::{
+    EngagementConfigError, load_engagement_config, parse_engagement_config,
+};
 pub use execution::{
     DEFAULT_TIMEOUT, ToolExecutionError, ToolExecutionReport, run_external_tool,
     run_external_tool_with_default_timeout,
@@ -55,6 +59,7 @@ mod tests {
         EngagementProfile {
             engagement_id: "eng-001".to_string(),
             authorized_by: "secops".to_string(),
+            authorized_by_role: Role::SecurityAdmin,
             time_window: TimeWindow {
                 start_epoch_seconds: 10,
                 end_epoch_seconds: 1000,
@@ -82,6 +87,7 @@ mod tests {
         EngagementProfile {
             engagement_id: "eng-android-001".to_string(),
             authorized_by: "mobile-secops".to_string(),
+            authorized_by_role: Role::SecurityAdmin,
             time_window: TimeWindow {
                 start_epoch_seconds: 10,
                 end_epoch_seconds: 1000,
@@ -173,6 +179,7 @@ mod tests {
         let profile = EngagementProfile {
             engagement_id: "eng-aggressive".to_string(),
             authorized_by: "ciso".to_string(),
+            authorized_by_role: Role::SecurityAdmin,
             time_window: TimeWindow {
                 start_epoch_seconds: 0,
                 end_epoch_seconds: u64::MAX,
@@ -221,6 +228,7 @@ mod tests {
         let profile = EngagementProfile {
             engagement_id: "eng-standard-cap".to_string(),
             authorized_by: "ciso".to_string(),
+            authorized_by_role: Role::SecurityAdmin,
             time_window: TimeWindow {
                 start_epoch_seconds: 0,
                 end_epoch_seconds: u64::MAX,
@@ -391,6 +399,62 @@ mod tests {
     }
 
     #[test]
+    fn plan_authorized_scan_records_the_profile_authorizer_role() {
+        let mut coordinator = Coordinator::new(
+            CapabilityRegistry::default(),
+            ToolchainPackRegistry::default(),
+            PolicyEngine::default(),
+        );
+
+        let mut profile = android_profile();
+        profile.authorized_by_role = Role::Auditor;
+        let targets = vec![Target {
+            id: "authorized-mobile-app".to_string(),
+            target_type: TargetType::MobileApp,
+            criticality: 4,
+        }];
+
+        coordinator
+            .plan_authorized_scan(profile, targets, 50)
+            .expect("plan should succeed");
+
+        assert_eq!(
+            coordinator.audit_ledger.records()[0].role,
+            Role::Auditor,
+            "the audit record's role must come from the profile, not be hardcoded"
+        );
+    }
+
+    #[test]
+    fn plan_tagged_scan_records_the_test_run_operator_role() {
+        let mut coordinator = Coordinator::new(
+            CapabilityRegistry::default(),
+            ToolchainPackRegistry::default(),
+            PolicyEngine::default(),
+        );
+
+        let profile = authorized_profile();
+        let targets = vec![Target {
+            id: "api-staging".to_string(),
+            target_type: TargetType::Api,
+            criticality: 4,
+        }];
+        let run = tagged_run();
+        assert_eq!(run.operator_role, Role::SecurityEngineer);
+
+        let (_, report) = coordinator
+            .plan_tagged_scan(profile, targets, 80, &run)
+            .expect("tagged scan should succeed");
+
+        assert_eq!(
+            coordinator.audit_ledger.records()[0].role,
+            Role::SecurityEngineer,
+            "the audit record's role must come from the test run's operator_role"
+        );
+        assert_eq!(report.operator_role, Role::SecurityEngineer);
+    }
+
+    #[test]
     fn attack_path_graph_built_from_findings() {
         let findings = vec![
             Finding {
@@ -438,6 +502,7 @@ mod tests {
         let profile = EngagementProfile {
             engagement_id: "eng-expired".to_string(),
             authorized_by: "secops".to_string(),
+            authorized_by_role: Role::SecurityAdmin,
             time_window: TimeWindow {
                 start_epoch_seconds: 100,
                 end_epoch_seconds: 200,
@@ -487,6 +552,7 @@ mod tests {
         let profile = EngagementProfile {
             engagement_id: "eng-limited".to_string(),
             authorized_by: "secops".to_string(),
+            authorized_by_role: Role::SecurityAdmin,
             time_window: TimeWindow {
                 start_epoch_seconds: 0,
                 end_epoch_seconds: u64::MAX,
@@ -522,6 +588,7 @@ mod tests {
         let profile = EngagementProfile {
             engagement_id: "eng-passive".to_string(),
             authorized_by: "secops".to_string(),
+            authorized_by_role: Role::SecurityAdmin,
             time_window: TimeWindow {
                 start_epoch_seconds: 0,
                 end_epoch_seconds: u64::MAX,
@@ -554,6 +621,7 @@ mod tests {
         let profile = EngagementProfile {
             engagement_id: "eng-noapproval".to_string(),
             authorized_by: "secops".to_string(),
+            authorized_by_role: Role::SecurityAdmin,
             time_window: TimeWindow {
                 start_epoch_seconds: 0,
                 end_epoch_seconds: u64::MAX,
@@ -590,6 +658,7 @@ mod tests {
         let profile = EngagementProfile {
             engagement_id: "eng-approved".to_string(),
             authorized_by: "ciso".to_string(),
+            authorized_by_role: Role::SecurityAdmin,
             time_window: TimeWindow {
                 start_epoch_seconds: 0,
                 end_epoch_seconds: u64::MAX,
@@ -647,6 +716,7 @@ mod tests {
         let profile = EngagementProfile {
             engagement_id: "eng-deny".to_string(),
             authorized_by: "secops".to_string(),
+            authorized_by_role: Role::SecurityAdmin,
             time_window: TimeWindow {
                 start_epoch_seconds: 0,
                 end_epoch_seconds: u64::MAX,
@@ -888,6 +958,7 @@ mod tests {
         let profile = EngagementProfile {
             engagement_id: "eng-scope".to_string(),
             authorized_by: "secops".to_string(),
+            authorized_by_role: Role::SecurityAdmin,
             time_window: TimeWindow {
                 start_epoch_seconds: 0,
                 end_epoch_seconds: u64::MAX,
@@ -923,6 +994,7 @@ mod tests {
         let profile = EngagementProfile {
             engagement_id: "eng-pen-no".to_string(),
             authorized_by: "secops".to_string(),
+            authorized_by_role: Role::SecurityAdmin,
             time_window: TimeWindow {
                 start_epoch_seconds: 0,
                 end_epoch_seconds: u64::MAX,
@@ -964,6 +1036,7 @@ mod tests {
         let profile = EngagementProfile {
             engagement_id: "eng-dedupe".to_string(),
             authorized_by: "secops".to_string(),
+            authorized_by_role: Role::SecurityAdmin,
             time_window: TimeWindow {
                 start_epoch_seconds: 0,
                 end_epoch_seconds: u64::MAX,
@@ -1029,6 +1102,7 @@ mod tests {
             "run-abc-123".to_string(),
             TestEnvironment::Staging,
             "secops-engineer".to_string(),
+            Role::SecurityEngineer,
             "Quarterly API surface regression".to_string(),
             10,
         )
@@ -1117,6 +1191,7 @@ mod tests {
         let profile_b = EngagementProfile {
             engagement_id: "eng-tagged".to_string(),
             authorized_by: "secops".to_string(),
+            authorized_by_role: Role::SecurityAdmin,
             time_window: TimeWindow {
                 start_epoch_seconds: 0,
                 end_epoch_seconds: u64::MAX,

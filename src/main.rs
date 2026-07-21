@@ -1,9 +1,15 @@
 //! Security-Agent local runtime.
 
-use security_agent::{LocalAgentAssets, run_builtin_tool, run_external_tool_with_default_timeout};
+use security_agent::{
+    CapabilityGraph, CapabilityRegistry, Coordinator, LocalAgentAssets, PolicyEngine,
+    ToolchainPackRegistry, load_engagement_config, run_builtin_tool,
+    run_external_tool_with_default_timeout,
+};
+use std::fmt;
 use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn main() -> ExitCode {
     let assets = LocalAgentAssets::bundled();
@@ -19,6 +25,7 @@ fn main() -> ExitCode {
         Some("--list-tools") => list_tools(&assets),
         Some("--run-tool") => run_tool_command(&mut arguments),
         Some("--run-external-tool") => run_external_tool_command(&assets, &mut arguments),
+        Some("--plan-scan") => plan_scan_command(&mut arguments),
         Some(command) => {
             eprintln!("unknown command: {command}");
             ExitCode::from(2)
@@ -40,6 +47,20 @@ fn print_offline_status(assets: &LocalAgentAssets) {
     println!("cataloged_tool_definitions={}", assets.tools().len());
     println!("built_in_substitute_tools={built_in_tools}");
     println!("locally_executable_tools={executable_tools}");
+    println!("capability_coverage={}", capability_coverage_status());
+}
+
+/// Runs `CapabilityGraph::validate_coverage` as a startup health check: does
+/// every target type have at least one specialist and one toolchain pack
+/// registered? Reported as `ok` or `error: <reason>` in `--offline-status`.
+fn capability_coverage_status() -> String {
+    match CapabilityGraph::validate_coverage(
+        &CapabilityRegistry::default(),
+        &ToolchainPackRegistry::default(),
+    ) {
+        Ok(()) => "ok".to_string(),
+        Err(message) => format!("error: {message}"),
+    }
 }
 
 fn list_skills(assets: &LocalAgentAssets) -> ExitCode {
@@ -170,6 +191,81 @@ fn run_external_tool_command(
     }
 }
 
+/// Reasons [`plan_scan`] can fail to produce an [`security_agent::ExecutionPlan`].
+#[derive(Debug, PartialEq, Eq)]
+enum PlanScanError {
+    MissingConfigPath,
+    UnexpectedArgument(String),
+    ConfigLoad(String),
+    AuthorizationDenied(String),
+}
+
+impl fmt::Display for PlanScanError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingConfigPath => formatter.write_str("missing engagement config file path"),
+            Self::UnexpectedArgument(argument) => {
+                write!(formatter, "unexpected argument: {argument}")
+            }
+            Self::ConfigLoad(message) => write!(formatter, "failed to load config: {message}"),
+            Self::AuthorizationDenied(message) => {
+                write!(formatter, "authorization denied: {message}")
+            }
+        }
+    }
+}
+
+/// Loads an engagement configuration file and authorizes/plans a scan
+/// against it. Separated from [`plan_scan_command`] so the outcome can be
+/// asserted on directly in tests instead of through an `ExitCode`, which
+/// does not implement `PartialEq`.
+fn plan_scan(
+    arguments: &mut impl Iterator<Item = String>,
+) -> Result<security_agent::ExecutionPlan, PlanScanError> {
+    let config_path = arguments.next().ok_or(PlanScanError::MissingConfigPath)?;
+    if let Some(argument) = arguments.next() {
+        return Err(PlanScanError::UnexpectedArgument(argument));
+    }
+
+    let (profile, targets) = load_engagement_config(Path::new(&config_path))
+        .map_err(|error| PlanScanError::ConfigLoad(error.to_string()))?;
+
+    let mut coordinator = Coordinator::new(
+        CapabilityRegistry::default(),
+        ToolchainPackRegistry::default(),
+        PolicyEngine::default(),
+    );
+
+    coordinator
+        .plan_authorized_scan(profile, targets, current_epoch_seconds())
+        .map_err(|error| PlanScanError::AuthorizationDenied(error.to_string()))
+}
+
+/// CLI entry point for `--plan-scan <config-file>`; prints the resulting
+/// [`security_agent::ExecutionPlan`] on success.
+fn plan_scan_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    match plan_scan(arguments) {
+        Ok(plan) => {
+            print!("{plan}");
+            ExitCode::SUCCESS
+        }
+        Err(PlanScanError::AuthorizationDenied(message)) => {
+            eprintln!("authorization denied: {message}");
+            ExitCode::from(1)
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn current_epoch_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
+}
+
 fn write_or_print_report(name: &str, report: String, output: Option<String>) -> ExitCode {
     if let Some(path) = output {
         match fs::write(&path, report) {
@@ -185,5 +281,121 @@ fn write_or_print_report(name: &str, report: String, output: Option<String>) -> 
     } else {
         print!("{report}");
         ExitCode::SUCCESS
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capability_coverage_status_reports_ok_for_the_default_registries() {
+        assert_eq!(capability_coverage_status(), "ok");
+    }
+
+    #[test]
+    fn current_epoch_seconds_is_plausible() {
+        // Any correctly functioning clock reports a time after this
+        // project's initial commit (2026-07-18).
+        assert!(current_epoch_seconds() > 1_784_000_000);
+    }
+
+    #[test]
+    fn plan_scan_reports_missing_config_path() {
+        let mut arguments = std::iter::empty::<String>();
+        assert!(matches!(
+            plan_scan(&mut arguments),
+            Err(PlanScanError::MissingConfigPath)
+        ));
+    }
+
+    #[test]
+    fn plan_scan_reports_unexpected_trailing_argument() {
+        let mut arguments = vec!["config.txt".to_string(), "extra".to_string()].into_iter();
+        assert!(matches!(
+            plan_scan(&mut arguments),
+            Err(PlanScanError::UnexpectedArgument(argument)) if argument == "extra"
+        ));
+    }
+
+    #[test]
+    fn plan_scan_reports_config_load_failure_for_missing_file() {
+        let mut arguments =
+            vec!["/nonexistent/security-agent-engagement.txt".to_string()].into_iter();
+        let result = plan_scan(&mut arguments);
+        assert!(matches!(result, Err(PlanScanError::ConfigLoad(_))));
+    }
+
+    #[test]
+    fn plan_scan_authorizes_and_plans_a_valid_config() {
+        let path = std::env::temp_dir().join(format!(
+            "security-agent-main-plan-scan-{}.txt",
+            std::process::id()
+        ));
+        fs::write(
+            &path,
+            "\
+engagement_id=eng-cli-test
+authorized_by=jane.doe
+authorized_by_role=SecurityAdmin
+time_window_start=0
+time_window_end=99999999999
+in_scope_targets=api-staging
+allowed_techniques=PassiveRecon,ConfigurationAudit,ApiSecurity
+max_intensity=Standard
+high_impact_approved=false
+penetrative_testing_approved=true
+
+[target]
+id=api-staging
+target_type=Api
+criticality=3
+",
+        )
+        .expect("write temp config");
+
+        let mut arguments = vec![path.to_string_lossy().into_owned()].into_iter();
+        let result = plan_scan(&mut arguments);
+        fs::remove_file(&path).expect("remove temp config");
+
+        let plan = result.expect("valid config should authorize and plan");
+        assert_eq!(plan.engagement_id, "eng-cli-test");
+        assert!(!plan.tasks.is_empty());
+    }
+
+    #[test]
+    fn plan_scan_reports_authorization_denial() {
+        let path = std::env::temp_dir().join(format!(
+            "security-agent-main-plan-scan-denied-{}.txt",
+            std::process::id()
+        ));
+        fs::write(
+            &path,
+            "\
+engagement_id=eng-cli-denied
+authorized_by=jane.doe
+authorized_by_role=SecurityAdmin
+time_window_start=0
+time_window_end=99999999999
+in_scope_targets=prod-ledger
+allowed_techniques=PassiveRecon
+deny_list_targets=prod-ledger
+max_intensity=Passive
+high_impact_approved=false
+penetrative_testing_approved=false
+
+[target]
+id=prod-ledger
+target_type=Api
+criticality=2
+",
+        )
+        .expect("write temp config");
+
+        let mut arguments = vec![path.to_string_lossy().into_owned()].into_iter();
+        let result = plan_scan(&mut arguments);
+        fs::remove_file(&path).expect("remove temp config");
+
+        assert!(matches!(result, Err(PlanScanError::AuthorizationDenied(_))));
     }
 }

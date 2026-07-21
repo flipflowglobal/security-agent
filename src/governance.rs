@@ -1,9 +1,38 @@
+use std::fmt;
+use std::str::FromStr;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     SecurityAdmin,
     SecurityEngineer,
     Auditor,
     Viewer,
+}
+
+impl fmt::Display for Role {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            Self::SecurityAdmin => "SecurityAdmin",
+            Self::SecurityEngineer => "SecurityEngineer",
+            Self::Auditor => "Auditor",
+            Self::Viewer => "Viewer",
+        };
+        formatter.write_str(name)
+    }
+}
+
+impl FromStr for Role {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "SecurityAdmin" => Ok(Self::SecurityAdmin),
+            "SecurityEngineer" => Ok(Self::SecurityEngineer),
+            "Auditor" => Ok(Self::Auditor),
+            "Viewer" => Ok(Self::Viewer),
+            other => Err(format!("unknown role: {other}")),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -51,5 +80,29 @@ impl AuditLedger {
             .iter()
             .filter(|r| r.test_run_id.as_deref() == Some(test_run_id))
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn role_display_and_from_str_round_trip() {
+        for role in [
+            Role::SecurityAdmin,
+            Role::SecurityEngineer,
+            Role::Auditor,
+            Role::Viewer,
+        ] {
+            let rendered = role.to_string();
+            assert_eq!(rendered.parse::<Role>(), Ok(role));
+        }
+    }
+
+    #[test]
+    fn role_from_str_rejects_unknown_values() {
+        assert!("root".parse::<Role>().is_err());
+        assert!("".parse::<Role>().is_err());
     }
 }

@@ -1,4 +1,4 @@
-use crate::governance::{AuditLedger, AuditRecord, Role};
+use crate::governance::{AuditLedger, AuditRecord};
 use crate::local_assets::LocalAgentAssets;
 use crate::model::{EngagementProfile, Target, TargetType, Technique, TestIntensity};
 use crate::policy::{AuthorizationError, PolicyEngine};
@@ -8,6 +8,7 @@ use crate::registry::{
 use crate::tagged_run::{TaggedTestRun, TestRunReport};
 use crate::workflow::WorkflowStage;
 use std::collections::HashSet;
+use std::fmt;
 
 #[derive(Debug, Clone)]
 pub struct ScanTask {
@@ -25,6 +26,67 @@ pub struct ExecutionPlan {
     pub tasks: Vec<ScanTask>,
     pub selected_packs: Vec<ToolchainPack>,
     pub high_impact_tasks: usize,
+}
+
+impl fmt::Display for ExecutionPlan {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(formatter, "Execution Plan")?;
+        writeln!(formatter, "===============")?;
+        writeln!(formatter, "Engagement       : {}", self.engagement_id)?;
+        writeln!(
+            formatter,
+            "Workflow stages  : {}",
+            self.workflow_stages
+                .iter()
+                .map(|stage| format!("{stage:?}"))
+                .collect::<Vec<_>>()
+                .join(" -> ")
+        )?;
+        writeln!(formatter, "High-impact tasks: {}", self.high_impact_tasks)?;
+        writeln!(formatter)?;
+        writeln!(formatter, "Selected Toolchain Packs")?;
+        writeln!(formatter, "------------------------")?;
+        if self.selected_packs.is_empty() {
+            writeln!(formatter, "None")?;
+        } else {
+            for pack in &self.selected_packs {
+                writeln!(formatter, "- {}", pack.name)?;
+            }
+        }
+        writeln!(formatter)?;
+        writeln!(formatter, "Tasks")?;
+        writeln!(formatter, "-----")?;
+        if self.tasks.is_empty() {
+            writeln!(formatter, "None")?;
+        } else {
+            for (index, task) in self.tasks.iter().enumerate() {
+                writeln!(
+                    formatter,
+                    "{}. target={} specialist={:?} intensity={}",
+                    index + 1,
+                    task.target_id,
+                    task.specialist.specialist,
+                    task.intensity
+                )?;
+                writeln!(
+                    formatter,
+                    "   techniques     : {}",
+                    task.techniques
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )?;
+                let approved_tools = if task.approved_tools.is_empty() {
+                    "none locally installed".to_string()
+                } else {
+                    task.approved_tools.join(", ")
+                };
+                writeln!(formatter, "   approved_tools : {approved_tools}")?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -74,7 +136,7 @@ impl Coordinator {
         self.audit_ledger.append(AuditRecord {
             timestamp_epoch_seconds: now_epoch_seconds,
             actor: profile.authorized_by.clone(),
-            role: Role::SecurityAdmin,
+            role: profile.authorized_by_role,
             action: "plan_authorized_scan".to_string(),
             target: profile.engagement_id,
             details: format!(
@@ -112,7 +174,7 @@ impl Coordinator {
         self.audit_ledger.append(AuditRecord {
             timestamp_epoch_seconds: now_epoch_seconds,
             actor: test_run.operator.clone(),
-            role: Role::SecurityAdmin,
+            role: test_run.operator_role,
             action: "plan_tagged_scan".to_string(),
             target: profile.engagement_id,
             details: format!(
@@ -130,6 +192,7 @@ impl Coordinator {
             test_run_id: test_run.test_run_id.clone(),
             environment: test_run.environment,
             operator: test_run.operator.clone(),
+            operator_role: test_run.operator_role,
             purpose: test_run.purpose.clone(),
             source_tag: test_run.source_tag(),
             started_at_epoch_seconds: test_run.started_at_epoch_seconds,
