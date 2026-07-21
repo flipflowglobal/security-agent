@@ -39,7 +39,7 @@ impl std::str::FromStr for Severity {
 
 /// Maps a third-party tool's own severity/level vocabulary onto this
 /// crate's [`Severity`] scale. Covers the common vocabularies seen in
-/// tool-emitted JSON: `critical`/`high`/`medium`/`low`/`info`(`rmational`),
+/// tool-emitted JSON: `critical`/`high`/`medium`/`low`/`info`/`informational`,
 /// SARIF's `error`/`warning`/`note`, and semgrep's `ERROR`/`WARNING`/`INFO`
 /// (case-insensitively). An unrecognized label maps to
 /// [`Severity::Informational`] rather than failing — ingesting untrusted

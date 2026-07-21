@@ -405,16 +405,22 @@ fn plan_scan(
         })
         .unwrap_or_default();
 
-    if let Some(path) = findings_log_path {
-        security_agent::append_findings(Path::new(&path), &findings)
-            .map_err(|error| PlanScanError::FindingsLogWrite(error.to_string()))?;
+    // Only touch the findings log when --execute actually ran (`outcomes`
+    // is `Some`); otherwise --findings-log is a true no-op, matching its
+    // documented behavior, rather than creating an empty log file.
+    if outcomes.is_some() {
+        if let Some(path) = findings_log_path {
+            security_agent::append_findings(Path::new(&path), &findings)
+                .map_err(|error| PlanScanError::FindingsLogWrite(error.to_string()))?;
+        }
     }
 
     Ok((plan, cognitive_output, outcomes, findings))
 }
 
 /// CLI entry point for `--plan-scan <config-file> [--audit-log <path>]
-/// [--cognitive-review] [--findings-log <path>] [--execute <args>...]`;
+/// [--cognitive-review] [--memory <path>] [--findings-log <path>]
+/// [--execute <args>...]`;
 /// prints the resulting [`security_agent::ExecutionPlan`], the
 /// [`CognitiveAssessment`] when `--cognitive-review` was given, and —
 /// when `--execute` was given — each task's tool execution outcomes plus
@@ -1122,6 +1128,57 @@ criticality=3
             plan_scan(&mut arguments),
             Err(PlanScanError::MissingFindingsLogPath)
         ));
+    }
+
+    #[test]
+    fn plan_scan_findings_log_is_a_noop_without_execute() {
+        let config_path = std::env::temp_dir().join(format!(
+            "security-agent-main-plan-scan-findings-noop-config-{}.txt",
+            std::process::id()
+        ));
+        let log_path = std::env::temp_dir().join(format!(
+            "security-agent-main-plan-scan-findings-noop-log-{}.jsonl",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&log_path);
+        fs::write(
+            &config_path,
+            "\
+engagement_id=eng-cli-findings-noop
+authorized_by=jane.doe
+authorized_by_role=SecurityAdmin
+time_window_start=0
+time_window_end=99999999999
+in_scope_targets=api-staging
+allowed_techniques=PassiveRecon,ConfigurationAudit,ApiSecurity
+max_intensity=Standard
+high_impact_approved=false
+penetrative_testing_approved=true
+
+[target]
+id=api-staging
+target_type=Api
+criticality=3
+",
+        )
+        .expect("write temp config");
+
+        // --findings-log given, but --execute is not: the flag must be a
+        // true no-op and never touch the log path into existence.
+        let mut arguments = vec![
+            config_path.to_string_lossy().into_owned(),
+            "--findings-log".to_string(),
+            log_path.to_string_lossy().into_owned(),
+        ]
+        .into_iter();
+        let result = plan_scan(&mut arguments);
+        fs::remove_file(&config_path).expect("remove temp config");
+
+        result.expect("valid config should authorize and plan");
+        assert!(
+            !log_path.exists(),
+            "--findings-log without --execute must not create the log file"
+        );
     }
 
     #[test]
