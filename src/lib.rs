@@ -2,6 +2,7 @@ pub mod advanced;
 pub mod audit_log;
 pub mod builtin_tools;
 pub mod capability_graph;
+pub mod cognition;
 pub mod compat;
 pub mod coordinator;
 pub mod engagement_config;
@@ -27,6 +28,11 @@ pub use builtin_tools::{
     VolatilityReport, is_builtin_tool, run_autopsy, run_builtin_tool, run_volatility,
 };
 pub use capability_graph::{CapabilityGraph, CapabilityNode, CapabilityStage, FunctionFamily};
+pub use cognition::{
+    CognitiveAssessment, CognitiveInsight, CognitiveMemory, Hypothesis, InsightSeverity,
+    PrioritizedTask, assess as assess_plan_cognitively, critique_plan, generate_hypotheses,
+    prioritize_tasks,
+};
 pub use compat::{
     CompatibilityEnvelope, IntegrationAdapter, JsonLineAdapter, audit_record_to_envelope,
     envelope_to_audit_record,

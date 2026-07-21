@@ -1,9 +1,9 @@
 //! Security-Agent local runtime.
 
 use security_agent::{
-    CapabilityGraph, CapabilityRegistry, Coordinator, LocalAgentAssets, PolicyEngine,
-    ToolchainPackRegistry, load_engagement_config, run_builtin_tool,
-    run_external_tool_with_default_timeout,
+    CapabilityGraph, CapabilityRegistry, CognitiveAssessment, CognitiveMemory, Coordinator,
+    LocalAgentAssets, PolicyEngine, ToolchainPackRegistry, assess_plan_cognitively,
+    load_engagement_config, run_builtin_tool, run_external_tool_with_default_timeout,
 };
 use std::fmt;
 use std::fs;
@@ -227,23 +227,27 @@ impl fmt::Display for PlanScanError {
 /// asserted on directly in tests instead of through an `ExitCode`, which
 /// does not implement `PartialEq`.
 ///
-/// Recognizes two optional trailing arguments, in order: `--audit-log
+/// Recognizes three optional trailing arguments, in order: `--audit-log
 /// <path>` appends the new audit ledger records this call produced to
-/// `<path>` (see [`security_agent::append_audit_records`]); `--execute
-/// <args>...` passes every remaining argument through to
-/// [`security_agent::execute_plan`], which runs each planned task's
+/// `<path>` (see [`security_agent::append_audit_records`]); `--cognitive-review`
+/// runs the advisory reasoning layer (see [`security_agent::cognition`]) over
+/// the resulting plan and returns a [`CognitiveAssessment`] alongside it —
+/// this process holds no finding history between runs, so its hypotheses
+/// fall back to their type-based defaults rather than being boosted by
+/// history; `--execute <args>...` passes every remaining argument through
+/// to [`security_agent::execute_plan`], which runs each planned task's
 /// approved, execution-eligible tools (`StaticLocalAnalysis`, plus `nmap`
 /// as an explicit exception) and returns their outcomes alongside the
 /// plan.
+type PlanScanOutcome = (
+    security_agent::ExecutionPlan,
+    Option<CognitiveAssessment>,
+    Option<Vec<security_agent::TaskExecutionOutcome>>,
+);
+
 fn plan_scan(
     arguments: &mut impl Iterator<Item = String>,
-) -> Result<
-    (
-        security_agent::ExecutionPlan,
-        Option<Vec<security_agent::TaskExecutionOutcome>>,
-    ),
-    PlanScanError,
-> {
+) -> Result<PlanScanOutcome, PlanScanError> {
     let config_path = arguments.next().ok_or(PlanScanError::MissingConfigPath)?;
 
     let mut next_argument = arguments.next();
@@ -253,6 +257,12 @@ fn plan_scan(
         Some(path)
     } else {
         None
+    };
+    let cognitive_review = if next_argument.as_deref() == Some("--cognitive-review") {
+        next_argument = arguments.next();
+        true
+    } else {
+        false
     };
     let tool_arguments = match next_argument {
         None => None,
@@ -269,6 +279,7 @@ fn plan_scan(
         PolicyEngine::default(),
     );
 
+    let targets_for_review = targets.clone();
     let plan = coordinator
         .plan_authorized_scan(profile, targets, current_epoch_seconds())
         .map_err(|error| PlanScanError::AuthorizationDenied(error.to_string()))?;
@@ -278,22 +289,30 @@ fn plan_scan(
             .map_err(|error| PlanScanError::AuditLogWrite(error.to_string()))?;
     }
 
+    let assessment = cognitive_review
+        .then(|| assess_plan_cognitively(&plan, &targets_for_review, &CognitiveMemory::new()));
+
     let outcomes = tool_arguments.map(|tool_arguments| {
         let assets = LocalAgentAssets::bundled();
         security_agent::execute_plan(&plan, &assets, &tool_arguments)
     });
 
-    Ok((plan, outcomes))
+    Ok((plan, assessment, outcomes))
 }
 
 /// CLI entry point for `--plan-scan <config-file> [--audit-log <path>]
-/// [--execute <args>...]`; prints the resulting
-/// [`security_agent::ExecutionPlan`], and — when `--execute` was given —
+/// [--cognitive-review] [--execute <args>...]`; prints the resulting
+/// [`security_agent::ExecutionPlan`], the [`CognitiveAssessment`] when
+/// `--cognitive-review` was given, and — when `--execute` was given —
 /// each task's tool execution outcomes.
 fn plan_scan_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
     match plan_scan(arguments) {
-        Ok((plan, outcomes)) => {
+        Ok((plan, assessment, outcomes)) => {
             print!("{plan}");
+            if let Some(assessment) = assessment {
+                println!();
+                print!("{assessment}");
+            }
             if let Some(outcomes) = outcomes {
                 println!();
                 println!("Execution Outcomes");
@@ -525,9 +544,53 @@ criticality=3
         let result = plan_scan(&mut arguments);
         fs::remove_file(&path).expect("remove temp config");
 
-        let (plan, outcomes) = result.expect("valid config should authorize and plan");
+        let (plan, assessment, outcomes) = result.expect("valid config should authorize and plan");
         assert_eq!(plan.engagement_id, "eng-cli-test");
         assert!(!plan.tasks.is_empty());
+        assert!(outcomes.is_none(), "no --execute flag was given");
+        assert!(assessment.is_none(), "no --cognitive-review flag was given");
+    }
+
+    #[test]
+    fn plan_scan_runs_cognitive_review_when_flag_is_given() {
+        let path = std::env::temp_dir().join(format!(
+            "security-agent-main-plan-scan-cognitive-{}.txt",
+            std::process::id()
+        ));
+        fs::write(
+            &path,
+            "\
+engagement_id=eng-cli-cognitive
+authorized_by=jane.doe
+authorized_by_role=SecurityAdmin
+time_window_start=0
+time_window_end=99999999999
+in_scope_targets=api-staging
+allowed_techniques=PassiveRecon,ConfigurationAudit,ApiSecurity
+max_intensity=Standard
+high_impact_approved=false
+penetrative_testing_approved=true
+
+[target]
+id=api-staging
+target_type=Api
+criticality=3
+",
+        )
+        .expect("write temp config");
+
+        let mut arguments = vec![
+            path.to_string_lossy().into_owned(),
+            "--cognitive-review".to_string(),
+        ]
+        .into_iter();
+        let result = plan_scan(&mut arguments);
+        fs::remove_file(&path).expect("remove temp config");
+
+        let (_, assessment, outcomes) = result.expect("valid config should authorize and plan");
+        let assessment = assessment.expect("--cognitive-review should produce Some(assessment)");
+        assert_eq!(assessment.hypotheses_by_target.len(), 1);
+        assert!(!assessment.prioritized_tasks.is_empty());
         assert!(outcomes.is_none(), "no --execute flag was given");
     }
 
@@ -564,7 +627,7 @@ criticality=3
         let result = plan_scan(&mut arguments);
         fs::remove_file(&path).expect("remove temp config");
 
-        let (_, outcomes) = result.expect("valid config should authorize and plan");
+        let (_, _, outcomes) = result.expect("valid config should authorize and plan");
         assert!(
             outcomes.is_some(),
             "--execute should produce Some(outcomes), even if empty"

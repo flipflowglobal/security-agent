@@ -10,6 +10,18 @@ conventions. Releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## [Unreleased]
 
 ### Added
+- **`src/cognition.rs`** — advisory reasoning layer above the coordinator.
+  Given an already-authorized `ExecutionPlan`, it ranks tasks by expected
+  risk yield (`prioritize_tasks`), proposes ranked hypotheses about which
+  technique is most likely to surface a finding per target type
+  (`generate_hypotheses`), and reflects on the plan to flag coverage gaps
+  such as a task with no locally installed tool or a target with a history
+  of severe findings still being tested at `Passive` intensity
+  (`critique_plan`). `CognitiveMemory` carries finding history across calls
+  so confidence and prioritization improve as more findings are recorded.
+  This layer is purely advisory: it does not grant, restrict, or bypass any
+  `PolicyEngine`/`Coordinator` authorization decision. Wired into the CLI
+  as `--plan-scan <config> --cognitive-review`.
 - **GitHub Actions CI pipeline** (`.github/workflows/ci.yml`) — covers `fmt`,
   `clippy`, `test --lib`, release `build`, and `android-cross` jobs on every
   push and pull request targeting `main`.
