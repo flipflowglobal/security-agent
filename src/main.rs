@@ -317,6 +317,9 @@ fn plan_scan(
         security_agent::execute_plan(&plan, &assets, &tool_arguments)
     });
 
+    let assessment = cognitive_review
+        .then(|| assess_plan_cognitively(&plan, &targets_for_review, &CognitiveMemory::new()));
+
     Ok((plan, assessment, outcomes))
 }
 
