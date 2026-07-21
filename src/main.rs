@@ -27,6 +27,7 @@ fn main() -> ExitCode {
         Some("--run-tool") => run_tool_command(&mut arguments),
         Some("--run-external-tool") => run_external_tool_command(&assets, &mut arguments),
         Some("--plan-scan") => plan_scan_command(&mut arguments),
+        Some("--record-findings") => record_findings_command(&mut arguments),
         Some("--view-audit") => view_audit_command(&mut arguments),
         Some("--schedule-retest") => schedule_retest_command(&mut arguments),
         Some(command) => {
@@ -214,12 +215,12 @@ fn run_external_tool_command(
 enum PlanScanError {
     MissingConfigPath,
     MissingAuditLogPath,
-    MissingFindingsLogPath,
+    MissingMemoryPath,
     UnexpectedArgument(String),
     ConfigLoad(String),
     AuthorizationDenied(String),
     AuditLogWrite(String),
-    FindingsLogWrite(String),
+    MemoryLoad(String),
 }
 
 impl fmt::Display for PlanScanError {
@@ -227,7 +228,7 @@ impl fmt::Display for PlanScanError {
         match self {
             Self::MissingConfigPath => formatter.write_str("missing engagement config file path"),
             Self::MissingAuditLogPath => formatter.write_str("missing --audit-log file path"),
-            Self::MissingFindingsLogPath => formatter.write_str("missing --findings-log file path"),
+            Self::MissingMemoryPath => formatter.write_str("missing --memory file path"),
             Self::UnexpectedArgument(argument) => {
                 write!(formatter, "unexpected argument: {argument}")
             }
@@ -238,8 +239,8 @@ impl fmt::Display for PlanScanError {
             Self::AuditLogWrite(message) => {
                 write!(formatter, "failed to write audit log: {message}")
             }
-            Self::FindingsLogWrite(message) => {
-                write!(formatter, "failed to write findings log: {message}")
+            Self::MemoryLoad(message) => {
+                write!(formatter, "failed to load cognitive memory: {message}")
             }
         }
     }
@@ -253,20 +254,28 @@ impl fmt::Display for PlanScanError {
 /// Recognizes four optional trailing arguments, in order: `--audit-log
 /// <path>` appends the new audit ledger records this call produced to
 /// `<path>` (see [`security_agent::append_audit_records`]); `--cognitive-review`
-/// runs the advisory reasoning layer (see [`security_agent::cognition`]) over
-/// the resulting plan and returns a [`CognitiveAssessment`] alongside it —
-/// this process holds no finding history between runs, so its hypotheses
-/// fall back to their type-based defaults rather than being boosted by
-/// history; `--findings-log <path>` appends every finding ingested from
-/// `--execute`'s tool output to `<path>` (see
-/// [`security_agent::append_findings`]) — a no-op unless `--execute` was
-/// also given; `--execute <args>...` passes every remaining argument
-/// through to [`security_agent::execute_plan`], which runs each planned
-/// task's approved, execution-eligible tools (`StaticLocalAnalysis`, plus
-/// `nmap`/`masscan` as explicit exceptions) and returns their outcomes
-/// alongside the plan. Each successful outcome's stdout is parsed via
-/// [`security_agent::ingest::ingest`] into scored findings, returned
-/// alongside the plan regardless of whether `--findings-log` was given.
+/// runs the advisory reasoning layers over the resulting plan and returns a
+/// [`CognitiveReview`] alongside it — both the flat
+/// [`CognitiveAssessment`] (see [`security_agent::cognition`]) and the deep
+/// [`CognitiveDeliberation`] (see [`security_agent::cognitive_engine`]:
+/// train of thought, Bayesian beliefs, adversary model, attention, and
+/// metacognition); `--memory <path>` loads the append-only findings ledger
+/// at `<path>` (see [`security_agent::memory_store`]) so that cognitive
+/// review is informed by history accumulated across prior engagements —
+/// the folded memory boosts hypothesis confidence and attention, and the
+/// raw findings drive Bayesian belief revision — with the run staying
+/// stateless and type-based when the flag is omitted; `--execute
+/// <args>...` passes every remaining argument through
+/// to [`security_agent::execute_plan`], which runs each planned task's
+/// approved, execution-eligible tools (`StaticLocalAnalysis`, plus `nmap`
+/// as an explicit exception) and returns their outcomes alongside the
+/// plan.
+/// The advisory cognitive output for a `--cognitive-review` run: the flat
+/// [`CognitiveAssessment`] (prioritization, hypotheses, insights) plus the
+/// deep [`CognitiveDeliberation`] (train of thought, beliefs, adversary
+/// model, attention, and metacognition).
+type CognitiveReview = (CognitiveAssessment, CognitiveDeliberation);
+
 type PlanScanOutcome = (
     security_agent::ExecutionPlan,
     Option<CognitiveReview>,
@@ -293,10 +302,8 @@ fn plan_scan(
     } else {
         false
     };
-    let findings_log_path = if next_argument.as_deref() == Some("--findings-log") {
-        let path = arguments
-            .next()
-            .ok_or(PlanScanError::MissingFindingsLogPath)?;
+    let memory_path = if next_argument.as_deref() == Some("--memory") {
+        let path = arguments.next().ok_or(PlanScanError::MissingMemoryPath)?;
         next_argument = arguments.next();
         Some(path)
     } else {
@@ -331,15 +338,31 @@ fn plan_scan(
             .map_err(|error| PlanScanError::AuditLogWrite(error.to_string()))?;
     }
 
+    // When `--memory <path>` is given, load the append-only findings ledger
+    // (empty if it does not exist yet) so cognition is informed by history
+    // accumulated across prior engagements: the folded `CognitiveMemory`
+    // boosts hypothesis confidence and attention, and the raw findings drive
+    // Bayesian belief revision in the deliberation. Without `--memory`, the
+    // run stays stateless and priors are type-based only.
+    let prior_findings = match &memory_path {
+        Some(path) => {
+            let ledger = Path::new(path);
+            if ledger.exists() {
+                security_agent::load_findings(ledger)
+                    .map_err(|error| PlanScanError::MemoryLoad(error.to_string()))?
+            } else {
+                Vec::new()
+            }
+        }
+        None => Vec::new(),
+    };
+
     let cognitive_output = cognitive_review.then(|| {
-        let memory = CognitiveMemory::new();
+        let mut memory = CognitiveMemory::new();
+        memory.record_findings(&prior_findings);
         let assessment = assess_plan_cognitively(&plan, &targets_for_review, &memory);
-        // The direct CLI path carries no persisted finding history, so the
-        // engine deliberates from an empty memory and no findings; its
-        // priors are type-based. Callers wanting history-informed
-        // deliberation build a `CognitiveEngine` with a populated memory.
         let engine = CognitiveEngine::new(memory, security_agent::AdversaryModel::default());
-        let deliberation = engine.deliberate(&plan, &targets_for_review, &[]);
+        let deliberation = engine.deliberate(&plan, &targets_for_review, &prior_findings);
         (assessment, deliberation)
     });
 
@@ -469,6 +492,58 @@ fn print_findings_summary(findings: &[security_agent::Finding]) {
 fn print_intensity_advisories(arguments: &[String], ceiling: security_agent::TestIntensity) {
     for advisory in security_agent::advise(arguments, ceiling) {
         eprintln!("intensity advisory: {}", advisory.message);
+    }
+}
+
+/// Records findings into the persistent cognitive-memory ledger
+/// (`--record-findings <memory-ledger>.jsonl <findings-source>.jsonl`).
+///
+/// Reads `Finding`s from `<findings-source>` (a JSON Lines file, one
+/// serialized finding per line — the format produced by
+/// `security_agent::append_findings`) and appends them to the append-only
+/// ledger at `<memory-ledger>`. Later engagements accumulate on top of
+/// earlier ones, so a subsequent `--plan-scan ... --cognitive-review
+/// --memory <memory-ledger>` reasons from the full accumulated history.
+/// This command never plans, authorizes, or executes — it only persists
+/// evidence for the advisory cognitive layer.
+fn record_findings_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    let Some(memory_path) = arguments.next() else {
+        eprintln!("missing memory ledger path");
+        return ExitCode::from(2);
+    };
+    let Some(findings_path) = arguments.next() else {
+        eprintln!("missing findings source path");
+        return ExitCode::from(2);
+    };
+    if let Some(extra) = arguments.next() {
+        eprintln!("unexpected argument: {extra}");
+        return ExitCode::from(2);
+    }
+
+    let findings = match security_agent::load_findings(Path::new(&findings_path)) {
+        Ok(findings) => findings,
+        Err(error) => {
+            eprintln!("failed to read findings source: {error}");
+            return ExitCode::from(1);
+        }
+    };
+    if findings.is_empty() {
+        eprintln!("no valid findings parsed from {findings_path}");
+        return ExitCode::from(1);
+    }
+
+    match security_agent::append_findings(Path::new(&memory_path), &findings) {
+        Ok(()) => {
+            println!(
+                "recorded {} finding(s) into cognitive memory at {memory_path}",
+                findings.len()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("failed to record findings: {error}");
+            ExitCode::from(1)
+        }
     }
 }
 
@@ -813,6 +888,113 @@ criticality=3
         assert!(!deliberation.reasoning_chain.is_empty());
         assert!(deliberation.metacognition.self_assessed_confidence > 0);
         assert!(outcomes.is_none(), "no --execute flag was given");
+    }
+
+    #[test]
+    fn plan_scan_reports_missing_memory_path() {
+        let mut arguments = vec![
+            "config.txt".to_string(),
+            "--cognitive-review".to_string(),
+            "--memory".to_string(),
+        ]
+        .into_iter();
+        assert!(matches!(
+            plan_scan(&mut arguments),
+            Err(PlanScanError::MissingMemoryPath)
+        ));
+    }
+
+    #[test]
+    fn plan_scan_loads_persisted_memory_and_sharpens_cognition() {
+        let config_path = std::env::temp_dir().join(format!(
+            "security-agent-main-plan-scan-mem-config-{}.txt",
+            std::process::id()
+        ));
+        let memory_path = std::env::temp_dir().join(format!(
+            "security-agent-main-plan-scan-mem-ledger-{}.jsonl",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&memory_path);
+        fs::write(
+            &config_path,
+            "\
+engagement_id=eng-cli-memory
+authorized_by=jane.doe
+authorized_by_role=SecurityAdmin
+time_window_start=0
+time_window_end=99999999999
+in_scope_targets=api-staging
+allowed_techniques=PassiveRecon,ConfigurationAudit,ApiSecurity
+max_intensity=Standard
+high_impact_approved=false
+penetrative_testing_approved=true
+
+[target]
+id=api-staging
+target_type=Api
+criticality=3
+",
+        )
+        .expect("write temp config");
+
+        // Seed the persistent ledger with prior-engagement findings on the
+        // same target, then confirm the current run's cognition reflects
+        // that accumulated history rather than cold type-based priors.
+        let priors = vec![
+            security_agent::Finding {
+                finding_id: "F-1".to_string(),
+                source_tool: "semgrep".to_string(),
+                title: "BOLA".to_string(),
+                target_id: "api-staging".to_string(),
+                severity: security_agent::Severity::Critical,
+                confidence_percent: 95,
+                remediation_playbook: "enforce object-level authz".to_string(),
+                normalized_risk_score: 9.5,
+            },
+            security_agent::Finding {
+                finding_id: "F-2".to_string(),
+                source_tool: "nuclei".to_string(),
+                title: "no rate limit".to_string(),
+                target_id: "api-staging".to_string(),
+                severity: security_agent::Severity::High,
+                confidence_percent: 80,
+                remediation_playbook: "add rate limiting".to_string(),
+                normalized_risk_score: 8.0,
+            },
+        ];
+        security_agent::append_findings(&memory_path, &priors).expect("seed memory ledger");
+
+        let mut arguments = vec![
+            config_path.to_string_lossy().into_owned(),
+            "--cognitive-review".to_string(),
+            "--memory".to_string(),
+            memory_path.to_string_lossy().into_owned(),
+        ]
+        .into_iter();
+        let result = plan_scan(&mut arguments);
+        fs::remove_file(&config_path).expect("remove temp config");
+        fs::remove_file(&memory_path).expect("remove temp ledger");
+
+        let (_, cognitive_output, _) = result.expect("valid config should authorize and plan");
+        let (assessment, deliberation) =
+            cognitive_output.expect("--cognitive-review should produce Some(review)");
+
+        // The top hypothesis confidence is boosted above its cold 60% base
+        // by the recorded finding history.
+        let (_, hypotheses) = &assessment.hypotheses_by_target[0];
+        assert!(
+            hypotheses[0].confidence_percent > 60,
+            "history should boost hypothesis confidence above the cold base"
+        );
+        // The deliberation's train of thought records the prior findings.
+        assert!(
+            deliberation
+                .reasoning_chain
+                .thoughts()
+                .iter()
+                .any(|thought| thought.statement.contains("prior finding")),
+            "reasoning should cite accumulated finding history"
+        );
     }
 
     #[test]

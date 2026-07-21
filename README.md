@@ -98,6 +98,7 @@ Federated model (not an unrestricted super-agent):
 - **Retest Scheduler** — drift-and-risk-based retest intervals derived from finding risk scores.
 - **Cognitive Layer** (`src/cognition.rs`) — advisory reasoning over an already-authorized plan: ranks tasks by expected risk yield, proposes ranked hypotheses about which technique is likely to find what per target type, and reflects on the plan to flag coverage gaps.
 - **Advanced Cognitive Architecture** (`src/cognitive_engine.rs`) — models the reasoning *process* itself as cooperating faculties: an explicit, provenance-linked **train of thought** (observe → hypothesize → imagine → decide → reflect), **Bayesian belief revision** with Shannon-entropy uncertainty, **adversary theory-of-mind** predicting an attacker's ranked next moves, salience-weighted **attention allocation**, and **metacognition** that self-assesses confidence, names knowledge gaps, and decides when to escalate to a human. Exposed via `--plan-scan <config> --cognitive-review`.
+- **Cognitive Memory** (`src/memory_store.rs`) — persists the finding history the cognitive layers learn from as an append-only JSON Lines ledger, so cognition **learns across engagements** instead of starting blank each run. Findings are folded into memory (`--record-findings`), and a later `--cognitive-review --memory <ledger>` reasons from the full accumulated history: hypothesis confidence and attention rise, beliefs get Bayesian-updated by real evidence, and metacognition stops flagging a well-evidenced target as a knowledge gap.
 
 Both cognitive layers are **purely advisory** — they reason over plans the `PolicyEngine`/`Coordinator` have already authorized, and never grant, restrict, execute, or bypass any authorization decision.
 
@@ -175,6 +176,7 @@ The `MobileAndroid` specialist uses a dedicated tool set for APK/DEX analysis an
 | `src/advanced.rs` | Attack-path graph builder and retest scheduler |
 | `src/cognition.rs` | Advisory reasoning layer: risk-yield task prioritization, per-target-type hypothesis generation, and reflective plan critique |
 | `src/cognitive_engine.rs` | Advanced cognitive architecture: explicit chained reasoning (train of thought), Bayesian belief revision, adversary theory-of-mind, attention allocation, and metacognitive self-reflection |
+| `src/memory_store.rs` | Append-only, on-disk persistence of the cognitive layer's finding history, so cognition learns across engagements |
 | `src/compat.rs` | Integration adapter contracts and wire-format envelope |
 | `src/roadmap.rs` | Phased rollout model |
 | `src/main.rs` | Offline local runtime entry point (also cross-compiles for Android) |
@@ -379,51 +381,48 @@ by the library's tests, and prints the resulting scan plan:
 - `--audit-log <path>` appends that call's audit records to `<path>` as
   an append-only JSON Lines file (`src/audit_log.rs`), so the audit trail
   survives past a single run instead of living only in memory.
-- `--cognitive-review` runs the advisory reasoning layer (`src/cognition.rs`)
-  over the resulting plan and prints a risk-yield task ranking, ranked
-  per-target hypotheses about which technique is likely to find what, and
-  a reflective critique flagging coverage gaps (e.g. a task with no
-  locally installed tool). This single CLI invocation holds no finding
-  history between runs, so hypotheses use their type-based defaults
-  rather than being boosted by history; call `security_agent::cognition`
-  directly and feed it a persisted `CognitiveMemory` to get
-  history-informed prioritization across repeated engagements.
-- `--execute <args>` additionally runs every approved, locally installed
-  tool eligible for real execution in the plan via `execute_plan`, passing
-  `<args>` to each invocation, and prints each outcome (success with exit
-  code/duration, or the specific failure) plus a findings summary (see
-  below).
-- `--findings-log <path>` appends every finding ingested from
-  `--execute`'s tool output to `<path>` as an append-only JSON Lines file
-  (`src/findings_log.rs`); a no-op unless `--execute` was also given.
+- `--cognitive-review` runs both advisory reasoning layers over the
+  resulting plan. First (`src/cognition.rs`) it prints a risk-yield task
+  ranking, ranked per-target hypotheses about which technique is likely to
+  find what, and a reflective critique flagging coverage gaps (e.g. a task
+  with no locally installed tool). Then (`src/cognitive_engine.rs`) it
+  prints a full **Cognitive Deliberation**: an explicit train of thought
+  with provenance links, a Bayesian belief distribution with its
+  uncertainty, the modeled adversary's predicted next moves, attention
+  allocation across targets, and a metacognitive self-assessment that
+  decides whether to escalate to a human. Add `--memory <ledger>` to make
+  this history-informed (see below); without it the run is stateless and
+  priors are type-based only.
+- `--memory <ledger>` loads the append-only findings ledger at `<ledger>`
+  (`src/memory_store.rs`) before running `--cognitive-review`, so cognition
+  reasons from history accumulated across prior engagements: the folded
+  memory boosts hypothesis confidence and attention, and the raw findings
+  drive Bayesian belief revision. A missing ledger is treated as empty
+  history (no error). Populate the ledger with `--record-findings`.
+- `--execute <args>` additionally runs every approved, locally installed,
+  `StaticLocalAnalysis`-classified tool in the plan via
+  `execute_plan`, passing `<args>` to each invocation, and prints each
+  outcome (success with exit code/duration, or the specific failure).
 - Flags may be combined, in this order: `--audit-log <path>`, then
-  `--cognitive-review`, then `--findings-log <path>`, then
-  `--execute <args>...`.
+  `--cognitive-review`, then `--memory <ledger>`, then `--execute <args>...`.
 
-### Findings pipeline
+### Persisting cognitive memory across engagements
 
-`execute_plan` captures each tool's stdout but does nothing with it on its
-own. `--plan-scan ... --execute` closes that loop:
+The cognitive layers learn from an append-only findings ledger. Record an
+engagement's findings into it, then let a later engagement reason from the
+accumulated history:
 
-1. **Execute** — each approved, locally installed tool runs via
-   `execute_plan` (`src/execution.rs`).
-2. **Ingest** — every successful outcome's stdout is parsed by
-   `security_agent::ingest::ingest` (`src/ingest.rs`) into `Finding`s.
-   Ships with parsers for semgrep `--json` output, generic SARIF
-   (`runs[].results[]`, e.g. `nuclei -sarif`), and a JSON-Lines fallback;
-   tools without a registered parser are simply not auto-ingested.
-3. **Score** — every finding's `normalized_risk_score` comes from
-   `RiskScoreCalculator::normalized_score` (`src/findings.rs`), never set
-   by hand.
-4. **Persist** — `--findings-log <path>` appends the scored findings to an
-   append-only JSON Lines log (`src/findings_log.rs`), mirroring how
-   `--audit-log` persists the audit ledger.
-5. **Retest** — `--schedule-retest <findings-log-path>` reads a persisted
-   log and emits a drift-and-risk-based retest schedule per finding via
-   `propose_retest_schedule` (`src/advanced.rs`), soonest first.
+```bash
+# Fold a scan's findings (JSON Lines of Finding) into the memory ledger.
+./target/release/security-agent --record-findings memory.jsonl findings.jsonl
 
-`--plan-scan ... --execute` also prints a findings summary directly
-(severity counts, top findings by risk score, and the node/edge counts of
-an `AttackPathGraph::build_from_findings` built from them) even without
-`--findings-log`, so the pipeline is visible on every run, not only when
-persisting.
+# A later engagement reasons from the accumulated history: sharper
+# hypotheses, Bayesian-updated beliefs, higher adversary payoffs, and
+# metacognition that no longer flags well-evidenced targets as gaps.
+./target/release/security-agent --plan-scan engagement.txt \
+  --cognitive-review --memory memory.jsonl
+```
+
+The ledger is human-readable (one finding per line) and only ever grows —
+each engagement's findings accumulate on top of earlier ones, and cognition
+is always re-derived by folding the full ledger.
