@@ -40,6 +40,11 @@ fn print_offline_status(assets: &LocalAgentAssets) {
         .filter(|tool| tool.is_installed())
         .count();
     let built_in_tools = assets.tools().iter().filter(|tool| tool.built_in).count();
+    let integrity_verified_tools = assets
+        .tools()
+        .iter()
+        .filter(|tool| tool.integrity == security_agent::IntegrityStatus::Verified)
+        .count();
 
     println!("network_required=false");
     println!("external_api_required=false");
@@ -47,6 +52,7 @@ fn print_offline_status(assets: &LocalAgentAssets) {
     println!("cataloged_tool_definitions={}", assets.tools().len());
     println!("built_in_substitute_tools={built_in_tools}");
     println!("locally_executable_tools={executable_tools}");
+    println!("integrity_verified_tools={integrity_verified_tools}");
     println!("capability_coverage={}", capability_coverage_status());
 }
 
@@ -89,9 +95,10 @@ fn list_tools(assets: &LocalAgentAssets) -> ExitCode {
             println!("{}\tbuilt-in-substitute", tool.definition.name);
         } else if let Some(path) = &tool.executable {
             println!(
-                "{}\tcataloged\texecutable={}",
+                "{}\tcataloged\texecutable={}\tintegrity={}",
                 tool.definition.name,
-                path.display()
+                path.display(),
+                tool.integrity.label()
             );
         } else {
             println!(

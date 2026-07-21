@@ -1,0 +1,24 @@
+# Security-Agent tool integrity manifest
+#
+# Pins the expected SHA-256 of a locally installed tool binary so that
+# real execution (see src/execution.rs) can refuse to run a binary whose
+# contents do not match a vetted hash. This file is compiled into the
+# binary via include_str! (see src/integrity.rs).
+#
+# Format: one `name=sha256hex` entry per line. Blank lines and lines
+# starting with `#` are ignored. `name` is the cataloged tool name exactly
+# as it appears in `--list-tools`; `sha256hex` is the lowercase hex SHA-256
+# of the tool's executable file.
+#
+# Semantics (per tool):
+#   - entry present AND local binary hash matches  -> Verified (executes)
+#   - entry present AND local binary hash differs  -> Mismatch (execution refused)
+#   - no entry                                     -> Unpinned (executes; the default)
+#
+# This file ships intentionally empty: with no entries every tool is
+# Unpinned, so integrity pinning never blocks day-to-day use until an
+# operator deliberately vets a binary and adds its hash here. Only add an
+# entry with documented provenance for the exact binary you intend to pin.
+#
+# Example (commented out — replace with a real, vetted hash before use):
+# semgrep=0000000000000000000000000000000000000000000000000000000000000000

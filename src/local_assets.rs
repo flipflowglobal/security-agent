@@ -1,4 +1,5 @@
 use crate::builtin_tools::is_builtin_tool;
+use crate::integrity::{IntegrityManifest, IntegrityStatus, verify};
 use crate::registry::{ToolDefinition, ToolchainPackRegistry};
 use std::collections::BTreeMap;
 use std::env;
@@ -126,6 +127,10 @@ pub struct LocalTool {
     pub definition: ToolDefinition,
     pub built_in: bool,
     pub executable: Option<PathBuf>,
+    /// Runtime integrity of the resolved binary against the bundled
+    /// manifest (see `crate::integrity`). `Unpinned` for every tool while
+    /// the shipped manifest is empty.
+    pub integrity: IntegrityStatus,
 }
 
 impl LocalTool {
@@ -172,12 +177,17 @@ impl LocalAgentAssets {
                     .or_insert_with(|| definition.clone());
                 tools
             });
+        let manifest = IntegrityManifest::bundled();
         let tools = definitions
             .into_values()
-            .map(|definition| LocalTool {
-                built_in: is_builtin_tool(&definition.name),
-                executable: find_executable(&definition.name),
-                definition,
+            .map(|definition| {
+                let executable = find_executable(&definition.name);
+                LocalTool {
+                    built_in: is_builtin_tool(&definition.name),
+                    integrity: verify(&definition.name, executable.as_deref(), &manifest),
+                    executable,
+                    definition,
+                }
             })
             .collect();
 
