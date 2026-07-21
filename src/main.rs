@@ -163,8 +163,9 @@ fn run_tool_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
 /// Runs a real, cataloged (non-substitute) tool directly, e.g.
 /// `--run-external-tool semgrep --version`. Only tools classified for
 /// static local analysis (see `security_agent::registry::ExecutionClass`)
-/// are wired up for direct execution; everything else is rejected with an
-/// explanatory error.
+/// are wired up for direct execution, plus `nmap` as an explicit,
+/// reviewed exception (see `security_agent::execution`); everything else
+/// is rejected with an explanatory error.
 fn run_external_tool_command(
     assets: &LocalAgentAssets,
     arguments: &mut impl Iterator<Item = String>,
@@ -231,8 +232,9 @@ impl fmt::Display for PlanScanError {
 /// `<path>` (see [`security_agent::append_audit_records`]); `--execute
 /// <args>...` passes every remaining argument through to
 /// [`security_agent::execute_plan`], which runs each planned task's
-/// approved `StaticLocalAnalysis` tools and returns their outcomes
-/// alongside the plan.
+/// approved, execution-eligible tools (`StaticLocalAnalysis`, plus `nmap`
+/// as an explicit exception) and returns their outcomes alongside the
+/// plan.
 fn plan_scan(
     arguments: &mut impl Iterator<Item = String>,
 ) -> Result<

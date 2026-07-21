@@ -154,6 +154,7 @@ Run these from the repository root after `cargo build --release`:
 ./target/release/security-agent --run-tool wireshark <local-capture.pcap>
 ./target/release/security-agent --run-tool wireshark <local-capture.pcap> --output <report-path>.txt
 ./target/release/security-agent --run-external-tool semgrep --version
+./target/release/security-agent --run-external-tool nmap -sV <in-scope-host>
 ./target/release/security-agent --plan-scan <engagement-config-path>
 ./target/release/security-agent --plan-scan <engagement-config-path> --audit-log <log-path>.jsonl
 ./target/release/security-agent --plan-scan <engagement-config-path> --execute <args-passed-to-each-tool>
@@ -174,8 +175,10 @@ Run these from the repository root after `cargo build --release`:
   link-layer, network-layer, and transport-layer statistics.
 - `--output` writes the same human-readable report to a `.txt` file.
 - `--run-external-tool <name> <args>` runs a real, locally installed
-  cataloged tool directly (only tools classified for static local analysis
-  — see `README.md`'s "Running real cataloged tools" section).
+  cataloged tool directly. Only tools classified for static local
+  analysis are eligible, plus `nmap` as an explicit, reviewed exception —
+  see `README.md`'s "Running real cataloged tools" section for the exact
+  trust model.
 - `--plan-scan <config>` loads an engagement configuration file (see
   section 8a below), authorizes it, and prints the resulting scan plan.
 - `--plan-scan <config> --audit-log <path>` additionally appends the
