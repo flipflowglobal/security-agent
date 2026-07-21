@@ -242,7 +242,7 @@ pub fn generate_hypotheses(
         })
         .collect();
 
-    hypotheses.sort_by(|a, b| b.confidence_percent.cmp(&a.confidence_percent));
+    hypotheses.sort_by_key(|hypothesis| std::cmp::Reverse(hypothesis.confidence_percent));
     hypotheses
 }
 

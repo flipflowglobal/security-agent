@@ -1,9 +1,10 @@
 //! Security-Agent local runtime.
 
 use security_agent::{
-    CapabilityGraph, CapabilityRegistry, CognitiveAssessment, CognitiveMemory, Coordinator,
-    LocalAgentAssets, PolicyEngine, ToolchainPackRegistry, assess_plan_cognitively,
-    load_engagement_config, run_builtin_tool, run_external_tool_with_default_timeout,
+    CapabilityGraph, CapabilityRegistry, CognitiveAssessment, CognitiveDeliberation,
+    CognitiveEngine, CognitiveMemory, Coordinator, LocalAgentAssets, PolicyEngine,
+    ToolchainPackRegistry, assess_plan_cognitively, load_engagement_config, run_builtin_tool,
+    run_external_tool_with_default_timeout,
 };
 use std::fmt;
 use std::fs;
@@ -268,7 +269,7 @@ impl fmt::Display for PlanScanError {
 /// alongside the plan regardless of whether `--findings-log` was given.
 type PlanScanOutcome = (
     security_agent::ExecutionPlan,
-    Option<CognitiveAssessment>,
+    Option<CognitiveReview>,
     Option<Vec<security_agent::TaskExecutionOutcome>>,
     Vec<security_agent::Finding>,
 );
@@ -330,6 +331,18 @@ fn plan_scan(
             .map_err(|error| PlanScanError::AuditLogWrite(error.to_string()))?;
     }
 
+    let cognitive_output = cognitive_review.then(|| {
+        let memory = CognitiveMemory::new();
+        let assessment = assess_plan_cognitively(&plan, &targets_for_review, &memory);
+        // The direct CLI path carries no persisted finding history, so the
+        // engine deliberates from an empty memory and no findings; its
+        // priors are type-based. Callers wanting history-informed
+        // deliberation build a `CognitiveEngine` with a populated memory.
+        let engine = CognitiveEngine::new(memory, security_agent::AdversaryModel::default());
+        let deliberation = engine.deliberate(&plan, &targets_for_review, &[]);
+        (assessment, deliberation)
+    });
+
     if let Some(tool_arguments) = &tool_arguments {
         print_intensity_advisories(tool_arguments, declared_ceiling);
     }
@@ -373,9 +386,11 @@ fn plan_scan_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
     match plan_scan(arguments) {
         Ok((plan, assessment, outcomes, findings)) => {
             print!("{plan}");
-            if let Some(assessment) = assessment {
+            if let Some((assessment, deliberation)) = cognitive_output {
                 println!();
                 print!("{assessment}");
+                println!();
+                print!("{deliberation}");
             }
             if let Some(outcomes) = outcomes {
                 println!();
@@ -793,6 +808,10 @@ criticality=3
         let assessment = assessment.expect("--cognitive-review should produce Some(assessment)");
         assert_eq!(assessment.hypotheses_by_target.len(), 1);
         assert!(!assessment.prioritized_tasks.is_empty());
+        // The deep deliberation ran too: a train of thought reaching at
+        // least one decision, and a metacognitive self-assessment.
+        assert!(!deliberation.reasoning_chain.is_empty());
+        assert!(deliberation.metacognition.self_assessed_confidence > 0);
         assert!(outcomes.is_none(), "no --execute flag was given");
     }
 

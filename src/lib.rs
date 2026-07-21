@@ -3,6 +3,7 @@ pub mod audit_log;
 pub mod builtin_tools;
 pub mod capability_graph;
 pub mod cognition;
+pub mod cognitive_engine;
 pub mod compat;
 pub mod coordinator;
 pub mod engagement_config;
@@ -37,6 +38,11 @@ pub use cognition::{
     CognitiveAssessment, CognitiveInsight, CognitiveMemory, Hypothesis, InsightSeverity,
     PrioritizedTask, assess as assess_plan_cognitively, critique_plan, generate_hypotheses,
     prioritize_tasks,
+};
+pub use cognitive_engine::{
+    AdversaryModel, AdversaryMove, AdversaryObjective, AttentionAllocator, AttentionFocus, Belief,
+    BeliefState, CognitiveDeliberation, CognitiveEngine, Metacognition, ReasoningChain, Thought,
+    ThoughtKind,
 };
 pub use compat::{
     CompatibilityEnvelope, IntegrationAdapter, JsonLineAdapter, audit_record_to_envelope,
