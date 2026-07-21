@@ -344,7 +344,7 @@ impl AdversaryModel {
         let mut moves: Vec<AdversaryMove> = targets
             .iter()
             .map(|target| {
-                let technique = self.preferred_technique(&target.target_type);
+                let technique = Self::preferred_technique(&target.target_type);
                 let objective_fit = self.objective_fit(&target.target_type);
                 let (finding_count, average_severity) = memory.history_for(&target.id);
                 let history_factor = 1.0 + (average_severity / 10.0);
@@ -381,7 +381,7 @@ impl AdversaryModel {
 
     /// The single technique this adversary would most likely reach for
     /// against a given target type.
-    fn preferred_technique(&self, target_type: &TargetType) -> Technique {
+    const fn preferred_technique(target_type: &TargetType) -> Technique {
         match target_type {
             TargetType::WebApp => Technique::Dast,
             TargetType::Api | TargetType::MobileBackend => Technique::ApiSecurity,
@@ -396,7 +396,7 @@ impl AdversaryModel {
 
     /// How well compromising a given target type serves this adversary's
     /// objective, as a multiplier centered on 1.0.
-    fn objective_fit(&self, target_type: &TargetType) -> f32 {
+    const fn objective_fit(self, target_type: &TargetType) -> f32 {
         match self.objective {
             AdversaryObjective::DataExfiltration => match target_type {
                 TargetType::Api | TargetType::MobileBackend | TargetType::Cloud => 1.4,
@@ -510,7 +510,7 @@ pub struct CognitiveEngine {
 
 impl CognitiveEngine {
     #[must_use]
-    pub fn new(memory: CognitiveMemory, adversary: AdversaryModel) -> Self {
+    pub const fn new(memory: CognitiveMemory, adversary: AdversaryModel) -> Self {
         Self { memory, adversary }
     }
 
@@ -574,7 +574,7 @@ impl CognitiveEngine {
                 continue;
             };
 
-            let hypothesis = chain.push(
+            let hypothesis_idx = chain.push(
                 ThoughtKind::Hypothesis,
                 format!(
                     "{} is most likely exposed via {} — {}",
@@ -593,14 +593,14 @@ impl CognitiveEngine {
                         target.id
                     ),
                     top.confidence_percent.saturating_add(10).min(95),
-                    vec![observation, hypothesis],
+                    vec![observation, hypothesis_idx],
                 );
                 (inference, top.confidence_percent.saturating_add(10).min(95))
             } else {
-                (hypothesis, top.confidence_percent)
+                (hypothesis_idx, top.confidence_percent)
             };
 
-            let residual = f32::from(target.criticality) * (top.confidence_percent as f32 / 100.0);
+            let residual = f32::from(target.criticality) * (f32::from(top.confidence_percent) / 100.0);
             chain.push(
                 ThoughtKind::Counterfactual,
                 format!(
@@ -608,7 +608,7 @@ impl CognitiveEngine {
                     top.technique, target.id
                 ),
                 top.confidence_percent,
-                vec![hypothesis],
+                vec![hypothesis_idx],
             );
 
             chain.push(

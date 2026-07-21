@@ -24,7 +24,7 @@ use crate::findings::{Finding, Severity};
 use crate::model::{SpecialistKind, Target, TargetType, Technique, TestIntensity};
 use std::collections::HashMap;
 
-fn severity_weight(severity: Severity) -> f32 {
+const fn severity_weight(severity: Severity) -> f32 {
     match severity {
         Severity::Critical => 10.0,
         Severity::High => 8.0,
@@ -45,7 +45,10 @@ impl TargetHistory {
         if self.finding_count == 0 {
             0.0
         } else {
-            self.severity_sum / self.finding_count as f32
+            // Finding counts are small; f32 represents them exactly here.
+            #[allow(clippy::cast_precision_loss)]
+            let count = self.finding_count as f32;
+            self.severity_sum / count
         }
     }
 }
@@ -105,6 +108,8 @@ pub struct Hypothesis {
 /// knowledge about which technique tends to surface which class of issue.
 /// Confidence is a starting point; [`generate_hypotheses`] boosts it using
 /// [`CognitiveMemory`] history, if any exists for the target.
+// A flat per-target-type data table; length is inherent, not complexity.
+#[allow(clippy::too_many_lines)]
 fn base_hypotheses(target_type: &TargetType) -> Vec<(Technique, &'static str, u8)> {
     match target_type {
         TargetType::WebApp => vec![
@@ -214,12 +219,13 @@ fn base_hypotheses(target_type: &TargetType) -> Vec<(Technique, &'static str, u8
     }
 }
 
-/// Generates ranked hypotheses (highest confidence first) about which
-/// technique is most likely to surface a finding on `target_id`, given its
-/// `target_type`. Confidence is boosted, capped at 95%, when `memory`
-/// shows `target_id` already has a history of findings -- a target that
-/// has produced severe findings before is judged more likely to produce
-/// more.
+/// Generates ranked hypotheses (highest confidence first) for `target_id`.
+///
+/// Each hypothesis names the technique most likely to surface a finding
+/// given the `target_type`. Confidence is boosted, capped at 95%, when
+/// `memory` shows `target_id` already has a history of findings -- a target
+/// that has produced severe findings before is judged more likely to
+/// produce more.
 #[must_use]
 pub fn generate_hypotheses(
     target_id: &str,
@@ -228,7 +234,11 @@ pub fn generate_hypotheses(
 ) -> Vec<Hypothesis> {
     let (finding_count, average_severity) = memory.history_for(target_id);
     let history_boost = if finding_count > 0 {
-        (average_severity * 2.0) as u8
+        // average_severity is in [0, 10], so 2x is in [0, 20]: a small,
+        // non-negative value that maps into u8 without loss.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let boost = (average_severity * 2.0) as u8;
+        boost
     } else {
         0
     };
@@ -264,8 +274,9 @@ pub struct CognitiveInsight {
     pub message: String,
 }
 
-/// Reflects on an already-authorized `plan` in light of `memory`,
-/// surfacing coverage gaps and history mismatches a reviewer might
+/// Reflects on an already-authorized `plan` in light of `memory`.
+///
+/// Surfaces coverage gaps and history mismatches a reviewer might
 /// otherwise miss: tasks with no locally installed approved tool, and
 /// targets with a history of severe findings that are still only being
 /// tested at `Passive` intensity. Returns a single informational entry
@@ -327,12 +338,13 @@ const fn intensity_weight(intensity: TestIntensity) -> f32 {
     }
 }
 
-/// Ranks `plan`'s tasks by expected risk yield (highest first): each
-/// task's intensity -- already criticality-gated by the coordinator --
-/// combined with how severe `memory` shows the target's past findings to
-/// be. Tasks that share an intensity are broken apart by history, so a
-/// target known to produce serious findings surfaces before an
-/// equal-intensity target with no history.
+/// Ranks `plan`'s tasks by expected risk yield (highest first).
+///
+/// Each task's intensity -- already criticality-gated by the coordinator
+/// -- is combined with how severe `memory` shows the target's past
+/// findings to be. Tasks that share an intensity are broken apart by
+/// history, so a target known to produce serious findings surfaces before
+/// an equal-intensity target with no history.
 #[must_use]
 pub fn prioritize_tasks(plan: &ExecutionPlan, memory: &CognitiveMemory) -> Vec<PrioritizedTask> {
     let mut ranked: Vec<PrioritizedTask> = plan
@@ -340,8 +352,11 @@ pub fn prioritize_tasks(plan: &ExecutionPlan, memory: &CognitiveMemory) -> Vec<P
         .iter()
         .map(|task| {
             let (finding_count, average_severity) = memory.history_for(&task.target_id);
+            // Cap the count contribution at 5 findings; the capped value
+            // always fits u8, so the conversion to f32 is lossless.
+            let capped_count = u8::try_from(finding_count.min(5)).unwrap_or(5);
             let history_factor =
-                1.0 + (average_severity / 10.0) + (finding_count.min(5) as f32 * 0.05);
+                f32::from(capped_count).mul_add(0.05, 1.0 + average_severity / 10.0);
             PrioritizedTask {
                 target_id: task.target_id.clone(),
                 specialist: task.specialist.specialist.clone(),
@@ -368,11 +383,12 @@ pub struct CognitiveAssessment {
     pub prioritized_tasks: Vec<PrioritizedTask>,
 }
 
-/// Builds a full [`CognitiveAssessment`] for `plan`: hypotheses for each
-/// unique target in `targets` (used to recover each target's
-/// [`TargetType`], since `ExecutionPlan` itself only carries target IDs),
-/// a reflective critique of `plan` against `memory`, and a risk-yield task
-/// ranking.
+/// Builds a full [`CognitiveAssessment`] for `plan`.
+///
+/// Produces hypotheses for each unique target in `targets` (used to recover
+/// each target's [`TargetType`], since `ExecutionPlan` itself only carries
+/// target IDs), a reflective critique of `plan` against `memory`, and a
+/// risk-yield task ranking.
 #[must_use]
 pub fn assess(
     plan: &ExecutionPlan,
