@@ -308,6 +308,9 @@ fn plan_scan(
             .map_err(|error| PlanScanError::AuditLogWrite(error.to_string()))?;
     }
 
+    let assessment = cognitive_review
+        .then(|| assess_plan_cognitively(&plan, &targets_for_review, &CognitiveMemory::new()));
+
     if let Some(tool_arguments) = &tool_arguments {
         print_intensity_advisories(tool_arguments, declared_ceiling);
     }
