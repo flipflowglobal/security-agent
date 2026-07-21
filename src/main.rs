@@ -26,6 +26,7 @@ fn main() -> ExitCode {
         Some("--run-tool") => run_tool_command(&mut arguments),
         Some("--run-external-tool") => run_external_tool_command(&assets, &mut arguments),
         Some("--plan-scan") => plan_scan_command(&mut arguments),
+        Some("--view-audit") => view_audit_command(&mut arguments),
         Some(command) => {
             eprintln!("unknown command: {command}");
             ExitCode::from(2)
@@ -348,6 +349,48 @@ fn plan_scan_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
 fn print_intensity_advisories(arguments: &[String], ceiling: security_agent::TestIntensity) {
     for advisory in security_agent::advise(arguments, ceiling) {
         eprintln!("intensity advisory: {}", advisory.message);
+    }
+}
+
+/// Read-only view of a persisted audit log (`--view-audit <path>.jsonl`).
+///
+/// This command never plans, authorizes, executes, or writes — it only
+/// loads and renders existing records. That is exactly the surface the
+/// `Viewer` role (`security_agent::Role::Viewer`) exists for, so the view
+/// is rendered as operating under that role. Loading a missing or
+/// unreadable file is an error (exit 1); a readable but empty/foreign log
+/// simply shows no records.
+fn view_audit_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    let Some(path) = arguments.next() else {
+        eprintln!("missing audit log file path");
+        return ExitCode::from(2);
+    };
+    match security_agent::load_audit_records(Path::new(&path)) {
+        Ok(records) => {
+            // Read-only consumers operate under the least-privilege Viewer role.
+            let role = security_agent::Role::Viewer;
+            println!("Audit Log View (role: {role})");
+            println!("=============================");
+            if records.is_empty() {
+                println!("No audit records found.");
+            } else {
+                for record in &records {
+                    println!(
+                        "{}\tactor={}\trole={}\taction={}\ttarget={}",
+                        record.timestamp_epoch_seconds,
+                        record.actor,
+                        record.role,
+                        record.action,
+                        record.target
+                    );
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("failed to read audit log: {error}");
+            ExitCode::from(1)
+        }
     }
 }
 
@@ -698,5 +741,49 @@ criticality=2
         fs::remove_file(&path).expect("remove temp config");
 
         assert!(matches!(result, Err(PlanScanError::AuthorizationDenied(_))));
+    }
+
+    #[test]
+    fn view_audit_reads_a_written_log() {
+        let path = std::env::temp_dir().join(format!(
+            "security-agent-main-view-audit-{}.jsonl",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+        security_agent::append_audit_records(
+            &path,
+            &[security_agent::AuditRecord {
+                timestamp_epoch_seconds: 42,
+                actor: "jane.doe".to_string(),
+                role: security_agent::Role::SecurityAdmin,
+                action: "plan_authorized_scan".to_string(),
+                target: "eng-view".to_string(),
+                details: "tasks=1 high_impact=0".to_string(),
+                test_run_id: None,
+            }],
+        )
+        .expect("write audit log");
+
+        let mut arguments = vec![path.to_string_lossy().into_owned()].into_iter();
+        let outcome = view_audit_command(&mut arguments);
+        fs::remove_file(&path).expect("remove temp audit log");
+
+        assert_eq!(outcome, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn view_audit_reports_failure_for_missing_file() {
+        let path = std::env::temp_dir().join(format!(
+            "security-agent-main-view-audit-missing-{}.jsonl",
+            std::process::id()
+        ));
+        let mut arguments = vec![path.to_string_lossy().into_owned()].into_iter();
+        assert_ne!(view_audit_command(&mut arguments), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn view_audit_reports_missing_path() {
+        let mut arguments = std::iter::empty::<String>();
+        assert_ne!(view_audit_command(&mut arguments), ExitCode::SUCCESS);
     }
 }

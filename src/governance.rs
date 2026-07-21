@@ -6,6 +6,11 @@ pub enum Role {
     SecurityAdmin,
     SecurityEngineer,
     Auditor,
+    /// Least-privilege, read-only role. Assigned by read-only surfaces that
+    /// load and render existing artifacts without planning, authorizing,
+    /// executing, or writing — e.g. the `--view-audit` command in the
+    /// binary. If a read path is ever made to emit an audit record, this is
+    /// the correct actor role for it.
     Viewer,
 }
 

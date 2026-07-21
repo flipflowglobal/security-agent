@@ -157,9 +157,11 @@ Run these from the repository root after `cargo build --release`:
 ./target/release/security-agent --run-tool wireshark <local-capture.pcap> --output <report-path>.txt
 ./target/release/security-agent --run-external-tool semgrep --version
 ./target/release/security-agent --run-external-tool nmap -sV <in-scope-host>
+./target/release/security-agent --run-external-tool masscan -p80 <in-scope-range>
 ./target/release/security-agent --plan-scan <engagement-config-path>
 ./target/release/security-agent --plan-scan <engagement-config-path> --audit-log <log-path>.jsonl
 ./target/release/security-agent --plan-scan <engagement-config-path> --execute <args-passed-to-each-tool>
+./target/release/security-agent --view-audit <log-path>.jsonl
 ```
 
 - No argument and `--offline-status` report the same local runtime state,
@@ -169,7 +171,9 @@ Run these from the repository root after `cargo build --release`:
 - `--show-skill` prints the named embedded skill (e.g. `security-agent`, or
   any cataloged tool name such as `nmap`).
 - `--list-tools` distinguishes built-in substitutes, installed executables, and
-  catalog entries that are not installed.
+  catalog entries that are not installed, and shows each installed tool's
+  integrity state (`verified`/`mismatch`/`unpinned`) against the bundled
+  integrity manifest.
 - `--run-tool autopsy` inventories regular files and computes SHA-256 digests.
 - `--run-tool volatility` analyzes a local memory image or binary for entropy,
   embedded executable/archive signatures, and printable strings.
@@ -178,9 +182,10 @@ Run these from the repository root after `cargo build --release`:
 - `--output` writes the same human-readable report to a `.txt` file.
 - `--run-external-tool <name> <args>` runs a real, locally installed
   cataloged tool directly. Only tools classified for static local
-  analysis are eligible, plus `nmap` as an explicit, reviewed exception —
-  see `README.md`'s "Running real cataloged tools" section for the exact
-  trust model.
+  analysis are eligible, plus `nmap` and `masscan` as explicit, reviewed
+  exceptions — see `README.md`'s "Running real cataloged tools" section
+  for the exact trust model. Aggressive network-scan flags exceeding the
+  declared intensity print a non-blocking advisory to stderr.
 - `--plan-scan <config>` loads an engagement configuration file (see
   section 8a below), authorizes it, and prints the resulting scan plan.
 - `--plan-scan <config> --audit-log <path>` additionally appends the
@@ -189,6 +194,9 @@ Run these from the repository root after `cargo build --release`:
 - `--plan-scan <config> --execute <args>` additionally runs every approved,
   locally installed tool in the plan (passing `<args>` to each) and prints
   each outcome.
+- `--view-audit <path>` is a read-only view: it loads a persisted audit
+  log and prints its records (operating under the least-privilege `Viewer`
+  role). It never plans, authorizes, executes, or writes.
 
 To install the binary into Cargo's local binary directory:
 
