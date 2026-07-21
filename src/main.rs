@@ -576,7 +576,7 @@ fn record_findings_command(arguments: &mut impl Iterator<Item = String>) -> Exit
     match security_agent::append_findings(Path::new(&destination_path), &findings) {
         Ok(()) => {
             println!(
-                "recorded {} finding(s) into cognitive memory at {destination_path}",
+                "recorded {} finding(s) into findings log {destination_path}",
                 findings.len()
             );
             ExitCode::SUCCESS
