@@ -159,7 +159,9 @@ The `MobileAndroid` specialist uses a dedicated tool set for APK/DEX analysis an
 | `src/policy.rs` | Authorization and least-privilege policy engine |
 | `src/workflow.rs` | Ordered workflow stage model |
 | `src/coordinator.rs` | Orchestration, scoped task planning, audit integration |
-| `src/execution.rs` | Bounded real execution of `StaticLocalAnalysis` cataloged tools |
+| `src/engagement_config.rs` | Zero-dependency parser for `--plan-scan` engagement config files |
+| `src/execution.rs` | Bounded real execution of `StaticLocalAnalysis` cataloged tools, plus `execute_plan` |
+| `src/audit_log.rs` | Append-only on-disk persistence for the audit ledger |
 | `src/findings.rs` | Unified finding model and normalized risk scorer |
 | `src/governance.rs` | Append-only audit ledger with role/action filtering |
 | `src/advanced.rs` | Attack-path graph builder and retest scheduler |
@@ -277,3 +279,28 @@ classified `ActiveNetwork` or `ActiveExploitation` (nmap, sqlmap, hydra,
 msfconsole, and similar) are rejected by this command — real execution of
 those needs a live-target confirmation/rate-limit design layered on the
 policy engine's `AuthorizationOutcome`, which does not exist yet.
+
+### Planning and running an authorized scan
+
+`--plan-scan` reads a hand-written engagement configuration file (a plain
+`key=value` text file — see `OPERATING_GUIDE.md` section 8a for the exact
+format), authorizes it through the same `PolicyEngine`/`Coordinator` used
+by the library's tests, and prints the resulting scan plan:
+
+```bash
+./target/release/security-agent --plan-scan engagement.txt
+./target/release/security-agent --plan-scan engagement.txt --audit-log audit.jsonl
+./target/release/security-agent --plan-scan engagement.txt --execute <args-passed-to-each-tool>
+```
+
+- With no extra flags, `--plan-scan` only plans: it prints the
+  `ExecutionPlan` (workflow stages, selected toolchain packs, and each
+  task's specialist/techniques/approved tools) or, if authorization
+  failed, the specific reason and a non-zero exit code.
+- `--audit-log <path>` appends that call's audit records to `<path>` as
+  an append-only JSON Lines file (`src/audit_log.rs`), so the audit trail
+  survives past a single run instead of living only in memory.
+- `--execute <args>` additionally runs every approved, locally installed,
+  `StaticLocalAnalysis`-classified tool in the plan via
+  `execute_plan`, passing `<args>` to each invocation, and prints each
+  outcome (success with exit code/duration, or the specific failure).

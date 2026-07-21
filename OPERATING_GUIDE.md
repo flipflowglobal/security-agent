@@ -132,7 +132,7 @@ cargo build --release --target aarch64-linux-android
 
 5. Push with ADB and execute on device.
 
-For full command details, see `/home/runner/work/security-agent/security-agent/README.md`.
+For full command details, see `README.md`.
 
 ---
 
@@ -145,6 +145,7 @@ Run these from the repository root after `cargo build --release`:
 ./target/release/security-agent --offline-status
 ./target/release/security-agent --list-skills
 ./target/release/security-agent --show-skill security-agent
+./target/release/security-agent --show-skill nmap
 ./target/release/security-agent --list-tools
 ./target/release/security-agent --run-tool autopsy <local-path>
 ./target/release/security-agent --run-tool autopsy <local-path> --output <report-path>.txt
@@ -152,11 +153,18 @@ Run these from the repository root after `cargo build --release`:
 ./target/release/security-agent --run-tool volatility <local-memory-image> --output <report-path>.txt
 ./target/release/security-agent --run-tool wireshark <local-capture.pcap>
 ./target/release/security-agent --run-tool wireshark <local-capture.pcap> --output <report-path>.txt
+./target/release/security-agent --run-external-tool semgrep --version
+./target/release/security-agent --plan-scan <engagement-config-path>
+./target/release/security-agent --plan-scan <engagement-config-path> --audit-log <log-path>.jsonl
+./target/release/security-agent --plan-scan <engagement-config-path> --execute <args-passed-to-each-tool>
 ```
 
-- No argument and `--offline-status` report the same local runtime state.
-- `--list-skills` lists skills compiled into the binary.
-- `--show-skill` prints the named embedded skill.
+- No argument and `--offline-status` report the same local runtime state,
+  including a `capability_coverage=ok` (or `error: <reason>`) health check.
+- `--list-skills` lists skills compiled into the binary: one general skill
+  plus one per cataloged tool (90 total).
+- `--show-skill` prints the named embedded skill (e.g. `security-agent`, or
+  any cataloged tool name such as `nmap`).
 - `--list-tools` distinguishes built-in substitutes, installed executables, and
   catalog entries that are not installed.
 - `--run-tool autopsy` inventories regular files and computes SHA-256 digests.
@@ -165,6 +173,17 @@ Run these from the repository root after `cargo build --release`:
 - `--run-tool wireshark` parses a local classic PCAP and reports capture,
   link-layer, network-layer, and transport-layer statistics.
 - `--output` writes the same human-readable report to a `.txt` file.
+- `--run-external-tool <name> <args>` runs a real, locally installed
+  cataloged tool directly (only tools classified for static local analysis
+  — see `README.md`'s "Running real cataloged tools" section).
+- `--plan-scan <config>` loads an engagement configuration file (see
+  section 8a below), authorizes it, and prints the resulting scan plan.
+- `--plan-scan <config> --audit-log <path>` additionally appends the
+  planning call's audit records to `<path>` as an append-only JSON Lines
+  file.
+- `--plan-scan <config> --execute <args>` additionally runs every approved,
+  locally installed tool in the plan (passing `<args>` to each) and prints
+  each outcome.
 
 To install the binary into Cargo's local binary directory:
 
@@ -177,13 +196,62 @@ After installation, replace `./target/release/security-agent` with
 
 ---
 
+## 8a) Writing an engagement configuration file
+
+`--plan-scan` reads a simple, hand-written `key=value` text file — no JSON
+or YAML needed. Comments start with `#`; one or more `[target]` sections
+list the targets in scope:
+
+```text
+engagement_id=eng-2026-001
+authorized_by=jane.doe
+authorized_by_role=SecurityAdmin
+time_window_start=1750000000
+time_window_end=1760000000
+in_scope_targets=api-staging,web-staging
+allowed_techniques=PassiveRecon,ConfigurationAudit,ApiSecurity
+deny_list_targets=prod-ledger
+max_intensity=Standard
+high_impact_approved=false
+penetrative_testing_approved=true
+
+[target]
+id=api-staging
+target_type=Api
+criticality=5
+
+[target]
+id=web-staging
+target_type=WebApp
+criticality=3
+```
+
+- `time_window_start`/`time_window_end` are Unix epoch seconds; the plan is
+  only authorized while the current time falls inside that window.
+- `authorized_by_role` and `target_type` must match one of the values Rust
+  prints for `Role`/`TargetType` (e.g. `SecurityAdmin`, `Auditor`, `Api`,
+  `WebApp`, `MobileApp` — see `src/model.rs`/`src/governance.rs` for the
+  full lists).
+- `in_scope_targets`, `allowed_techniques`, and `deny_list_targets` are
+  comma-separated; leave the value empty for an empty list.
+- `--plan-scan` refuses to produce a plan if authorization fails (expired
+  window, out-of-scope or denied target, disallowed technique, intensity
+  above the cap, or a high-impact/penetrative technique missing explicit
+  approval) — it prints the specific reason and exits non-zero rather than
+  silently narrowing scope.
+
+---
+
 ## 9) Basic usage expectations
 
 Security-Agent follows a controlled model:
-- A coordinator plans work.
-- Specialists run specific analysis areas.
-- Policies control what is allowed.
-- Audit records track actions.
+- A coordinator plans work (`--plan-scan <config>`).
+- Specialists run specific analysis areas (see the "Tasks" section of the
+  printed plan).
+- Policies control what is allowed (authorization failures are printed and
+  exit non-zero, never silently narrowed).
+- Audit records track actions (`--plan-scan <config> --audit-log <path>`
+  persists them to an append-only JSON Lines file).
 
 As an operator, your responsibility is to:
 - define authorized scope,
@@ -234,10 +302,10 @@ If any item is missing, stop and resolve it first.
 ## 12) File map for beginners
 
 Key files in this repository:
-- `/home/runner/work/security-agent/security-agent/README.md` → high-level project overview.
-- `/home/runner/work/security-agent/security-agent/src/main.rs` → offline local runtime entry point.
-- `/home/runner/work/security-agent/security-agent/src/lib.rs` → core library logic and tests.
-- `/home/runner/work/security-agent/security-agent/Cargo.toml` → Rust package metadata and dependencies.
+- `README.md` → high-level project overview.
+- `src/main.rs` → offline local runtime entry point.
+- `src/lib.rs` → core library logic and tests.
+- `Cargo.toml` → Rust package metadata and dependencies.
 
 ---
 

@@ -358,6 +358,114 @@ mod tests {
     }
 
     #[test]
+    fn parse_output_argument_defaults_to_none_with_no_more_arguments() {
+        let mut arguments = std::iter::empty::<String>();
+        assert_eq!(parse_output_argument(&mut arguments), Ok(None));
+    }
+
+    #[test]
+    fn parse_output_argument_accepts_a_txt_path() {
+        let mut arguments = vec!["--output".to_string(), "report.txt".to_string()].into_iter();
+        assert_eq!(
+            parse_output_argument(&mut arguments),
+            Ok(Some("report.txt".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_output_argument_rejects_a_non_txt_extension() {
+        let mut arguments = vec!["--output".to_string(), "report.bin".to_string()].into_iter();
+        assert!(parse_output_argument(&mut arguments).is_err());
+    }
+
+    #[test]
+    fn parse_output_argument_rejects_a_missing_path_after_flag() {
+        let mut arguments = vec!["--output".to_string()].into_iter();
+        assert!(parse_output_argument(&mut arguments).is_err());
+    }
+
+    #[test]
+    fn parse_output_argument_rejects_an_unknown_argument() {
+        let mut arguments = vec!["--bogus".to_string()].into_iter();
+        assert!(parse_output_argument(&mut arguments).is_err());
+    }
+
+    #[test]
+    fn list_skills_reports_success() {
+        let assets = LocalAgentAssets::bundled();
+        assert_eq!(list_skills(&assets), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn list_tools_reports_success() {
+        let assets = LocalAgentAssets::bundled();
+        assert_eq!(list_tools(&assets), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn show_skill_reports_success_for_a_known_skill() {
+        let assets = LocalAgentAssets::bundled();
+        let mut arguments = vec!["security-agent".to_string()].into_iter();
+        assert_eq!(show_skill(&assets, &mut arguments), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn show_skill_reports_failure_for_an_unknown_skill() {
+        let assets = LocalAgentAssets::bundled();
+        let mut arguments = vec!["no-such-skill".to_string()].into_iter();
+        assert_ne!(show_skill(&assets, &mut arguments), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn show_skill_reports_failure_with_no_name_given() {
+        let assets = LocalAgentAssets::bundled();
+        let mut arguments = std::iter::empty::<String>();
+        assert_ne!(show_skill(&assets, &mut arguments), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn run_tool_command_reports_success_for_autopsy_on_a_real_file() {
+        let path = std::env::current_exe().expect("resolve current test executable");
+        let mut arguments =
+            vec!["autopsy".to_string(), path.to_string_lossy().into_owned()].into_iter();
+        assert_eq!(run_tool_command(&mut arguments), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn run_tool_command_reports_failure_for_an_unsupported_tool() {
+        let mut arguments = vec!["not-a-real-tool".to_string(), "/tmp".to_string()].into_iter();
+        assert_ne!(run_tool_command(&mut arguments), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn write_or_print_report_writes_to_a_txt_file() {
+        let path = std::env::temp_dir().join(format!(
+            "security-agent-main-write-report-{}.txt",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+
+        let outcome = write_or_print_report(
+            "example",
+            "report body".to_string(),
+            Some(path.to_string_lossy().into_owned()),
+        );
+
+        assert_eq!(outcome, ExitCode::SUCCESS);
+        let written = fs::read_to_string(&path).expect("report file should exist");
+        fs::remove_file(&path).expect("remove temp report");
+        assert_eq!(written, "report body");
+    }
+
+    #[test]
+    fn write_or_print_report_prints_when_no_output_path_given() {
+        assert_eq!(
+            write_or_print_report("example", "report body".to_string(), None),
+            ExitCode::SUCCESS
+        );
+    }
+
+    #[test]
     fn plan_scan_reports_missing_config_path() {
         let mut arguments = std::iter::empty::<String>();
         assert!(matches!(
