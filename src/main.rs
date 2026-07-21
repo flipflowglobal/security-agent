@@ -21,6 +21,7 @@ fn main() -> ExitCode {
             print_offline_status(&assets);
             ExitCode::SUCCESS
         }
+        Some("--about" | "--version") => print_about(),
         Some("--list-skills") => list_skills(&assets),
         Some("--show-skill") => show_skill(&assets, &mut arguments),
         Some("--list-tools") => list_tools(&assets),
@@ -35,6 +36,23 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+/// Prints the agent's identity: package name/version, mission statement,
+/// and the phased roadmap (`--about`, alias `--version`). Surfaces
+/// `security_agent::MISSION_STATEMENT` and `security_agent::ROADMAP_PHASES`,
+/// which are otherwise exported but shown by no command.
+fn print_about() -> ExitCode {
+    println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+    println!();
+    println!("{}", security_agent::MISSION_STATEMENT);
+    println!();
+    println!("Roadmap");
+    println!("-------");
+    for phase in security_agent::ROADMAP_PHASES {
+        println!("{:<9} {}", phase.phase, phase.focus);
+    }
+    ExitCode::SUCCESS
 }
 
 fn print_offline_status(assets: &LocalAgentAssets) {
@@ -365,7 +383,7 @@ fn plan_scan(
         Some(path) => {
             let ledger = Path::new(path);
             if ledger.exists() {
-                security_agent::memory_store::load_findings(ledger)
+                security_agent::load_findings(ledger)
                     .map_err(|error| PlanScanError::MemoryLoad(error.to_string()))?
             } else {
                 Vec::new()
@@ -515,24 +533,27 @@ fn print_intensity_advisories(arguments: &[String], ceiling: security_agent::Tes
     }
 }
 
-/// Records findings into the persistent cognitive-memory ledger
-/// (`--record-findings <memory-ledger>.jsonl <findings-source>.jsonl`).
+/// Copies findings from one findings log into another
+/// (`--record-findings <destination-log>.jsonl <source-log>.jsonl`).
 ///
-/// Reads `Finding`s from `<findings-source>` (a JSON Lines file, one
-/// serialized finding per line — the format produced by
-/// `security_agent::append_findings`) and appends them to the append-only
-/// ledger at `<memory-ledger>`. Later engagements accumulate on top of
-/// earlier ones, so a subsequent `--plan-scan ... --cognitive-review
-/// --memory <memory-ledger>` reasons from the full accumulated history.
-/// This command never plans, authorizes, or executes — it only persists
-/// evidence for the advisory cognitive layer.
+/// Reads `Finding`s from `<source-log>` (an append-only `finding_record`
+/// JSON Lines file — the single format produced by `--findings-log` and
+/// [`security_agent::append_findings`]) and appends them to the
+/// append-only log at `<destination-log>`. Because there is now one
+/// findings format, a `--findings-log` output can also be used directly as
+/// `--memory` input; this command is for merging or curating logs. Later
+/// engagements accumulate on top of earlier ones, so a subsequent
+/// `--plan-scan ... --cognitive-review --memory <destination-log>` reasons
+/// from the full accumulated history. This command never plans,
+/// authorizes, or executes — it only persists evidence for the advisory
+/// cognitive layer.
 fn record_findings_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
-    let Some(memory_path) = arguments.next() else {
-        eprintln!("missing memory ledger path");
+    let Some(destination_path) = arguments.next() else {
+        eprintln!("missing destination findings-log path");
         return ExitCode::from(2);
     };
-    let Some(findings_path) = arguments.next() else {
-        eprintln!("missing findings source path");
+    let Some(source_path) = arguments.next() else {
+        eprintln!("missing source findings-log path");
         return ExitCode::from(2);
     };
     if let Some(extra) = arguments.next() {
@@ -540,22 +561,22 @@ fn record_findings_command(arguments: &mut impl Iterator<Item = String>) -> Exit
         return ExitCode::from(2);
     }
 
-    let findings = match security_agent::load_findings(Path::new(&findings_path)) {
+    let findings = match security_agent::load_findings(Path::new(&source_path)) {
         Ok(findings) => findings,
         Err(error) => {
-            eprintln!("failed to read findings source: {error}");
+            eprintln!("failed to read source findings log: {error}");
             return ExitCode::from(1);
         }
     };
     if findings.is_empty() {
-        eprintln!("no valid findings parsed from {findings_path}");
+        eprintln!("no valid findings parsed from {source_path}");
         return ExitCode::from(1);
     }
 
-    match security_agent::memory_store::append_findings(Path::new(&memory_path), &findings) {
+    match security_agent::append_findings(Path::new(&destination_path), &findings) {
         Ok(()) => {
             println!(
-                "recorded {} finding(s) into cognitive memory at {memory_path}",
+                "recorded {} finding(s) into cognitive memory at {destination_path}",
                 findings.len()
             );
             ExitCode::SUCCESS
@@ -719,6 +740,11 @@ mod tests {
     fn parse_output_argument_rejects_an_unknown_argument() {
         let mut arguments = vec!["--bogus".to_string()].into_iter();
         assert!(parse_output_argument(&mut arguments).is_err());
+    }
+
+    #[test]
+    fn about_reports_success() {
+        assert_eq!(print_about(), ExitCode::SUCCESS);
     }
 
     #[test]
@@ -983,8 +1009,7 @@ criticality=3
                 normalized_risk_score: 8.0,
             },
         ];
-        security_agent::memory_store::append_findings(&memory_path, &priors)
-            .expect("seed memory ledger");
+        security_agent::append_findings(&memory_path, &priors).expect("seed memory ledger");
 
         let mut arguments = vec![
             config_path.to_string_lossy().into_owned(),
