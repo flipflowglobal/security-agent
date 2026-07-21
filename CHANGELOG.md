@@ -24,25 +24,6 @@ conventions. Releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.h
   `--show-skill`, `--list-tools`, an unknown command, and `--plan-scan`
   (success and authorization-denied), using only built-in assets and temp
   files.
-
-### Changed
-- **Unified the findings-persistence format.** `--memory`,
-  `--findings-log`, `--record-findings`, and `--schedule-retest` now all
-  use the single `finding_record` JSON Lines format (`src/findings_log.rs`).
-  Previously `--memory` read a separate `serde`-JSON format written by
-  `--record-findings`, so a `--findings-log` output silently failed to load
-  as `--memory` input. `src/memory_store.rs` is now a thin bridge that
-  folds the findings log into `CognitiveMemory`, and a scan's
-  `--findings-log` output is valid `--memory` input directly — closing the
-  intelligence loop end to end.
-
-### Removed
-- **`serde`, `serde_json`, and `anyhow` dependencies.** They were used only
-  by the now-removed second findings format (`anyhow` was entirely unused),
-  so `[dependencies]` is empty again and the crate uses no external runtime
-  crates — matching its in-house JSON/SHA-256/PCAP design. Removed the
-  `serde` derives on `Finding`/`Severity` and the stale `changelog`
-  `Cargo.toml` manifest key.
 - **`src/cognitive_engine.rs`** — advanced cognitive architecture that
   models the agent's reasoning *process* as cooperating faculties:
   `ReasoningChain` (an explicit, provenance-linked train of thought:
@@ -84,6 +65,15 @@ conventions. Releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - **`CHANGELOG.md`** — this file; documents project history going forward.
 
 ### Changed
+- **Unified the findings-persistence format.** `--memory`,
+  `--findings-log`, `--record-findings`, and `--schedule-retest` now all
+  use the single `finding_record` JSON Lines format (`src/findings_log.rs`).
+  Previously `--memory` read a separate `serde`-JSON format written by
+  `--record-findings`, so a `--findings-log` output silently failed to load
+  as `--memory` input. `src/memory_store.rs` is now a thin bridge that
+  folds the findings log into `CognitiveMemory`, and a scan's
+  `--findings-log` output is valid `--memory` input directly — closing the
+  intelligence loop end to end.
 - **`Cargo.toml`** — `candle`, `candle-transformers`, and `tokenizers` are now
   optional dependencies grouped under the `inference` feature flag.  These
   crates were listed as direct dependencies but had zero references in the
@@ -99,6 +89,14 @@ conventions. Releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - **`.gitignore`** — expanded from a single `/target` entry to cover secrets,
   environment files, OS artefacts, editor files, coverage reports, and Python
   virtualenvs.
+
+### Removed
+- **`serde`, `serde_json`, and `anyhow` dependencies.** They were used only
+  by the now-removed second findings format (`anyhow` was entirely unused),
+  so `[dependencies]` is empty again and the crate uses no external runtime
+  crates — matching its in-house JSON/SHA-256/PCAP design. Removed the
+  `serde` derives on `Finding`/`Severity` and the stale `changelog`
+  `Cargo.toml` manifest key.
 
 ---
 
