@@ -54,7 +54,7 @@ pub(crate) fn severity_from_label(label: &str) -> Severity {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Finding {
     pub finding_id: String,
     pub source_tool: String,

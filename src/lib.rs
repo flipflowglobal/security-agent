@@ -8,6 +8,7 @@ pub mod coordinator;
 pub mod engagement_config;
 pub mod execution;
 pub mod findings;
+pub mod findings_log;
 pub mod governance;
 pub mod ingest;
 pub mod integrity;
@@ -39,7 +40,7 @@ pub use cognition::{
 };
 pub use compat::{
     CompatibilityEnvelope, IntegrationAdapter, JsonLineAdapter, audit_record_to_envelope,
-    envelope_to_audit_record,
+    envelope_to_audit_record, envelope_to_finding, finding_to_envelope,
 };
 pub use coordinator::{Coordinator, ExecutionPlan, ScanTask};
 pub use engagement_config::{
@@ -50,6 +51,7 @@ pub use execution::{
     run_external_tool, run_external_tool_with_default_timeout,
 };
 pub use findings::{Finding, RiskScoreCalculator, Severity};
+pub use findings_log::{FindingsLogError, append_findings, load_findings};
 pub use governance::{AuditLedger, AuditRecord, Role};
 pub use integrity::{IntegrityManifest, IntegrityStatus, verify};
 pub use intensity_guard::{IntensityAdvisory, advise};
