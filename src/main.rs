@@ -1,9 +1,10 @@
 //! Security-Agent local runtime.
 
 use security_agent::{
-    CapabilityGraph, CapabilityRegistry, CognitiveAssessment, CognitiveMemory, Coordinator,
-    LocalAgentAssets, PolicyEngine, ToolchainPackRegistry, assess_plan_cognitively,
-    load_engagement_config, run_builtin_tool, run_external_tool_with_default_timeout,
+    CapabilityGraph, CapabilityRegistry, CognitiveAssessment, CognitiveDeliberation,
+    CognitiveEngine, CognitiveMemory, Coordinator, LocalAgentAssets, PolicyEngine,
+    ToolchainPackRegistry, assess_plan_cognitively, load_engagement_config, run_builtin_tool,
+    run_external_tool_with_default_timeout,
 };
 use std::fmt;
 use std::fs;
@@ -245,18 +246,27 @@ impl fmt::Display for PlanScanError {
 /// Recognizes three optional trailing arguments, in order: `--audit-log
 /// <path>` appends the new audit ledger records this call produced to
 /// `<path>` (see [`security_agent::append_audit_records`]); `--cognitive-review`
-/// runs the advisory reasoning layer (see [`security_agent::cognition`]) over
-/// the resulting plan and returns a [`CognitiveAssessment`] alongside it —
-/// this process holds no finding history between runs, so its hypotheses
-/// fall back to their type-based defaults rather than being boosted by
-/// history; `--execute <args>...` passes every remaining argument through
+/// runs the advisory reasoning layers over the resulting plan and returns a
+/// [`CognitiveReview`] alongside it — both the flat
+/// [`CognitiveAssessment`] (see [`security_agent::cognition`]) and the deep
+/// [`CognitiveDeliberation`] (see [`security_agent::cognitive_engine`]:
+/// train of thought, Bayesian beliefs, adversary model, attention, and
+/// metacognition). This process holds no finding history between runs, so
+/// its priors fall back to their type-based defaults rather than being
+/// boosted by history; `--execute <args>...` passes every remaining argument through
 /// to [`security_agent::execute_plan`], which runs each planned task's
 /// approved, execution-eligible tools (`StaticLocalAnalysis`, plus `nmap`
 /// as an explicit exception) and returns their outcomes alongside the
 /// plan.
+/// The advisory cognitive output for a `--cognitive-review` run: the flat
+/// [`CognitiveAssessment`] (prioritization, hypotheses, insights) plus the
+/// deep [`CognitiveDeliberation`] (train of thought, beliefs, adversary
+/// model, attention, and metacognition).
+type CognitiveReview = (CognitiveAssessment, CognitiveDeliberation);
+
 type PlanScanOutcome = (
     security_agent::ExecutionPlan,
-    Option<CognitiveAssessment>,
+    Option<CognitiveReview>,
     Option<Vec<security_agent::TaskExecutionOutcome>>,
 );
 
@@ -308,6 +318,18 @@ fn plan_scan(
             .map_err(|error| PlanScanError::AuditLogWrite(error.to_string()))?;
     }
 
+    let cognitive_output = cognitive_review.then(|| {
+        let memory = CognitiveMemory::new();
+        let assessment = assess_plan_cognitively(&plan, &targets_for_review, &memory);
+        // The direct CLI path carries no persisted finding history, so the
+        // engine deliberates from an empty memory and no findings; its
+        // priors are type-based. Callers wanting history-informed
+        // deliberation build a `CognitiveEngine` with a populated memory.
+        let engine = CognitiveEngine::new(memory, security_agent::AdversaryModel::default());
+        let deliberation = engine.deliberate(&plan, &targets_for_review, &[]);
+        (assessment, deliberation)
+    });
+
     if let Some(tool_arguments) = &tool_arguments {
         print_intensity_advisories(tool_arguments, declared_ceiling);
     }
@@ -317,7 +339,7 @@ fn plan_scan(
         security_agent::execute_plan(&plan, &assets, &tool_arguments)
     });
 
-    Ok((plan, assessment, outcomes))
+    Ok((plan, cognitive_output, outcomes))
 }
 
 /// CLI entry point for `--plan-scan <config-file> [--audit-log <path>]
@@ -327,11 +349,13 @@ fn plan_scan(
 /// each task's tool execution outcomes.
 fn plan_scan_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
     match plan_scan(arguments) {
-        Ok((plan, assessment, outcomes)) => {
+        Ok((plan, cognitive_output, outcomes)) => {
             print!("{plan}");
-            if let Some(assessment) = assessment {
+            if let Some((assessment, deliberation)) = cognitive_output {
                 println!();
                 print!("{assessment}");
+                println!();
+                print!("{deliberation}");
             }
             if let Some(outcomes) = outcomes {
                 println!();
@@ -616,11 +640,15 @@ criticality=3
         let result = plan_scan(&mut arguments);
         fs::remove_file(&path).expect("remove temp config");
 
-        let (plan, assessment, outcomes) = result.expect("valid config should authorize and plan");
+        let (plan, cognitive_output, outcomes) =
+            result.expect("valid config should authorize and plan");
         assert_eq!(plan.engagement_id, "eng-cli-test");
         assert!(!plan.tasks.is_empty());
         assert!(outcomes.is_none(), "no --execute flag was given");
-        assert!(assessment.is_none(), "no --cognitive-review flag was given");
+        assert!(
+            cognitive_output.is_none(),
+            "no --cognitive-review flag was given"
+        );
     }
 
     #[test]
@@ -659,10 +687,16 @@ criticality=3
         let result = plan_scan(&mut arguments);
         fs::remove_file(&path).expect("remove temp config");
 
-        let (_, assessment, outcomes) = result.expect("valid config should authorize and plan");
-        let assessment = assessment.expect("--cognitive-review should produce Some(assessment)");
+        let (_, cognitive_output, outcomes) =
+            result.expect("valid config should authorize and plan");
+        let (assessment, deliberation) =
+            cognitive_output.expect("--cognitive-review should produce Some(review)");
         assert_eq!(assessment.hypotheses_by_target.len(), 1);
         assert!(!assessment.prioritized_tasks.is_empty());
+        // The deep deliberation ran too: a train of thought reaching at
+        // least one decision, and a metacognitive self-assessment.
+        assert!(!deliberation.reasoning_chain.is_empty());
+        assert!(deliberation.metacognition.self_assessed_confidence > 0);
         assert!(outcomes.is_none(), "no --execute flag was given");
     }
 
