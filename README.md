@@ -96,6 +96,7 @@ Federated model (not an unrestricted super-agent):
 - **Audit Ledger** — append-only record of every authorized action; filterable by role and action type.
 - **Attack-Path Graph** — builds threat model (nodes + edges) from a set of findings.
 - **Retest Scheduler** — drift-and-risk-based retest intervals derived from finding risk scores.
+- **Cognitive Layer** (`src/cognition.rs`) — advisory reasoning over an already-authorized plan: ranks tasks by expected risk yield, proposes ranked hypotheses about which technique is likely to find what per target type, and reflects on the plan to flag coverage gaps. Purely advisory — it never grants, restricts, or bypasses a `PolicyEngine`/`Coordinator` authorization decision.
 
 ---
 
@@ -169,6 +170,7 @@ The `MobileAndroid` specialist uses a dedicated tool set for APK/DEX analysis an
 | `src/findings.rs` | Unified finding model and normalized risk scorer |
 | `src/governance.rs` | Append-only audit ledger with role/action filtering |
 | `src/advanced.rs` | Attack-path graph builder and retest scheduler |
+| `src/cognition.rs` | Advisory reasoning layer: risk-yield task prioritization, per-target-type hypothesis generation, and reflective plan critique |
 | `src/compat.rs` | Integration adapter contracts and wire-format envelope |
 | `src/roadmap.rs` | Phased rollout model |
 | `src/main.rs` | Offline local runtime entry point (also cross-compiles for Android) |
@@ -326,6 +328,7 @@ by the library's tests, and prints the resulting scan plan:
 ```bash
 ./target/release/security-agent --plan-scan engagement.txt
 ./target/release/security-agent --plan-scan engagement.txt --audit-log audit.jsonl
+./target/release/security-agent --plan-scan engagement.txt --cognitive-review
 ./target/release/security-agent --plan-scan engagement.txt --execute <args-passed-to-each-tool>
 ```
 
@@ -336,7 +339,18 @@ by the library's tests, and prints the resulting scan plan:
 - `--audit-log <path>` appends that call's audit records to `<path>` as
   an append-only JSON Lines file (`src/audit_log.rs`), so the audit trail
   survives past a single run instead of living only in memory.
+- `--cognitive-review` runs the advisory reasoning layer (`src/cognition.rs`)
+  over the resulting plan and prints a risk-yield task ranking, ranked
+  per-target hypotheses about which technique is likely to find what, and
+  a reflective critique flagging coverage gaps (e.g. a task with no
+  locally installed tool). This single CLI invocation holds no finding
+  history between runs, so hypotheses use their type-based defaults
+  rather than being boosted by history; call `security_agent::cognition`
+  directly and feed it a persisted `CognitiveMemory` to get
+  history-informed prioritization across repeated engagements.
 - `--execute <args>` additionally runs every approved, locally installed,
   `StaticLocalAnalysis`-classified tool in the plan via
   `execute_plan`, passing `<args>` to each invocation, and prints each
   outcome (success with exit code/duration, or the specific failure).
+- Flags may be combined, in this order: `--audit-log <path>`, then
+  `--cognitive-review`, then `--execute <args>...`.
