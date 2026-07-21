@@ -114,12 +114,16 @@ impl fmt::Display for ToolExecutionReport {
 /// itself, so enabling a new tool here is always a deliberate, visible
 /// decision rather than an accidental side effect of some other change.
 ///
-/// `nmap` is the only entry today: it's approved the same way the
-/// `StaticLocalAnalysis` tools are — via the coordinator's existing
+/// `nmap` and `masscan` are the entries today: both are approved the same
+/// way the `StaticLocalAnalysis` tools are — via the coordinator's existing
 /// planning gate (scope + technique allow-list) plus local installation,
 /// with no additional target-confirmation, approval, or rate-limiting.
 /// Arguments given to `--execute`/[`execute_plan`] are trusted as-is.
-const WIRED_DESPITE_EXECUTION_CLASS: &[&str] = &["nmap"];
+/// Because `masscan` can saturate a link at its default rate, its
+/// arguments are additionally passed through the non-blocking intensity
+/// advisory (see `crate::intensity_guard`) at the CLI layer, but that only
+/// warns — it never gates execution here.
+const WIRED_DESPITE_EXECUTION_CLASS: &[&str] = &["nmap", "masscan"];
 
 fn is_eligible_for_execution(tool: &LocalTool) -> bool {
     tool.definition.execution_class == ExecutionClass::StaticLocalAnalysis
@@ -442,6 +446,21 @@ mod tests {
 
         assert_eq!(report.exit_code, Some(0));
         assert_eq!(report.tool, "nmap");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn masscan_is_eligible_for_real_execution_despite_being_active_network() {
+        if !Path::new("/bin/true").exists() {
+            return;
+        }
+        let tool = tool_named("masscan", "/bin/true", ExecutionClass::ActiveNetwork);
+
+        let report = run_external_tool(&tool, &[], Duration::from_secs(5))
+            .expect("masscan should be an explicit execution exception");
+
+        assert_eq!(report.exit_code, Some(0));
+        assert_eq!(report.tool, "masscan");
     }
 
     #[test]

@@ -6,6 +6,7 @@ metadata:
   execution_class: ActiveNetwork
   cataloged: "true"
   bundled_binary: "false"
+  execution_exception: "true"
 ---
 
 # masscan
@@ -26,7 +27,7 @@ Requires the target to be in-scope and the relevant technique present in the eng
 
 ## Execution status in Security-Agent
 
-Catalog and local-installation detection only, via `--list-tools`. Security-Agent does not invoke this tool directly. Real execution would require the live-target confirmation/rate-limit design noted as follow-up in `src/execution.rs`.
+Real execution is available: `--run-external-tool masscan <args>` and `--plan-scan <config> --execute <args>` both run the locally installed binary directly (see `src/execution.rs`), bounded by an execution timeout with stdout/stderr/exit-code capture. `masscan` is an explicit, reviewed exception to the general rule that only `StaticLocalAnalysis` tools get real execution (tracked as `WIRED_DESPITE_EXECUTION_CLASS` in `src/execution.rs`, alongside `nmap`) — it is gated only by the coordinator's existing planning approval (scope + technique allow-list) and local installation. Because masscan can saturate a link at its default rate, its arguments are additionally run through the non-blocking intensity advisory (`src/intensity_guard.rs`), which warns on stderr when the requested rate/aggressiveness exceeds the engagement's declared ceiling but never blocks execution. Arguments are otherwise trusted as-is. Every other `ActiveNetwork`/`ActiveExploitation` tool remains catalog/detection-only.
 
 ## Availability
 
