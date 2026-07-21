@@ -364,6 +364,8 @@ by the library's tests, and prints the resulting scan plan:
 ./target/release/security-agent --plan-scan engagement.txt --audit-log audit.jsonl
 ./target/release/security-agent --plan-scan engagement.txt --cognitive-review
 ./target/release/security-agent --plan-scan engagement.txt --execute <args-passed-to-each-tool>
+./target/release/security-agent --plan-scan engagement.txt --findings-log findings.jsonl --execute <args>
+./target/release/security-agent --schedule-retest findings.jsonl
 ```
 
 - With no extra flags, `--plan-scan` only plans: it prints the
@@ -382,9 +384,42 @@ by the library's tests, and prints the resulting scan plan:
   rather than being boosted by history; call `security_agent::cognition`
   directly and feed it a persisted `CognitiveMemory` to get
   history-informed prioritization across repeated engagements.
-- `--execute <args>` additionally runs every approved, locally installed,
-  `StaticLocalAnalysis`-classified tool in the plan via
-  `execute_plan`, passing `<args>` to each invocation, and prints each
-  outcome (success with exit code/duration, or the specific failure).
+- `--execute <args>` additionally runs every approved, locally installed
+  tool eligible for real execution in the plan via `execute_plan`, passing
+  `<args>` to each invocation, and prints each outcome (success with exit
+  code/duration, or the specific failure) plus a findings summary (see
+  below).
+- `--findings-log <path>` appends every finding ingested from
+  `--execute`'s tool output to `<path>` as an append-only JSON Lines file
+  (`src/findings_log.rs`); a no-op unless `--execute` was also given.
 - Flags may be combined, in this order: `--audit-log <path>`, then
-  `--cognitive-review`, then `--execute <args>...`.
+  `--cognitive-review`, then `--findings-log <path>`, then
+  `--execute <args>...`.
+
+### Findings pipeline
+
+`execute_plan` captures each tool's stdout but does nothing with it on its
+own. `--plan-scan ... --execute` closes that loop:
+
+1. **Execute** — each approved, locally installed tool runs via
+   `execute_plan` (`src/execution.rs`).
+2. **Ingest** — every successful outcome's stdout is parsed by
+   `security_agent::ingest::ingest` (`src/ingest.rs`) into `Finding`s.
+   Ships with parsers for semgrep `--json` output, generic SARIF
+   (`runs[].results[]`, e.g. `nuclei -sarif`), and a JSON-Lines fallback;
+   tools without a registered parser are simply not auto-ingested.
+3. **Score** — every finding's `normalized_risk_score` comes from
+   `RiskScoreCalculator::normalized_score` (`src/findings.rs`), never set
+   by hand.
+4. **Persist** — `--findings-log <path>` appends the scored findings to an
+   append-only JSON Lines log (`src/findings_log.rs`), mirroring how
+   `--audit-log` persists the audit ledger.
+5. **Retest** — `--schedule-retest <findings-log-path>` reads a persisted
+   log and emits a drift-and-risk-based retest schedule per finding via
+   `propose_retest_schedule` (`src/advanced.rs`), soonest first.
+
+`--plan-scan ... --execute` also prints a findings summary directly
+(severity counts, top findings by risk score, and the node/edge counts of
+an `AttackPathGraph::build_from_findings` built from them) even without
+`--findings-log`, so the pipeline is visible on every run, not only when
+persisting.
