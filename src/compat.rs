@@ -1,10 +1,11 @@
 use crate::coordinator::ExecutionPlan;
 use crate::findings::{Finding, Severity};
 use crate::governance::AuditRecord;
+use crate::json::{
+    expect_char, parse_json_string, parse_json_string_object, peek_char, skip_whitespace,
+};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::iter::Peekable;
-use std::str::Chars;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompatibilityEnvelope {
@@ -111,80 +112,6 @@ fn push_json_string(out: &mut String, value: &str) {
         }
     }
     out.push('"');
-}
-
-fn skip_whitespace(chars: &mut Peekable<Chars<'_>>) {
-    while chars.next_if(|ch| ch.is_whitespace()).is_some() {}
-}
-
-fn peek_char(chars: &mut Peekable<Chars<'_>>, expected: char) -> bool {
-    chars.peek() == Some(&expected)
-}
-
-fn expect_char(chars: &mut Peekable<Chars<'_>>, expected: char) -> Option<()> {
-    skip_whitespace(chars);
-    if chars.next() == Some(expected) {
-        Some(())
-    } else {
-        None
-    }
-}
-
-fn parse_json_string(chars: &mut Peekable<Chars<'_>>) -> Option<String> {
-    skip_whitespace(chars);
-    expect_char(chars, '"')?;
-    let mut value = String::new();
-    loop {
-        match chars.next()? {
-            '"' => return Some(value),
-            '\\' => match chars.next()? {
-                '"' => value.push('"'),
-                '\\' => value.push('\\'),
-                '/' => value.push('/'),
-                'n' => value.push('\n'),
-                'r' => value.push('\r'),
-                't' => value.push('\t'),
-                'u' => {
-                    let code_point = parse_hex4(chars)?;
-                    value.push(char::from_u32(code_point)?);
-                }
-                _ => return None,
-            },
-            ch => value.push(ch),
-        }
-    }
-}
-
-fn parse_hex4(chars: &mut Peekable<Chars<'_>>) -> Option<u32> {
-    let mut code_point = 0_u32;
-    for _ in 0..4 {
-        let digit = chars.next()?.to_digit(16)?;
-        code_point = code_point * 16 + digit;
-    }
-    Some(code_point)
-}
-
-fn parse_json_string_object(chars: &mut Peekable<Chars<'_>>) -> Option<BTreeMap<String, String>> {
-    expect_char(chars, '{')?;
-    let mut map = BTreeMap::new();
-    loop {
-        skip_whitespace(chars);
-        if peek_char(chars, '}') {
-            chars.next();
-            return Some(map);
-        }
-        let key = parse_json_string(chars)?;
-        skip_whitespace(chars);
-        expect_char(chars, ':')?;
-        let value = parse_json_string(chars)?;
-        map.insert(key, value);
-        skip_whitespace(chars);
-        match chars.next()? {
-            ',' => {}
-            '}' => return Some(map),
-            _ => return None,
-        }
-    }
 }
 
 /// Converts an [`AuditRecord`] to a [`CompatibilityEnvelope`].
