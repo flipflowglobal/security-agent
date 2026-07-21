@@ -22,6 +22,7 @@ pub struct Finding {
 pub struct RiskScoreCalculator;
 
 impl RiskScoreCalculator {
+    #[must_use]
     pub fn normalized_score(
         severity: Severity,
         confidence_percent: u8,
@@ -34,7 +35,7 @@ impl RiskScoreCalculator {
             Severity::Low => 2.5,
             Severity::Informational => 1.0,
         };
-        let confidence_factor = (confidence_percent.min(100) as f32) / 100.0;
+        let confidence_factor = f32::from(confidence_percent.min(100)) / 100.0;
         let exploitability_factor = if exploitability_validated { 1.15 } else { 1.0 };
         (severity_weight * confidence_factor * exploitability_factor).min(10.0)
     }

@@ -15,7 +15,8 @@ pub struct TaggedTestRun {
 }
 
 impl TaggedTestRun {
-    pub fn new(
+    #[must_use]
+    pub const fn new(
         test_run_id: String,
         environment: TestEnvironment,
         operator: String,
@@ -31,6 +32,7 @@ impl TaggedTestRun {
         }
     }
 
+    #[must_use]
     pub fn source_tag(&self) -> String {
         format!("security-agent/test-run/{}", self.test_run_id)
     }

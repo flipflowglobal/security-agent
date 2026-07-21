@@ -20,11 +20,13 @@ pub struct LocalTool {
 }
 
 impl LocalTool {
-    pub fn is_available(&self) -> bool {
+    #[must_use]
+    pub const fn is_available(&self) -> bool {
         self.built_in || self.executable.is_some()
     }
 
-    pub fn is_installed(&self) -> bool {
+    #[must_use]
+    pub const fn is_installed(&self) -> bool {
         self.executable.is_some()
     }
 }
@@ -42,6 +44,7 @@ impl Default for LocalAgentAssets {
 }
 
 impl LocalAgentAssets {
+    #[must_use]
     pub fn bundled() -> Self {
         let skills = vec![LocalSkill {
             name: "security-agent",
@@ -71,18 +74,22 @@ impl LocalAgentAssets {
         Self { skills, tools }
     }
 
+    #[must_use]
     pub fn skills(&self) -> &[LocalSkill] {
         &self.skills
     }
 
+    #[must_use]
     pub fn skill(&self, name: &str) -> Option<&LocalSkill> {
         self.skills.iter().find(|skill| skill.name == name)
     }
 
+    #[must_use]
     pub fn tools(&self) -> &[LocalTool] {
         &self.tools
     }
 
+    #[must_use]
     pub fn tool(&self, name: &str) -> Option<&LocalTool> {
         self.tools.iter().find(|tool| tool.definition.name == name)
     }

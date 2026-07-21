@@ -159,6 +159,7 @@ The `MobileAndroid` specialist uses a dedicated tool set for APK/DEX analysis an
 | `src/policy.rs` | Authorization and least-privilege policy engine |
 | `src/workflow.rs` | Ordered workflow stage model |
 | `src/coordinator.rs` | Orchestration, scoped task planning, audit integration |
+| `src/execution.rs` | Bounded real execution of `StaticLocalAnalysis` cataloged tools |
 | `src/findings.rs` | Unified finding model and normalized risk scorer |
 | `src/governance.rs` | Append-only audit ledger with role/action filtering |
 | `src/advanced.rs` | Attack-path graph builder and retest scheduler |
@@ -234,3 +235,25 @@ ARP, TCP, UDP, ICMP, and ICMPv6 traffic without live capture:
 ./target/release/security-agent --run-tool wireshark <local-capture.pcap>
 ./target/release/security-agent --run-tool wireshark <local-capture.pcap> --output <report-path>.txt
 ```
+
+### Running real cataloged tools
+
+Every cataloged tool is classified by `ExecutionClass` (`src/registry.rs`):
+`StaticLocalAnalysis` (operates only on local files — semgrep, jadx,
+androguard, apktool, dex2jar, apksigner, and others), `ActiveNetwork`
+(scans or contacts a live target), or `ActiveExploitation` (attempts to
+compromise a live target or running process). `--run-external-tool`
+directly invokes a real, locally installed tool, but only when it is
+classified `StaticLocalAnalysis`:
+
+```bash
+./target/release/security-agent --run-external-tool semgrep --version
+./target/release/security-agent --run-external-tool jadx -d <out-dir> <apk-path>
+```
+
+The process is spawned with a bounded execution timeout and its stdout,
+stderr, exit code, and duration are captured into a report. Tools
+classified `ActiveNetwork` or `ActiveExploitation` (nmap, sqlmap, hydra,
+msfconsole, and similar) are rejected by this command — real execution of
+those needs a live-target confirmation/rate-limit design layered on the
+policy engine's `AuthorizationOutcome`, which does not exist yet.
