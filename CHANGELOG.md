@@ -10,6 +10,21 @@ conventions. Releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## [Unreleased]
 
 ### Added
+- **`src/cognitive_engine.rs`** — advanced cognitive architecture that
+  models the agent's reasoning *process* as cooperating faculties:
+  `ReasoningChain` (an explicit, provenance-linked train of thought:
+  observe → hypothesize → imagine → decide → reflect), `BeliefState`
+  (a normalized probability distribution revised with Bayes' rule as
+  finding evidence accumulates, with Shannon-entropy uncertainty),
+  `AdversaryModel` (theory-of-mind prediction of a rational attacker's
+  ranked next moves given an objective), `AttentionAllocator`
+  (salience-weighted focus across targets), and `Metacognition` (the
+  agent self-assessing confidence, naming knowledge gaps, and deciding
+  when to escalate to a human). `CognitiveEngine::deliberate` runs all
+  faculties and returns a `CognitiveDeliberation`. Like `src/cognition.rs`
+  it is purely advisory and never affects authorization. Surfaced through
+  the existing `--plan-scan <config> --cognitive-review` flag, printed
+  after the flat cognitive assessment.
 - **`src/cognition.rs`** — advisory reasoning layer above the coordinator.
   Given an already-authorized `ExecutionPlan`, it ranks tasks by expected
   risk yield (`prioritize_tasks`), proposes ranked hypotheses about which
