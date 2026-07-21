@@ -201,6 +201,14 @@ pub struct Target {
     pub id: String,
     pub target_type: TargetType,
     pub criticality: u8,
+    /// Resolvable network address (IP or hostname) for this target, if
+    /// any. `None` for label-only targets. When present, real execution
+    /// of a network tool (see `crate::execution::execute_plan`) prepends
+    /// this address as the tool's first argument, keeping the
+    /// authorization boundary (the target `id`) connected to what the
+    /// tool actually connects to — the operator's own arguments never
+    /// need to (and should not) restate the target's address themselves.
+    pub network_address: Option<String>,
 }
 
 #[cfg(test)]

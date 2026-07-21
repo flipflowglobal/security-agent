@@ -160,8 +160,10 @@ Run these from the repository root after `cargo build --release`:
 ./target/release/security-agent --run-external-tool masscan -p80 <in-scope-range>
 ./target/release/security-agent --plan-scan <engagement-config-path>
 ./target/release/security-agent --plan-scan <engagement-config-path> --audit-log <log-path>.jsonl
+./target/release/security-agent --plan-scan <engagement-config-path> --findings-log <findings-log-path>.jsonl --execute <args-passed-to-each-tool>
 ./target/release/security-agent --plan-scan <engagement-config-path> --execute <args-passed-to-each-tool>
 ./target/release/security-agent --view-audit <log-path>.jsonl
+./target/release/security-agent --schedule-retest <findings-log-path>.jsonl
 ```
 
 - No argument and `--offline-status` report the same local runtime state,
@@ -192,11 +194,19 @@ Run these from the repository root after `cargo build --release`:
   planning call's audit records to `<path>` as an append-only JSON Lines
   file.
 - `--plan-scan <config> --execute <args>` additionally runs every approved,
-  locally installed tool in the plan (passing `<args>` to each) and prints
-  each outcome.
+  locally installed tool in the plan (passing `<args>` to each), prints
+  each outcome, and prints a findings summary (severity counts, top
+  findings by risk score, and attack-path graph node/edge counts) ingested
+  from each tool's output.
+- `--plan-scan <config> --findings-log <path> --execute <args>` additionally
+  appends every finding ingested from `--execute`'s tool output to `<path>`
+  as an append-only JSON Lines file; a no-op without `--execute`.
 - `--view-audit <path>` is a read-only view: it loads a persisted audit
   log and prints its records (operating under the least-privilege `Viewer`
   role). It never plans, authorizes, executes, or writes.
+- `--schedule-retest <findings-log-path>` reads a findings log written by
+  `--findings-log` and prints a retest schedule (soonest first) derived
+  from each finding's risk score.
 
 To install the binary into Cargo's local binary directory:
 
@@ -232,6 +242,7 @@ penetrative_testing_approved=true
 id=api-staging
 target_type=Api
 criticality=5
+network_address=192.168.1.10
 
 [target]
 id=web-staging
@@ -239,6 +250,14 @@ target_type=WebApp
 criticality=3
 ```
 
+- `network_address` is optional (`web-staging` above omits it): a
+  resolvable IP or hostname for the target. When set, real execution of a
+  network tool (nmap, masscan) through `--plan-scan ... --execute` binds
+  to this address automatically — it is prepended as the tool's first
+  argument, ahead of whatever `--execute` arguments were given. Static
+  local-analysis tools (semgrep, jadx, ...) are never affected. Omitting
+  `network_address` leaves the target label-only, exactly as before this
+  field existed.
 - `time_window_start`/`time_window_end` are Unix epoch seconds; the plan is
   only authorized while the current time falls inside that window.
 - `authorized_by_role` and `target_type` must match one of the values Rust
