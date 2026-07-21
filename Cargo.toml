@@ -5,5 +5,20 @@ edition = "2024"
 rust-version = "1.85"
 description = "Defensive security orchestration agent for authorized vulnerability testing."
 license = "MIT"
+repository = "https://github.com/flipflowglobal/security-agent"
+changelog = "CHANGELOG.md"
 
 [dependencies]
+anyhow = "1.0.100"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+
+# Inference back-end (optional — not required for the core orchestration logic).
+# Enable with `cargo build --features inference` when the ML inference path is ready.
+candle = { package = "candle-core", version = "0.9.2", default-features = false, optional = true }
+candle-transformers = { version = "0.9.2", default-features = false, optional = true }
+tokenizers = { version = "0.23.1", default-features = false, features = ["fancy-regex"], optional = true }
+
+[features]
+# Enable the candle-based LLM inference back-end.
+inference = ["dep:candle", "dep:candle-transformers", "dep:tokenizers"]

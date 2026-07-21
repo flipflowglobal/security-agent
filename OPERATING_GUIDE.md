@@ -59,10 +59,12 @@ You will mainly use these commands:
 ```bash
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
-cargo test
+cargo test --lib
 cargo build --release
 ./target/release/security-agent --offline-status
 ```
+
+Tip: run `make check` to execute all four validation steps in one command.
 
 What each one does:
 - `cargo fmt --check` → verifies code formatting.
@@ -79,7 +81,7 @@ Run the commands in this order:
 
 1. `cargo fmt --check`
 2. `cargo clippy --all-targets -- -D warnings`
-3. `cargo test`
+3. `cargo test --lib`
 4. `cargo build --release`
 5. `./target/release/security-agent --offline-status`
 
@@ -96,7 +98,7 @@ Use this routine whenever you work in the repository:
 3. Run checks:
    - `cargo fmt --check`
    - `cargo clippy --all-targets -- -D warnings`
-   - `cargo test`
+   - `cargo test --lib`
 4. Build release:
    - `cargo build --release`
 5. Inspect local status:
@@ -132,7 +134,7 @@ cargo build --release --target aarch64-linux-android
 
 5. Push with ADB and execute on device.
 
-For full command details, see `README.md`.
+For full command details, see [`README.md`](./README.md).
 
 ---
 
@@ -305,10 +307,10 @@ If any item is missing, stop and resolve it first.
 ## 12) File map for beginners
 
 Key files in this repository:
-- `README.md` → high-level project overview.
-- `src/main.rs` → offline local runtime entry point.
-- `src/lib.rs` → core library logic and tests.
-- `Cargo.toml` → Rust package metadata and dependencies.
+- [`README.md`](./README.md) → high-level project overview.
+- [`src/main.rs`](./src/main.rs) → offline local runtime entry point.
+- [`src/lib.rs`](./src/lib.rs) → core library logic and tests.
+- [`Cargo.toml`](./Cargo.toml) → Rust package metadata and dependencies.
 
 ---
 
@@ -327,9 +329,9 @@ Key files in this repository:
 ```bash
 git clone <repo-url>
 cd security-agent
-cargo fmt --check
+cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
-cargo test
+cargo test --lib
 cargo build --release
 ./target/release/security-agent --offline-status
 ```

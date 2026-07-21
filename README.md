@@ -1,5 +1,7 @@
 # Security-Agent
 
+[![CI](https://github.com/flipflowglobal/security-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/flipflowglobal/security-agent/actions/workflows/ci.yml)
+
 Rust-first hybrid defensive security orchestration agent for authorized vulnerability testing across web, API, mobile (Android), blockchain, cloud, and infrastructure targets.
 
 ## Mission
@@ -11,6 +13,8 @@ Defensive security orchestration agent for authorized vulnerability testing acro
 For a beginner-friendly, step-by-step operations manual, read:
 
 - [`OPERATING_GUIDE.md`](./OPERATING_GUIDE.md)
+- [`CONTRIBUTING.md`](./CONTRIBUTING.md) — developer workflow and CI gates
+- [`CHANGELOG.md`](./CHANGELOG.md) — version history
 
 ---
 
@@ -23,10 +27,10 @@ For a beginner-friendly, step-by-step operations manual, read:
 git clone <repo-url>
 cd security-agent
 
-# Validate and build
-cargo fmt --check
+# Validate and build (or just `make check` for all four steps)
+cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
-cargo test
+cargo test --lib
 cargo build --release
 
 # Inspect actual local status
@@ -182,11 +186,36 @@ The `MobileAndroid` specialist uses a dedicated tool set for APK/DEX analysis an
 
 ## Development
 
+For a full contributor guide see [`CONTRIBUTING.md`](./CONTRIBUTING.md).
+
+### Quick reference
+
 ```bash
-cargo fmt --check                    # verify formatting
-cargo clippy --all-targets -- -D warnings # lint all targets
-cargo test                           # run all tests
-cargo build --release                # optimized host binary
+make fmt      # cargo fmt --all --check
+make clippy   # cargo clippy --all-targets -- -D warnings
+make test     # cargo test --lib
+make build    # cargo build --release
+make check    # runs all four above in sequence
+```
+
+Or run `cargo` directly:
+
+```bash
+cargo fmt --all --check                    # verify formatting
+cargo clippy --all-targets -- -D warnings  # lint all targets
+cargo test --lib                           # run library unit tests
+cargo build --release                      # optimized host binary
+```
+
+### Optional inference feature
+
+The `candle` / `candle-transformers` / `tokenizers` crates are optional
+dependencies grouped under the `inference` feature flag.  They are not used
+by the core orchestration logic and are disabled by default:
+
+```bash
+# Build with the inference back-end enabled
+cargo build --release --features inference
 ```
 
 ### Offline local assets

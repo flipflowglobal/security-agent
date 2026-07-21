@@ -1,0 +1,11 @@
+# rustfmt.toml — code style configuration for Security-Agent
+#
+# These settings are applied by `cargo fmt` and verified by `cargo fmt --check`
+# (which is enforced in CI).  Keep this file minimal and restrict to stable
+# rustfmt options only; nightly-only options are silently ignored on stable
+# but emit warnings that pollute CI logs.
+
+edition = "2024"
+
+# Maximum line length before rustfmt wraps.
+max_width = 100
