@@ -161,7 +161,16 @@ impl std::error::Error for BuiltInToolError {}
 
 #[must_use]
 pub fn is_builtin_tool(name: &str) -> bool {
-    matches!(name, "autopsy" | "volatility" | "wireshark")
+    matches!(
+        name,
+        "autopsy"
+            | "volatility"
+            | "wireshark"
+            | "binwalk"
+            | "foremost"
+            | "bulk_extractor"
+            | "hashdeep"
+    )
 }
 
 /// Runs the built-in substitute named `name` against `input` and renders
@@ -177,6 +186,10 @@ pub fn run_builtin_tool(name: &str, input: &Path) -> Result<String, BuiltInToolE
         "autopsy" => Ok(run_autopsy(input)?.to_string()),
         "volatility" => Ok(run_volatility(input)?.to_string()),
         "wireshark" => Ok(crate::pcap::run_wireshark(input)?.to_string()),
+        "binwalk" => Ok(crate::local_analyzers::run_binwalk(input)?.to_string()),
+        "foremost" => Ok(crate::local_analyzers::run_foremost(input)?.to_string()),
+        "bulk_extractor" => Ok(crate::local_analyzers::run_bulk_extractor(input)?.to_string()),
+        "hashdeep" => Ok(crate::local_analyzers::run_hashdeep(input)?.to_string()),
         _ => Err(BuiltInToolError::UnsupportedTool(name.to_string())),
     }
 }
@@ -445,7 +458,7 @@ impl SignatureScan {
 // precision loss from converting to f64 for an entropy estimate only
 // matters above 2^52 bytes, far beyond anything this tool will ever read.
 #[allow(clippy::cast_precision_loss)]
-fn shannon_entropy(frequencies: &[u64; 256], bytes: u64) -> f64 {
+pub(crate) fn shannon_entropy(frequencies: &[u64; 256], bytes: u64) -> f64 {
     if bytes == 0 {
         return 0.0;
     }
@@ -557,7 +570,7 @@ pub(crate) fn sha256_file(path: &Path) -> Result<String, BuiltInToolError> {
     Ok(sha256.finalize_hex())
 }
 
-struct Sha256 {
+pub(crate) struct Sha256 {
     state: [u32; 8],
     buffer: [u8; 64],
     buffer_len: usize,
@@ -565,7 +578,7 @@ struct Sha256 {
 }
 
 impl Sha256 {
-    const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             state: [
                 0x6a09_e667,
@@ -583,7 +596,7 @@ impl Sha256 {
         }
     }
 
-    fn update(&mut self, mut input: &[u8]) {
+    pub(crate) fn update(&mut self, mut input: &[u8]) {
         self.bit_len = self
             .bit_len
             .wrapping_add((input.len() as u64).wrapping_mul(8));
@@ -608,7 +621,7 @@ impl Sha256 {
         self.buffer_len = input.len();
     }
 
-    fn finalize_hex(mut self) -> String {
+    pub(crate) fn finalize_hex(mut self) -> String {
         self.buffer[self.buffer_len] = 0x80;
         self.buffer_len += 1;
         if self.buffer_len > 56 {

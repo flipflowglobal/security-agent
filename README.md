@@ -184,6 +184,8 @@ The `MobileAndroid` specialist uses a dedicated tool set for APK/DEX analysis an
 | `src/calibration.rs` | Confidence-calibration tracking: Brier score, reliability bins, expected calibration error, over/under-confidence tendency, and histogram recalibration |
 | `src/belief_propagation.rs` | Noisy-OR compromise-risk propagation across the attack graph (lateral movement) |
 | `src/language_model.rs` | Small from-scratch **vector-quantized temporal-frequency** neural language model (embed → DCT → residual VQ codebooks → softmax), self-trained on a bundled security corpus; text generation and perplexity scoring |
+| `src/builtin_tools.rs` | Offline built-in substitutes (autopsy, volatility) plus the in-house SHA-256; real local-file analysis, no network |
+| `src/local_analyzers.rs` | Offline forensic substitutes — binwalk (signature/entropy), foremost (carving), bulk_extractor (IOC features), hashdeep (recursive multi-hash + dedup) |
 | `src/anomaly.rs` | Language-model perplexity as an anomaly lens: flags out-of-domain finding text in the cognitive review |
 | `src/nlu.rs` | Grounded plain-English intent router behind `--ask`: lexical + semantic mapping of instructions to real capabilities |
 | `src/memory_store.rs` | Folds the append-only findings log into cognitive memory, so cognition learns across engagements from one shared format |
@@ -252,6 +254,10 @@ external skill source:
 ./target/release/security-agent --list-tools
 ./target/release/security-agent --run-tool autopsy <local-path>
 ./target/release/security-agent --run-tool autopsy <local-path> --output <report-path>.txt
+./target/release/security-agent --run-tool binwalk <local-blob>
+./target/release/security-agent --run-tool foremost <local-blob>
+./target/release/security-agent --run-tool bulk_extractor <local-blob>
+./target/release/security-agent --run-tool hashdeep <local-path>
 ./target/release/security-agent --llm-generate <prompt words...>
 ./target/release/security-agent --llm-perplexity <text words...>
 ./target/release/security-agent --ask <plain-English instruction...>
@@ -392,6 +398,35 @@ ARP, TCP, UDP, ICMP, and ICMPv6 traffic without live capture:
 ./target/release/security-agent --run-tool wireshark <local-capture.pcap>
 ./target/release/security-agent --run-tool wireshark <local-capture.pcap> --output <report-path>.txt
 ```
+
+Four further forensic substitutes (`src/local_analyzers.rs`) extend the same
+offline, local-file, no-dependency pattern to the file-carving and
+feature-extraction family of the catalog:
+
+```bash
+# Binwalk: map embedded magic signatures and high-entropy (likely
+# compressed/encrypted) regions in a firmware image or binary blob.
+./target/release/security-agent --run-tool binwalk <local-blob>
+
+# Foremost: carve recoverable embedded files by header, bounding their
+# length with a footer where the format defines one.
+./target/release/security-agent --run-tool foremost <local-blob>
+
+# Bulk Extractor: pull indicators of compromise — emails, URLs, IPv4
+# addresses — out of a blob's printable content.
+./target/release/security-agent --run-tool bulk_extractor <local-blob>
+
+# Hashdeep: recursively hash a directory tree (SHA-256 + CRC-32) and report
+# sets of files that share a digest.
+./target/release/security-agent --run-tool hashdeep <local-path>
+```
+
+Each accepts the same optional `--output <report-path>.txt`. These are
+**defensive** analyzers over evidence you already hold — none contacts a live
+target. Offensive (`ActiveExploitation`) and live-network (`ActiveNetwork`)
+catalog tools are deliberately **not** reimplemented as in-house executables;
+they remain cataloged with skills and run only via the real binary under
+`--run-external-tool` when policy allows.
 
 ### Running real cataloged tools
 
