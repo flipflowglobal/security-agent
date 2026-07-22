@@ -20,6 +20,7 @@
 use crate::cognitive_engine::{Metacognition, ReasoningChain, Thought, ThoughtKind};
 use crate::sadb::codec::{Reader, write_bool, write_f32, write_string, write_u8, write_u64};
 use crate::sadb::{Database, DbError, RecordId};
+use std::collections::HashMap;
 use std::path::Path;
 
 const RUNS_TABLE: &str = "reasoning_runs";
@@ -202,16 +203,23 @@ pub fn load_runs(path: &Path) -> Result<Vec<RecordedRun>, DbError> {
         .filter_map(|bytes| decode_thought(bytes))
         .collect();
 
+    // Grouped once up front, rather than re-scanning every thought for
+    // every run, so this stays O(runs + thoughts) as the archive grows.
+    let mut thoughts_by_run: HashMap<RecordId, Vec<&DecodedThought>> = HashMap::new();
+    for thought in &thought_rows {
+        thoughts_by_run
+            .entry(thought.run_id)
+            .or_default()
+            .push(thought);
+    }
+
     let mut runs = Vec::new();
     for (run_id, run_bytes) in &run_rows {
         let Some(summary) = decode_run(run_bytes) else {
             continue;
         };
         let mut chain = ReasoningChain::new();
-        for thought in thought_rows
-            .iter()
-            .filter(|thought| thought.run_id == *run_id)
-        {
+        for thought in thoughts_by_run.get(run_id).into_iter().flatten() {
             chain.push(
                 thought.kind,
                 thought.statement.clone(),

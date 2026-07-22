@@ -526,17 +526,26 @@ fn parse_plan_scan_args(
     })
 }
 
-/// Loads the accumulated calibration history from `--calibration-db`
-/// (empty if the flag was not given, or the database doesn't exist yet)
-/// so this run's hypothesis-confidence correction
+/// Loads the accumulated calibration history from `--calibration-db` so
+/// this run's hypothesis-confidence correction
 /// (`CognitiveEngine::with_calibration`) has real cross-engagement
 /// evidence instead of starting empty each time. See
 /// [`security_agent::calibration_db`] for why this closes a real gap:
 /// `assess_calibration` computes fresh evidence every run, but nothing
 /// previously carried it forward.
+///
+/// Returns an empty tracker without touching the database at all unless
+/// `cognitive_review` is true -- calibration has no effect otherwise, so
+/// `--calibration-db` must be a true no-op without `--cognitive-review`,
+/// matching `--reasoning-log-db`'s no-op gating, rather than creating an
+/// empty database as a side effect of a flag that does nothing here.
 fn load_calibration_history(
+    cognitive_review: bool,
     calibration_db_path: Option<&str>,
 ) -> Result<security_agent::CalibrationTracker, PlanScanError> {
+    if !cognitive_review {
+        return Ok(security_agent::CalibrationTracker::new());
+    }
     calibration_db_path.map_or_else(
         || Ok(security_agent::CalibrationTracker::new()),
         |path| {
@@ -648,12 +657,9 @@ fn plan_scan(
         None => Vec::new(),
     };
 
-    // When `--calibration-db <path>` is given, load the accumulated
-    // (predicted_percent, occurred) history from every prior run so this
-    // run's hypothesis-confidence correction has real cross-engagement
-    // evidence instead of starting empty each time. See
-    // [`load_calibration_history`].
-    let calibration = load_calibration_history(calibration_db_path.as_deref())?;
+    // See `load_calibration_history` for why this is gated on
+    // `cognitive_review`.
+    let calibration = load_calibration_history(cognitive_review, calibration_db_path.as_deref())?;
 
     let cognitive_output = cognitive_review.then(|| {
         let mut memory = CognitiveMemory::new();
@@ -2359,6 +2365,31 @@ criticality=3
             security_agent::calibration_db::load_calibration(&db_path).expect("load calibration");
         fs::remove_file(&db_path).expect("remove temp calibration db");
         assert_eq!(tracker.len(), 2);
+    }
+
+    #[test]
+    fn plan_scan_calibration_db_is_a_noop_without_cognitive_review() {
+        let config_path = write_temp_config("calibration-db-noop", "eng-cli-calibration-db-noop");
+        let db_path = std::env::temp_dir().join(format!(
+            "security-agent-main-plan-scan-calibration-db-noop-{}.sadb",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&db_path);
+
+        let mut arguments = vec![
+            config_path.to_string_lossy().into_owned(),
+            "--calibration-db".to_string(),
+            db_path.to_string_lossy().into_owned(),
+        ]
+        .into_iter();
+        let result = plan_scan(&mut arguments);
+        fs::remove_file(&config_path).expect("remove temp config");
+
+        result.expect("valid config should authorize and plan");
+        assert!(
+            !db_path.exists(),
+            "--calibration-db without --cognitive-review must not create the database"
+        );
     }
 
     #[test]

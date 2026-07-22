@@ -119,9 +119,18 @@ fn verify_footer(page: &Page) -> Option<u32> {
     }
 }
 
-/// Scans backward from end-of-file for the most recent valid footer,
-/// truncates away everything after it (an interrupted transaction's
-/// orphaned pages, if any), and returns the catalog image it names.
+/// Scans backward from end-of-file for the most recent valid, *usable*
+/// footer, truncates away everything after it (an interrupted
+/// transaction's orphaned pages, if any), and returns the catalog image
+/// it names.
+///
+/// A footer's checksum only proves its own bytes weren't torn -- it
+/// doesn't prove `catalog_image_page` is a real, readable page. A
+/// legitimately-written footer always names a page strictly before
+/// itself (see [`Transaction::commit`]), so a footer naming its own page
+/// or later, or a page this pager can't read, is treated exactly like a
+/// footer that failed its checksum: skipped, and the scan continues
+/// further back for an earlier commit to recover to instead.
 ///
 /// A database that has never had a transaction commit has no footer at
 /// all; that's not an error, it just recovers to the pristine empty
@@ -131,8 +140,12 @@ fn recover(pager: &mut Pager) -> Result<Page, DbError> {
     while page_no >= FIRST_FREE_PAGE {
         let page = pager.read_page(page_no)?;
         if let Some(catalog_image_page) = verify_footer(&page) {
-            pager.truncate_to(page_no + 1)?;
-            return Ok(pager.read_page(catalog_image_page)?);
+            if catalog_image_page < page_no {
+                if let Ok(catalog) = pager.read_page(catalog_image_page) {
+                    pager.truncate_to(page_no + 1)?;
+                    return Ok(catalog);
+                }
+            }
         }
         page_no -= 1;
     }
@@ -165,10 +178,13 @@ impl Database {
     /// [`Self::scan`] -- or durable across a crash -- until
     /// [`Transaction::commit`] returns.
     pub fn begin(&mut self) -> Transaction<'_> {
+        let start_page_count = self.pager.page_count();
         Transaction {
             catalog: self.catalog,
             db: self,
             writers: HashMap::new(),
+            start_page_count,
+            committed: false,
         }
     }
 
@@ -232,10 +248,27 @@ struct TableWriter {
 /// A batch of inserts that either all become visible together (on
 /// [`Transaction::commit`]) or -- if dropped uncommitted, or interrupted
 /// by a crash -- leave no trace at all.
+///
+/// Dropping without committing eagerly truncates back to
+/// `start_page_count` (see the `Drop` impl below), reclaiming an
+/// abandoned transaction's orphaned pages immediately rather than only
+/// on the next [`Database::open`]. That's an optimization, not a
+/// correctness requirement -- recovery discards the same orphaned pages
+/// either way -- so a failed truncate on drop is silently ignored.
 pub struct Transaction<'a> {
     db: &'a mut Database,
     catalog: Page,
     writers: HashMap<String, TableWriter>,
+    start_page_count: u32,
+    committed: bool,
+}
+
+impl Drop for Transaction<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = self.db.pager.truncate_to(self.start_page_count);
+        }
+    }
 }
 
 impl Transaction<'_> {
@@ -312,6 +345,7 @@ impl Transaction<'_> {
 
         self.db.pager.flush()?;
         self.db.catalog = self.catalog;
+        self.committed = true;
         Ok(())
     }
 }
@@ -499,6 +533,63 @@ mod tests {
         fs::write(&path, bytes).expect("write corrupted file");
 
         let mut reopened = Database::open(&path).expect("reopen despite corruption");
+        assert_eq!(
+            reopened.scan("findings").expect("scan"),
+            vec![b"kept".to_vec()]
+        );
+
+        fs::remove_file(&path).expect("remove temp file");
+    }
+
+    #[test]
+    fn dropping_an_uncommitted_transaction_eagerly_truncates_orphaned_pages() {
+        let path = temp_path("drop-truncates");
+        let _ = fs::remove_file(&path);
+
+        let mut db = Database::open(&path).expect("open");
+        let size_before = fs::metadata(&path).expect("stat before").len();
+        {
+            let mut txn = db.begin();
+            txn.insert("findings", &vec![0u8; 2000]).expect("insert");
+            // Dropped here without ever calling commit().
+        }
+        let size_after = fs::metadata(&path).expect("stat after").len();
+
+        fs::remove_file(&path).expect("remove temp file");
+        assert_eq!(
+            size_after, size_before,
+            "an abandoned transaction's pages should be reclaimed immediately on drop, \
+             not just on the next reopen"
+        );
+    }
+
+    #[test]
+    fn a_footer_naming_an_unreadable_catalog_page_is_skipped_during_recovery() {
+        let path = temp_path("unreadable-catalog-image");
+        let _ = fs::remove_file(&path);
+
+        {
+            let mut db = Database::open(&path).expect("open");
+            let mut txn = db.begin();
+            txn.insert("findings", b"kept").expect("insert");
+            txn.commit().expect("commit");
+        }
+
+        // Append a forged footer: its own checksum is internally valid
+        // (computed from the same bogus value it stores), but the
+        // catalog_image_page it names is out of range -- simulating a
+        // footer whose checksum check alone can't catch a bad reference.
+        {
+            let mut pager = Pager::open(&path).expect("reopen pager directly");
+            let bogus_catalog_image_page = pager.page_count() + 100;
+            let footer_page = pager.allocate_page().expect("allocate forged footer page");
+            pager
+                .write_page(footer_page, &build_footer(bogus_catalog_image_page))
+                .expect("write forged footer");
+            pager.flush().expect("flush");
+        }
+
+        let mut reopened = Database::open(&path).expect("reopen despite the forged footer");
         assert_eq!(
             reopened.scan("findings").expect("scan"),
             vec![b"kept".to_vec()]

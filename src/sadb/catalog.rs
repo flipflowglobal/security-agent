@@ -1,18 +1,19 @@
-//! The catalog: a single, fixed page mapping table name -> tail page.
+//! The catalog: a page mapping table name -> tail page.
 //!
-//! `crate::sadb::pager` permanently reserves page 1 for this. Unlike every
-//! other page in the format, the catalog page *is* rewritten in place --
-//! deliberately, and only here: it holds nothing but small, fixed-size
-//! `(name, tail_page)` entries, so a whole-page overwrite is cheap, and
-//! it's always rewritten as a single unit (never patched field-by-field
-//! across separate writes), so a torn write leaves it either fully old or
-//! fully new, never a mix of the two.
+//! A catalog is never rewritten in place -- see `crate::sadb`'s module
+//! docs for why. Each transaction instead builds a complete new catalog
+//! image (via [`set_tail_page`]) in memory and bump-allocates it as an
+//! ordinary immutable page, exactly like a heap page; `crate::sadb`'s
+//! transaction footer then records which catalog-image page is current.
+//! `crate::sadb::pager::CATALOG_PAGE` (page 1) holds only the pristine,
+//! all-zero catalog a brand-new database starts with, before its first
+//! transaction ever commits.
 //!
 //! Like [`crate::sadb::heap`], this module is pure byte manipulation on
 //! an in-memory page buffer -- no file I/O. A zeroed page (what
-//! `crate::sadb::pager::Pager::open` writes for a brand-new database) is
-//! already a valid, empty catalog: `table_count` of zero needs no other
-//! initialization.
+//! `crate::sadb::pager::Pager::open` writes for a brand-new database, and
+//! what every catalog image starts from) is already a valid, empty
+//! catalog: `table_count` of zero needs no other initialization.
 
 use crate::sadb::pager::{PAGE_SIZE, Page};
 

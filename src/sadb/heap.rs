@@ -40,7 +40,11 @@ const SLOT_SIZE: usize = 4;
 
 /// Identifies one record within a single page: findable directly with
 /// [`get`], without a table scan.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Hash` makes it usable as a `HashMap` key -- e.g. grouping
+/// `reasoning_thoughts` rows by the `reasoning_runs` `RecordId` they
+/// reference, without an O(runs × thoughts) scan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RecordId {
     pub page: u32,
     pub slot: u16,
