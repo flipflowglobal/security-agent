@@ -252,9 +252,16 @@ impl Default for NeuralLanguageModel {
 impl NeuralLanguageModel {
     /// Builds and trains the default model on the bundled security corpus.
     /// Deterministic: the same binary always yields the same model.
+    ///
+    /// Training is memoized in a process-wide [`std::sync::OnceLock`] and
+    /// subsequent calls return a clone, so repeated use (tests, multiple CLI
+    /// paths, `Default`) trains only once.
     #[must_use]
     pub fn bundled() -> Self {
-        Self::trained_on(SECURITY_CORPUS, EPOCHS)
+        static CACHED: std::sync::OnceLock<NeuralLanguageModel> = std::sync::OnceLock::new();
+        CACHED
+            .get_or_init(|| Self::trained_on(SECURITY_CORPUS, EPOCHS))
+            .clone()
     }
 
     /// Builds a vocabulary from `corpus` and trains for `epochs` passes.

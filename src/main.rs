@@ -609,7 +609,12 @@ fn llm_generate_command(arguments: &mut impl Iterator<Item = String>) -> ExitCod
     }
     let model = security_agent::NeuralLanguageModel::bundled();
     let continuation = model.generate(&prompt, 24);
-    println!("{prompt} {continuation}");
+    // Avoid a trailing space when the model produces no continuation.
+    if continuation.is_empty() {
+        println!("{prompt}");
+    } else {
+        println!("{prompt} {continuation}");
+    }
     ExitCode::SUCCESS
 }
 
