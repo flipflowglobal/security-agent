@@ -256,6 +256,27 @@ pub fn generate_hypotheses(
     hypotheses
 }
 
+/// Re-scores `hypotheses` in place by mapping every confidence through
+/// `adjust`, then re-sorts so the highest adjusted confidence leads.
+///
+/// This is the hook that feeds calibration back into live hypothesis
+/// confidence: pass an `adjust` that maps a raw confidence to its
+/// calibration-corrected value (e.g.
+/// `CalibrationTracker::calibrated_percent`). Returns how many hypotheses
+/// actually changed, so a caller can note when calibration moved a value.
+pub fn recalibrate_hypotheses(hypotheses: &mut [Hypothesis], adjust: impl Fn(u8) -> u8) -> usize {
+    let mut changed = 0;
+    for hypothesis in hypotheses.iter_mut() {
+        let adjusted = adjust(hypothesis.confidence_percent).min(100);
+        if adjusted != hypothesis.confidence_percent {
+            hypothesis.confidence_percent = adjusted;
+            changed += 1;
+        }
+    }
+    hypotheses.sort_by_key(|hypothesis| std::cmp::Reverse(hypothesis.confidence_percent));
+    changed
+}
+
 /// Severity of an advisory insight raised by [`critique_plan`]. Purely
 /// informational -- unlike `PolicyEngine` authorization outcomes, nothing
 /// here gates execution.

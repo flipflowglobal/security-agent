@@ -45,7 +45,7 @@ pub use capability_graph::{CapabilityGraph, CapabilityNode, CapabilityStage, Fun
 pub use cognition::{
     CognitiveAssessment, CognitiveInsight, CognitiveMemory, Hypothesis, InsightSeverity,
     PrioritizedTask, assess as assess_plan_cognitively, critique_plan, generate_hypotheses,
-    prioritize_tasks,
+    prioritize_tasks, recalibrate_hypotheses,
 };
 pub use cognitive_engine::{
     AdversaryModel, AdversaryMove, AdversaryObjective, AttentionAllocator, AttentionFocus, Belief,
