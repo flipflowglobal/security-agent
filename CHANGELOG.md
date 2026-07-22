@@ -10,6 +10,16 @@ conventions. Releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## [Unreleased]
 
 ### Added
+- **`scripts/deploy.sh` (`make deploy`)** — a release/packaging script for
+  the CLI binary. Runs the exact CI quality gate (fmt, clippy pedantic +
+  nursery, tests), builds an optimized `--release` binary (optionally
+  cross-compiled via `--target`), and packages it with `README.md` and
+  `LICENSE` into a checksummed `dist/security-agent-<version>-<triple>.tar.gz`
+  (`.sha256` alongside it). Presents a colorized, step-numbered checklist
+  ending in a summary panel (version, target, binary size, archive path,
+  checksum, elapsed time); colors auto-disable off a terminal or via
+  `--no-color`/`NO_COLOR`. `--skip-checks` allows a fast repackage of
+  already-verified code. Pure POSIX-ish bash, no new dependency.
 - **`--tui` interactive terminal UI** — a menu- and chat-bar-driven REPL
   over every existing command, added entirely with `std::io` (no new
   dependencies). A numbered menu covers every agent function (status, about,

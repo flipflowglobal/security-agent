@@ -232,6 +232,33 @@ cargo test --lib                           # run library unit tests
 cargo build --release                      # optimized host binary
 ```
 
+### Release deployment
+
+`scripts/deploy.sh` (also `make deploy`) builds, verifies, and packages the
+CLI binary for distribution. There is no web service or network call
+involved — "deploying" this agent means producing a trustworthy, versioned
+release artifact, since it is a local terminal tool:
+
+```bash
+./scripts/deploy.sh                       # full gate + build + package
+./scripts/deploy.sh --target aarch64-linux-android   # cross-compiled package
+./scripts/deploy.sh --skip-checks         # fast repackage (build + package only)
+make deploy                               # same, via the Makefile
+make deploy DEPLOY_FLAGS="--skip-checks"  # pass flags through
+```
+
+It runs the identical quality gate CI enforces (`cargo fmt --all --check`,
+`cargo clippy --all-targets -- -D warnings -W clippy::pedantic -W
+clippy::nursery`, `cargo test`), builds an optimized `--release` binary
+(optionally cross-compiled via `--target`), and packages it — plus
+`README.md` and `LICENSE` — into a checksummed
+`dist/security-agent-<version>-<target-triple>.tar.gz` with a matching
+`.sha256` file. Output is a clear, colorized step-by-step checklist ending in
+a summary panel (version, target, binary size, archive path, checksum,
+elapsed time); colors are automatically disabled when not attached to a
+terminal (or with `--no-color` / `NO_COLOR`), so CI logs stay clean. Pure
+POSIX-ish bash — no new dependency, consistent with the rest of the crate.
+
 ### Optional inference feature
 
 The `candle` / `candle-transformers` / `tokenizers` crates are optional

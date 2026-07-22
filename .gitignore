@@ -1,6 +1,9 @@
 # Rust/Cargo build output
 /target
 
+# Packaged release archives produced by scripts/deploy.sh
+/dist
+
 # Cargo.lock is committed for binaries; exclude for libraries
 # (this is a binary crate, so Cargo.lock is tracked)
 

@@ -46,6 +46,7 @@ layer it belongs to.
 
 Assets (compiled into the binary):  .github/skills/**  ·  assets/**
 Tests:                              tests/cli.rs  +  per-module #[cfg(test)]
+Release packaging:                  scripts/deploy.sh (make deploy)
 ```
 
 ## Module directory
@@ -144,6 +145,16 @@ one bundled, memoized instance:
 
 Nothing is fetched at runtime: all skills, the tool catalog, and the LM corpus
 are embedded, so the binary runs with no network and no on-disk model weights.
+
+## Release packaging
+
+- `scripts/deploy.sh` (aliased as `make deploy`) — outside the `security_agent`
+  library/binary entirely; a POSIX-ish bash script that runs the CI quality
+  gate, builds the `--release` binary (optionally cross-compiled via
+  `--target`), and packages it into a checksummed archive under `dist/`
+  (gitignored — a build output, not source). It never contacts the network
+  and adds no build-time dependency; "deploying" this CLI means producing a
+  trustworthy, versioned local artifact, not standing up a service.
 
 ## Physical vs. logical layout
 
