@@ -10,6 +10,30 @@ conventions. Releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## [Unreleased]
 
 ### Added
+- **`src/network_policy.rs` — offline-by-default / online opt-in egress
+  governance.** A new `NetworkMode` is threaded into the execution path so the
+  runtime performs no live-target or network activity unless the operator
+  explicitly opts in *for that invocation* with `--allow-network`. Offline
+  (the default) runs only the built-in substitutes and `StaticLocalAnalysis`
+  tools; the opt-in additionally unlocks the real, installed `ActiveNetwork`
+  and `ActiveExploitation` tools, giving authorized engagements full tool
+  scope. `--run-external-tool [--allow-network] <tool> <args>` and
+  `--plan-scan … [--allow-network] --execute …` both honor it, an online-mode
+  banner is emitted to stderr when engaged, and `--offline-status` now reports
+  `default_network_mode=offline` and `online_opt_in_flag=--allow-network`.
+
+### Changed
+- **Live tool execution is now gated by the online opt-in rather than a
+  hardcoded allowlist.** `src/execution.rs` replaces the `nmap`/`masscan`
+  `WIRED_DESPITE_EXECUTION_CLASS` exception with the general `NetworkMode`
+  gate: `StaticLocalAnalysis` tools still run offline, while any live
+  `ActiveNetwork`/`ActiveExploitation` tool runs only under `--allow-network`.
+  Going online never bypasses the coordinator's authorization policy (scope,
+  technique allow-list, deny-lists, approval gates, time window). The agent
+  still only spawns real installed binaries — it does not reimplement any
+  tool's offensive behavior in-house. The `ToolExecutionError::NotEligibleForExecution`
+  variant is renamed `RequiresOnlineMode` with a message that points to the
+  opt-in.
 - **`src/local_analyzers.rs`** — four new offline, in-house forensic
   substitutes that make more of the cataloged tools executable locally with
   no network and no external crates, extending the built-in-substitute

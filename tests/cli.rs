@@ -82,6 +82,44 @@ fn unknown_command_exits_2() {
 }
 
 #[test]
+fn offline_status_reports_offline_default_and_online_opt_in() {
+    let output = run(&["--offline-status"]);
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("default_network_mode=offline"));
+    assert!(text.contains("online_opt_in_flag=--allow-network"));
+}
+
+#[test]
+fn run_external_tool_offline_refuses_active_tool_without_opt_in() {
+    // `masscan` is ActiveNetwork. Without --allow-network it must be refused
+    // for live activity — never silently run. `--version` is used so that no
+    // packets are ever sent even if the binary happens to be installed; in
+    // offline mode the tool is refused before it is spawned regardless.
+    let output = run(&["--run-external-tool", "masscan", "--version"]);
+    assert_eq!(output.status.code(), Some(1));
+    let err = stderr(&output);
+    assert!(
+        err.contains("--allow-network") || err.contains("not installed"),
+        "offline active-tool run must be refused, got: {err}"
+    );
+}
+
+#[test]
+fn run_external_tool_online_opt_in_is_acknowledged() {
+    // With the explicit opt-in the online-mode banner is emitted before the
+    // tool is attempted. `--version` keeps this non-networking so the test
+    // never scans, even if `masscan` is installed in CI.
+    let output = run(&[
+        "--run-external-tool",
+        "--allow-network",
+        "masscan",
+        "--version",
+    ]);
+    assert!(stderr(&output).contains("online mode engaged"));
+}
+
+#[test]
 fn offline_status_counts_all_builtin_substitutes() {
     let output = run(&["--offline-status"]);
     assert!(output.status.success());

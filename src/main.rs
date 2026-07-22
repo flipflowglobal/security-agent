@@ -73,6 +73,8 @@ fn print_offline_status(assets: &LocalAgentAssets) {
 
     println!("network_required=false");
     println!("external_api_required=false");
+    println!("default_network_mode=offline");
+    println!("online_opt_in_flag=--allow-network");
     println!("embedded_skills={}", assets.skills().len());
     println!("cataloged_tool_definitions={}", assets.tools().len());
     println!("built_in_substitute_tools={built_in_tools}");
@@ -193,19 +195,31 @@ fn run_tool_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
 }
 
 /// Runs a real, cataloged (non-substitute) tool directly, e.g.
-/// `--run-external-tool semgrep --version`. Only tools classified for
-/// static local analysis (see `security_agent::registry::ExecutionClass`)
-/// are wired up for direct execution, plus `nmap` as an explicit,
-/// reviewed exception (see `security_agent::execution`); everything else
-/// is rejected with an explanatory error.
+/// `--run-external-tool semgrep --version`. Static-local-analysis tools run
+/// in the default offline mode; live `ActiveNetwork` / `ActiveExploitation`
+/// tools require the explicit `--allow-network` opt-in placed immediately
+/// after `--run-external-tool` (e.g.
+/// `--run-external-tool --allow-network nmap -sV <host>`), otherwise they are
+/// refused. Only real, locally installed binaries are ever spawned.
 fn run_external_tool_command(
     assets: &LocalAgentAssets,
     arguments: &mut impl Iterator<Item = String>,
 ) -> ExitCode {
-    let Some(name) = arguments.next() else {
+    let Some(mut token) = arguments.next() else {
         eprintln!("missing tool name");
         return ExitCode::from(2);
     };
+    // An explicit online opt-in may precede the tool name.
+    let mut mode = security_agent::NetworkMode::Offline;
+    if token == "--allow-network" {
+        mode = security_agent::NetworkMode::Online;
+        let Some(next) = arguments.next() else {
+            eprintln!("missing tool name after --allow-network");
+            return ExitCode::from(2);
+        };
+        token = next;
+    }
+    let name = token;
     let Some(tool) = assets.tool(&name) else {
         eprintln!("unknown cataloged tool: {name}");
         return ExitCode::from(2);
@@ -213,13 +227,20 @@ fn run_external_tool_command(
     let tool_arguments: Vec<String> = arguments.collect();
 
     // The direct CLI path has no declared engagement, so advise against a
-    // default Standard ceiling. Advisory only for tools that actually reach
-    // a live target — static-local tools never touch the network.
-    if tool.definition.execution_class != security_agent::ExecutionClass::StaticLocalAnalysis {
+    // default Standard ceiling — but only for a live tool that will actually
+    // run, i.e. a non-static tool under the online opt-in. In offline mode
+    // such a tool is refused, so an intensity advisory would just be noise.
+    let is_live_tool =
+        tool.definition.execution_class != security_agent::ExecutionClass::StaticLocalAnalysis;
+    if is_live_tool && mode.allows_active() {
+        eprintln!(
+            "online mode engaged (--allow-network): running live tool '{name}' against \
+             operator-supplied targets"
+        );
         print_intensity_advisories(&tool_arguments, security_agent::TestIntensity::Standard);
     }
 
-    match run_external_tool_with_default_timeout(tool, &tool_arguments) {
+    match run_external_tool_with_default_timeout(tool, &tool_arguments, mode) {
         Ok(report) => {
             print!("{report}");
             ExitCode::SUCCESS
@@ -335,9 +356,24 @@ fn scan_prior_findings(
     )
 }
 
-fn plan_scan(
+/// The parsed optional flags of a `--plan-scan` invocation, in the order they
+/// must appear on the command line.
+struct PlanScanArgs {
+    config_path: String,
+    audit_log_path: Option<String>,
+    cognitive_review: bool,
+    memory_path: Option<String>,
+    findings_log_path: Option<String>,
+    network_mode: security_agent::NetworkMode,
+    tool_arguments: Option<Vec<String>>,
+}
+
+/// Parses `--plan-scan <config> [--audit-log <p>] [--cognitive-review]
+/// [--memory <p>] [--findings-log <p>] [--allow-network] [--execute <args>]`
+/// in fixed order, consuming `arguments`.
+fn parse_plan_scan_args(
     arguments: &mut impl Iterator<Item = String>,
-) -> Result<PlanScanOutcome, PlanScanError> {
+) -> Result<PlanScanArgs, PlanScanError> {
     let config_path = arguments.next().ok_or(PlanScanError::MissingConfigPath)?;
 
     let mut next_argument = arguments.next();
@@ -370,11 +406,44 @@ fn plan_scan(
     } else {
         None
     };
+    // Explicit, per-invocation online opt-in. Offline (the default) runs only
+    // local-analysis tools during --execute; --allow-network additionally
+    // authorizes the live ActiveNetwork/ActiveExploitation tools the
+    // engagement already approves.
+    let network_mode = if next_argument.as_deref() == Some("--allow-network") {
+        next_argument = arguments.next();
+        security_agent::NetworkMode::Online
+    } else {
+        security_agent::NetworkMode::Offline
+    };
     let tool_arguments = match next_argument {
         None => None,
         Some(flag) if flag == "--execute" => Some(arguments.collect::<Vec<String>>()),
         Some(other) => return Err(PlanScanError::UnexpectedArgument(other)),
     };
+    Ok(PlanScanArgs {
+        config_path,
+        audit_log_path,
+        cognitive_review,
+        memory_path,
+        findings_log_path,
+        network_mode,
+        tool_arguments,
+    })
+}
+
+fn plan_scan(
+    arguments: &mut impl Iterator<Item = String>,
+) -> Result<PlanScanOutcome, PlanScanError> {
+    let PlanScanArgs {
+        config_path,
+        audit_log_path,
+        cognitive_review,
+        memory_path,
+        findings_log_path,
+        network_mode,
+        tool_arguments,
+    } = parse_plan_scan_args(arguments)?;
 
     let (profile, targets) = load_engagement_config(Path::new(&config_path))
         .map_err(|error| PlanScanError::ConfigLoad(error.to_string()))?;
@@ -430,11 +499,17 @@ fn plan_scan(
 
     if let Some(tool_arguments) = &tool_arguments {
         print_intensity_advisories(tool_arguments, declared_ceiling);
+        if network_mode.allows_active() {
+            eprintln!(
+                "online mode engaged (--allow-network): live tools approved by this engagement \
+                 may run against in-scope targets"
+            );
+        }
     }
 
     let outcomes = tool_arguments.map(|tool_arguments| {
         let assets = LocalAgentAssets::bundled();
-        security_agent::execute_plan(&plan, &assets, &tool_arguments)
+        security_agent::execute_plan(&plan, &assets, &tool_arguments, network_mode)
     });
 
     let findings: Vec<security_agent::Finding> = outcomes

@@ -24,6 +24,7 @@ pub mod local_assets;
 pub mod memory_store;
 pub mod mission;
 pub mod model;
+pub mod network_policy;
 pub mod nlu;
 pub mod pcap;
 pub mod policy;
@@ -86,6 +87,7 @@ pub use mission::MISSION_STATEMENT;
 pub use model::{
     EngagementProfile, SpecialistKind, Target, TargetType, Technique, TestIntensity, TimeWindow,
 };
+pub use network_policy::NetworkMode;
 pub use nlu::{Intent, Interpretation, interpret};
 pub use pcap::{CaptureTimestamp, ProtocolCounts, WiresharkReport, run_wireshark};
 pub use policy::{AuthorizationError, AuthorizationOutcome, PolicyEngine};

@@ -161,8 +161,8 @@ Run these from the repository root after `cargo build --release`:
 ./target/release/security-agent --run-tool bulk_extractor <local-blob>
 ./target/release/security-agent --run-tool hashdeep <local-path>
 ./target/release/security-agent --run-external-tool semgrep --version
-./target/release/security-agent --run-external-tool nmap -sV <in-scope-host>
-./target/release/security-agent --run-external-tool masscan -p80 <in-scope-range>
+./target/release/security-agent --run-external-tool --allow-network nmap -sV <in-scope-host>
+./target/release/security-agent --run-external-tool --allow-network masscan -p80 <in-scope-range>
 ./target/release/security-agent --plan-scan <engagement-config-path>
 ./target/release/security-agent --plan-scan <engagement-config-path> --audit-log <log-path>.jsonl
 ./target/release/security-agent --plan-scan <engagement-config-path> --findings-log <findings-log-path>.jsonl --execute <args-passed-to-each-tool>
@@ -205,12 +205,20 @@ Run these from the repository root after `cargo build --release`:
   (`src/local_analyzers.rs`) are offline, defensive, local-file analyzers;
   offensive and live-network catalog tools are not reimplemented in-house.
 - `--output` writes the same human-readable report to a `.txt` file.
-- `--run-external-tool <name> <args>` runs a real, locally installed
-  cataloged tool directly. Only tools classified for static local
-  analysis are eligible, plus `nmap` and `masscan` as explicit, reviewed
-  exceptions — see `README.md`'s "Running real cataloged tools" section
-  for the exact trust model. Aggressive network-scan flags exceeding the
-  declared intensity print a non-blocking advisory to stderr.
+- **Offline by default; online is opt-in.** The runtime does no live-target
+  or network activity unless you pass the explicit `--allow-network` flag for
+  that invocation (`--offline-status` shows `default_network_mode=offline`).
+  This keeps going online a deliberate, per-invocation, auditable choice.
+- `--run-external-tool [--allow-network] <name> <args>` runs a real, locally
+  installed cataloged tool directly. Static-local-analysis tools run in the
+  default offline mode; live `ActiveNetwork`/`ActiveExploitation` tools (nmap,
+  masscan, sqlmap, hydra, …) require `--allow-network` placed immediately
+  after `--run-external-tool`, otherwise they are refused with a message
+  pointing to the opt-in. Only the real installed binary is ever spawned —
+  the agent never reimplements a tool's offensive behavior. Aggressive
+  network-scan flags exceeding the declared intensity print a non-blocking
+  advisory to stderr. See `README.md`'s "Offline by default, online by
+  explicit opt-in" section for the full trust model.
 - `--plan-scan <config>` loads an engagement configuration file (see
   section 8a below), authorizes it, and prints the resulting scan plan.
 - `--plan-scan <config> --audit-log <path>` additionally appends the
@@ -220,7 +228,11 @@ Run these from the repository root after `cargo build --release`:
   locally installed tool in the plan (passing `<args>` to each), prints
   each outcome, and prints a findings summary (severity counts, top
   findings by risk score, and attack-path graph node/edge counts) ingested
-  from each tool's output.
+  from each tool's output. In the default offline mode only local-analysis
+  tools run; add `--allow-network` (before `--execute`) to also run the live
+  `ActiveNetwork`/`ActiveExploitation` tools the engagement authorizes —
+  target scope, technique allow-list, deny-lists, approval gates, and the
+  time window are still enforced.
 - `--plan-scan <config> --findings-log <path> --execute <args>` additionally
   appends every finding ingested from `--execute`'s tool output to `<path>`
   as an append-only JSON Lines file; a no-op without `--execute`.
