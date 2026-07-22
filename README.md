@@ -253,11 +253,16 @@ clippy::nursery`, `cargo test`), builds an optimized `--release` binary
 (optionally cross-compiled via `--target`), and packages it — plus
 `README.md` and `LICENSE` — into a checksummed
 `dist/security-agent-<version>-<target-triple>.tar.gz` with a matching
-`.sha256` file. Output is a clear, colorized step-by-step checklist ending in
-a summary panel (version, target, binary size, archive path, checksum,
-elapsed time); colors are automatically disabled when not attached to a
+`.sha256` file. Colors are automatically disabled when not attached to a
 terminal (or with `--no-color` / `NO_COLOR`), so CI logs stay clean. Pure
 POSIX-ish bash — no new dependency, consistent with the rest of the crate.
+
+The console styling deliberately follows the same conventions used across
+this org's other launch/verify scripts: a plain colored title (no boxed
+banner), light `━━ … ━━` section rules per step, a three-state ✓ (green,
+pass) / ✗ (red, fail) / ○ (yellow, skipped) glyph system, and a flat
+`====...`-divided completion block at the end — the same shape those
+scripts' own deploy/verify output ends on.
 
 ### Optional inference feature
 

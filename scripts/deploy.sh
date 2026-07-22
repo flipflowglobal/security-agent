@@ -63,15 +63,20 @@ done
 # ── styling ──────────────────────────────────────────────────────────────────
 # Colors are enabled only on an interactive terminal, and only when the
 # operator hasn't asked for plain output (--no-color or NO_COLOR set) — CI
-# logs and piped output stay clean of escape codes either way.
+# logs and piped output stay clean of escape codes either way. The palette
+# and layout follow the same console conventions used across this org's
+# other launch/verify scripts (flashloan, jdl-production-core): a plain
+# colored title (no boxed banner), light `━━ … ━━` section rules, and a
+# three-state ✓/✗/○ (pass/fail/skip) glyph system rather than a single
+# checkmark.
 
 if [ "$FORCE_NO_COLOR" -eq 0 ] && [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
     BOLD=$'\033[1m'
     DIM=$'\033[2m'
-    CYAN=$'\033[36m'
-    GREEN=$'\033[32m'
-    YELLOW=$'\033[33m'
-    RED=$'\033[31m'
+    CYAN=$'\033[0;36m'
+    GREEN=$'\033[0;32m'
+    YELLOW=$'\033[1;33m'
+    RED=$'\033[0;31m'
     RESET=$'\033[0m'
 else
     BOLD="" DIM="" CYAN="" GREEN="" YELLOW="" RED="" RESET=""
@@ -80,33 +85,34 @@ fi
 TOTAL_STEPS=5
 STEP_INDEX=0
 DEPLOY_START=$(date +%s)
+REPO_DIR=$(pwd)
 
 banner() {
-    printf '%s\n' "${BOLD}${CYAN}╔══════════════════════════════════════════════════════════════╗${RESET}"
-    printf '%s\n' "${BOLD}${CYAN}║           Security-Agent — Release Deploy Pipeline              ║${RESET}"
-    printf '%s\n' "${BOLD}${CYAN}╚══════════════════════════════════════════════════════════════╝${RESET}"
+    printf '%s%s\n' "$CYAN" "$BOLD"
+    printf '  Security-Agent — Release Deploy Pipeline\n'
+    printf '%s%s  repo: %s%s\n' "$RESET" "$DIM" "$REPO_DIR" "$RESET"
 }
 
 step_start() {
     STEP_INDEX=$((STEP_INDEX + 1))
-    printf '\n%s\n' "${BOLD}${YELLOW}▶ [${STEP_INDEX}/${TOTAL_STEPS}] $1${RESET}"
+    printf '\n%s\n' "${CYAN}${BOLD}━━ [${STEP_INDEX}/${TOTAL_STEPS}] $1 ━━${RESET}"
 }
 
 step_skip() {
-    printf '  %s\n' "${DIM}– skipped${RESET}"
+    printf '  %s\n' "${YELLOW}○ skipped${RESET}"
 }
 
 step_ok() {
-    printf '  %s\n' "${GREEN}✔ done${RESET}"
+    printf '  %s\n' "${GREEN}✓ done${RESET}"
 }
 
 fail() {
-    printf '\n%s\n' "${RED}✘ deploy failed: $1${RESET}" >&2
+    printf '\n%s\n' "${RED}${BOLD}✗ deploy failed: $1${RESET}" >&2
     exit 1
 }
 
 kv() {
-    printf '  %s%-16s%s %s\n' "${DIM}" "$1" "${RESET}" "$2"
+    printf '  %s%-10s%s %s\n' "${DIM}" "$1" "${RESET}" "$2"
 }
 
 # ── preflight ────────────────────────────────────────────────────────────────
@@ -192,14 +198,18 @@ BIN_SIZE=$(wc -c <"$BIN_PATH" | tr -d ' ')
 step_ok
 
 # ── summary ──────────────────────────────────────────────────────────────────
+# A flat divider + flush key/value block (no box border) — the same shape
+# this org's own deploy scripts (e.g. flashloan's deploy_flashloan_v4.py)
+# end on: a "=" rule, a completion title, another rule, then the facts.
 
 DEPLOY_END=$(date +%s)
 ELAPSED=$((DEPLOY_END - DEPLOY_START))
+DIVIDER=$(printf '=%.0s' $(seq 1 60))
 
 echo ""
-printf '%s\n' "${BOLD}${GREEN}╔══════════════════════════════════════════════════════════════╗${RESET}"
-printf '%s\n' "${BOLD}${GREEN}║                      Deploy Summary                              ║${RESET}"
-printf '%s\n' "${BOLD}${GREEN}╚══════════════════════════════════════════════════════════════╝${RESET}"
+printf '%s\n' "${DIM}${DIVIDER}${RESET}"
+printf '%s\n' "${GREEN}${BOLD}DEPLOY COMPLETE${RESET}"
+printf '%s\n' "${DIM}${DIVIDER}${RESET}"
 kv "Version" "$PKG_VERSION"
 kv "Target" "$BUILD_TRIPLE"
 kv "Binary" "$BIN_PATH ($BIN_SIZE bytes)"
