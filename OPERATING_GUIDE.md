@@ -175,6 +175,7 @@ Run these from the repository root after `cargo build --release`:
 ./target/release/security-agent --llm-generate <prompt words...>
 ./target/release/security-agent --llm-perplexity <text words...>
 ./target/release/security-agent --ask <plain-English instruction...>
+./target/release/security-agent --tui
 ```
 
 - No argument and `--offline-status` report the same local runtime state,
@@ -260,6 +261,12 @@ Run these from the repository root after `cargo build --release`:
   authorization (planning a scan, scheduling a retest, viewing an audit log)
   are explained — it tells you the exact command — but never executed through
   `--ask`, so plain English cannot widen the agent's authority.
+- `--tui` opens an interactive menu- and chat-bar-driven REPL over every
+  command above (see `README.md`'s "Interactive terminal UI" section). Every
+  menu choice calls the identical command function the plain CLI dispatches
+  to, so behavior is identical either way; typing anything else at the
+  prompt routes through the same `--ask` router. Menu option `0`/`help`
+  prints the full capability summary. Exits cleanly at end-of-input.
 - `--view-audit <path>` is a read-only view: it loads a persisted audit
   log and prints its records (operating under the least-privilege `Viewer`
   role). It never plans, authorizes, executes, or writes.

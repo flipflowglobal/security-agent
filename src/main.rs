@@ -8,6 +8,7 @@ use security_agent::{
 };
 use std::fmt;
 use std::fs;
+use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -34,6 +35,7 @@ fn main() -> ExitCode {
         Some("--llm-generate") => llm_generate_command(&mut arguments),
         Some("--llm-perplexity") => llm_perplexity_command(&mut arguments),
         Some("--ask") => ask_command(&assets, &mut arguments),
+        Some("--tui") => run_tui_command(&assets),
         Some(command) => {
             eprintln!("unknown command: {command}");
             ExitCode::from(2)
@@ -877,6 +879,451 @@ fn ask_anomaly(model: &security_agent::NeuralLanguageModel, text: Option<&str>) 
     ExitCode::SUCCESS
 }
 
+/// Interactive terminal UI (`--tui`): a menu- and chat-bar-driven REPL over
+/// the exact same command functions the plain CLI dispatches to, so behavior
+/// is identical either way — no duplicated business logic. Any input that
+/// isn't a recognized menu token is routed through the plain-English `--ask`
+/// router (the chat bar), so typing a natural-language instruction directly
+/// at the prompt "talks to" the built-in language model and the rest of the
+/// agent's capabilities. Reads lines from stdin; exits cleanly on
+/// `q`/`quit`/`exit` or end-of-input (e.g. a piped, non-interactive stdin),
+/// so it is scriptable and testable the same way the rest of the CLI is.
+// The stdin lock is meant to be held for the whole interactive session, not
+// tightened to a smaller scope.
+#[allow(clippy::significant_drop_tightening)]
+fn run_tui_command(assets: &LocalAgentAssets) -> ExitCode {
+    let stdin = io::stdin();
+    let mut lines = stdin.lock().lines();
+
+    println!("{}", tui_banner());
+    println!("{}", tui_menu());
+
+    loop {
+        print!("\n> ");
+        let _ = io::stdout().flush();
+        let Some(Ok(raw)) = lines.next() else {
+            println!("\n(end of input) goodbye.");
+            break;
+        };
+        let input = raw.trim();
+        if input.is_empty() {
+            continue;
+        }
+        if matches!(input.to_ascii_lowercase().as_str(), "q" | "quit" | "exit") {
+            println!("goodbye.");
+            break;
+        }
+        dispatch_tui_choice(input, assets, &mut lines);
+    }
+    ExitCode::SUCCESS
+}
+
+/// Runs one menu choice (or, for anything unrecognized, the plain-English
+/// chat bar) against the shared command functions.
+fn dispatch_tui_choice(
+    input: &str,
+    assets: &LocalAgentAssets,
+    lines: &mut impl Iterator<Item = io::Result<String>>,
+) {
+    match input {
+        "0" | "help" | "capabilities" => println!("{}", tui_capabilities_page(assets)),
+        "1" => print_offline_status(assets),
+        "2" => {
+            let _ = print_about();
+        }
+        "3" => {
+            let _ = list_tools(assets);
+        }
+        "4" => {
+            let Some(name) = tui_prompt(lines, "skill or tool name: ") else {
+                return;
+            };
+            if name.trim().is_empty() {
+                println!("cancelled.");
+                return;
+            }
+            let _ = show_skill(assets, &mut std::iter::once(name));
+        }
+        "5" => {
+            let _ = list_skills(assets);
+        }
+        "6" => tui_run_builtin_tool(lines),
+        "7" => tui_run_external_tool(lines, assets),
+        "8" => tui_plan_scan(lines),
+        "9" => tui_record_findings(lines),
+        "10" => {
+            let Some(path) = tui_prompt(lines, "audit log path: ") else {
+                return;
+            };
+            if path.trim().is_empty() {
+                println!("cancelled.");
+                return;
+            }
+            let _ = view_audit_command(&mut std::iter::once(path));
+        }
+        "11" => {
+            let Some(path) = tui_prompt(lines, "findings log path: ") else {
+                return;
+            };
+            if path.trim().is_empty() {
+                println!("cancelled.");
+                return;
+            }
+            let _ = schedule_retest_command(&mut std::iter::once(path));
+        }
+        "12" => {
+            let Some(prompt) = tui_prompt(lines, "prompt: ") else {
+                return;
+            };
+            if prompt.trim().is_empty() {
+                println!("cancelled.");
+                return;
+            }
+            let _ = llm_generate_command(&mut std::iter::once(prompt));
+        }
+        "13" => {
+            let Some(text) = tui_prompt(lines, "text to score: ") else {
+                return;
+            };
+            if text.trim().is_empty() {
+                println!("cancelled.");
+                return;
+            }
+            let _ = llm_perplexity_command(&mut std::iter::once(text));
+        }
+        // The chat bar: anything else typed is a plain-English instruction,
+        // routed through the same grounded router as `--ask`.
+        _ => {
+            let _ = ask_command(assets, &mut input.split_whitespace().map(str::to_string));
+        }
+    }
+}
+
+/// Reads one line from `lines`; `None` at end-of-input (e.g. a
+/// non-interactive/piped stdin that has been exhausted or closed).
+fn tui_read_line(lines: &mut impl Iterator<Item = io::Result<String>>) -> Option<String> {
+    match lines.next() {
+        Some(Ok(line)) => Some(line),
+        _ => None,
+    }
+}
+
+/// Prints `prompt` (no trailing newline), flushes stdout, and reads the next
+/// line of input.
+fn tui_prompt(
+    lines: &mut impl Iterator<Item = io::Result<String>>,
+    prompt: &str,
+) -> Option<String> {
+    print!("{prompt}");
+    let _ = io::stdout().flush();
+    tui_read_line(lines)
+}
+
+/// Whether a prompted yes/no answer means "yes" (`y`/`yes`, case-insensitive;
+/// anything else, including blank, means "no").
+fn tui_answered_yes(answer: &str) -> bool {
+    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+/// Menu flow for `--run-tool <name> <path> [--output <path>.txt]`: one of
+/// the offline, in-house local analyzers (autopsy, volatility, wireshark,
+/// binwalk, foremost, `bulk_extractor`, hashdeep).
+fn tui_run_builtin_tool(lines: &mut impl Iterator<Item = io::Result<String>>) {
+    let Some(name) = tui_prompt(
+        lines,
+        "built-in tool (autopsy/volatility/wireshark/binwalk/foremost/bulk_extractor/hashdeep): ",
+    ) else {
+        return;
+    };
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        println!("cancelled.");
+        return;
+    }
+    let Some(path) = tui_prompt(lines, "local input path: ") else {
+        return;
+    };
+    let path = path.trim().to_string();
+    if path.is_empty() {
+        println!("cancelled.");
+        return;
+    }
+    let Some(output) = tui_prompt(lines, "output .txt path (blank to print to screen): ") else {
+        return;
+    };
+    let mut args = vec![name, path];
+    let output = output.trim();
+    if !output.is_empty() {
+        args.push("--output".to_string());
+        args.push(output.to_string());
+    }
+    let _ = run_tool_command(&mut args.into_iter());
+}
+
+/// Menu flow for `--run-external-tool [--allow-network] <name> <args>`: a
+/// real, locally installed cataloged tool. Live (`ActiveNetwork` /
+/// `ActiveExploitation`) tools still require the explicit online opt-in,
+/// which this flow asks for directly rather than assuming.
+fn tui_run_external_tool(
+    lines: &mut impl Iterator<Item = io::Result<String>>,
+    assets: &LocalAgentAssets,
+) {
+    let Some(name) = tui_prompt(lines, "cataloged tool name: ") else {
+        return;
+    };
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        println!("cancelled.");
+        return;
+    }
+    let Some(online) = tui_prompt(
+        lines,
+        "opt into live network / active testing for this run? (y/N): ",
+    ) else {
+        return;
+    };
+    let Some(extra) = tui_prompt(lines, "tool arguments (space-separated, blank for none): ")
+    else {
+        return;
+    };
+    let mut args = Vec::new();
+    if tui_answered_yes(&online) {
+        args.push("--allow-network".to_string());
+    }
+    args.push(name);
+    args.extend(extra.split_whitespace().map(str::to_string));
+    let _ = run_external_tool_command(assets, &mut args.into_iter());
+}
+
+/// Menu flow for `--plan-scan <config> [--audit-log <p>] [--cognitive-review]
+/// [--memory <p>] [--findings-log <p>] [--allow-network] [--execute <args>]`.
+/// Prompts follow the exact flag order `parse_plan_scan_args` expects.
+fn tui_plan_scan(lines: &mut impl Iterator<Item = io::Result<String>>) {
+    let Some(config) = tui_prompt(lines, "engagement config path: ") else {
+        return;
+    };
+    let config = config.trim().to_string();
+    if config.is_empty() {
+        println!("cancelled.");
+        return;
+    }
+    let mut args = vec![config];
+
+    let Some(audit) = tui_prompt(lines, "audit log path (blank to skip): ") else {
+        return;
+    };
+    let audit = audit.trim();
+    if !audit.is_empty() {
+        args.push("--audit-log".to_string());
+        args.push(audit.to_string());
+    }
+
+    let Some(review) = tui_prompt(lines, "run cognitive review? (y/N): ") else {
+        return;
+    };
+    if tui_answered_yes(&review) {
+        args.push("--cognitive-review".to_string());
+    }
+
+    let Some(memory) = tui_prompt(lines, "prior-findings memory log (blank to skip): ") else {
+        return;
+    };
+    let memory = memory.trim();
+    if !memory.is_empty() {
+        args.push("--memory".to_string());
+        args.push(memory.to_string());
+    }
+
+    let Some(findings_log) = tui_prompt(
+        lines,
+        "findings log to append to (blank to skip; only used with --execute): ",
+    ) else {
+        return;
+    };
+    let findings_log = findings_log.trim();
+    if !findings_log.is_empty() {
+        args.push("--findings-log".to_string());
+        args.push(findings_log.to_string());
+    }
+
+    let Some(execute) = tui_prompt(lines, "execute approved tools now? (y/N): ") else {
+        return;
+    };
+    if tui_answered_yes(&execute) {
+        let Some(online) = tui_prompt(
+            lines,
+            "opt into live network / active tools for execution? (y/N): ",
+        ) else {
+            return;
+        };
+        if tui_answered_yes(&online) {
+            args.push("--allow-network".to_string());
+        }
+        args.push("--execute".to_string());
+        let Some(exec_args) = tui_prompt(
+            lines,
+            "arguments passed to each executed tool (space-separated, blank for none): ",
+        ) else {
+            return;
+        };
+        args.extend(exec_args.split_whitespace().map(str::to_string));
+    }
+
+    let _ = plan_scan_command(&mut args.into_iter());
+}
+
+/// Menu flow for `--record-findings <destination-log> <source-log>`.
+fn tui_record_findings(lines: &mut impl Iterator<Item = io::Result<String>>) {
+    let Some(dest) = tui_prompt(lines, "destination findings log path: ") else {
+        return;
+    };
+    let dest = dest.trim().to_string();
+    if dest.is_empty() {
+        println!("cancelled.");
+        return;
+    }
+    let Some(src) = tui_prompt(lines, "source findings log path: ") else {
+        return;
+    };
+    let src = src.trim().to_string();
+    if src.is_empty() {
+        println!("cancelled.");
+        return;
+    }
+    let _ = record_findings_command(&mut vec![dest, src].into_iter());
+}
+
+fn tui_banner() -> String {
+    "Security-Agent — Interactive Terminal UI\n\
+     =========================================\n\
+     Offline, defensive-security orchestration agent (see --about).\n\
+     Type a menu number below, or type a plain-English instruction and press\n\
+     Enter — that's the chat bar, routed through the same grounded router as\n\
+     --ask, including prompting the built-in language model. Type '0' for the\n\
+     full capability summary, or 'q' / 'quit' / 'exit' to leave."
+        .to_string()
+}
+
+fn tui_menu() -> String {
+    "\n\
+     [1]  Offline status              [2]  About\n\
+     [3]  List tools                  [4]  Show a skill or tool\n\
+     [5]  List skills                 [6]  Run a built-in local tool\n\
+     [7]  Run a real external tool    [8]  Plan a scan (engagement config)\n\
+     [9]  Record findings (merge)     [10] View audit log\n\
+     [11] Schedule retest             [12] Generate text (LLM)\n\
+     [13] Score text for anomaly (LLM)\n\
+     [0]  Help / full capability summary          [q] Quit"
+        .to_string()
+}
+
+/// (function, CLI command, plain-English chat-bar example or note) for every
+/// capability the agent exposes.
+const CAPABILITY_ROWS: &[(&str, &str, &str)] = &[
+    (
+        "Offline status",
+        "--offline-status",
+        "\"are you healthy\" / \"what is your status\"",
+    ),
+    (
+        "About / mission",
+        "--about",
+        "\"who are you\" / \"what is your mission\"",
+    ),
+    ("List tools", "--list-tools", "\"what tools do you have\""),
+    (
+        "List skills",
+        "--list-skills",
+        "\"what skills do you have\"",
+    ),
+    (
+        "Show a skill/tool",
+        "--show-skill <name>",
+        "\"explain the nmap skill\"",
+    ),
+    (
+        "Generate text (LLM)",
+        "--llm-generate <words>",
+        "\"generate text about scanning targets\"",
+    ),
+    (
+        "Score text for anomaly (LLM)",
+        "--llm-perplexity <words>",
+        "\"is this suspicious: <quoted text>\"",
+    ),
+    (
+        "Plan a scan",
+        "--plan-scan <config> [...]",
+        "\"plan a scan of the target\" (explains the command; not executed by chat)",
+    ),
+    (
+        "Schedule a retest",
+        "--schedule-retest <log>",
+        "\"schedule a retest\" (explains the command)",
+    ),
+    (
+        "View audit log",
+        "--view-audit <log>",
+        "\"show the audit log\" (explains the command)",
+    ),
+    (
+        "Run a built-in local tool",
+        "--run-tool <name> <path>",
+        "not routed through the chat bar; use the menu or CLI",
+    ),
+    (
+        "Run a real external tool",
+        "--run-external-tool [--allow-network] <name> <args>",
+        "not routed through the chat bar; use the menu or CLI",
+    ),
+    (
+        "Record findings (merge logs)",
+        "--record-findings <dst> <src>",
+        "not routed through the chat bar; use the menu or CLI",
+    ),
+    (
+        "Plain-English router",
+        "--ask <instruction>",
+        "any of the above, in your own words",
+    ),
+];
+
+/// The full capability summary: every function this agent exposes, its CLI
+/// command, and (where routed through the plain-English chat bar) an example
+/// natural-language prompt. Shown by menu option `0`/`help`/`capabilities`.
+fn tui_capabilities_page(assets: &LocalAgentAssets) -> String {
+    use std::fmt::Write as _;
+    let mut page = String::new();
+    let _ = writeln!(page, "Security-Agent — Capability Summary");
+    let _ = writeln!(page, "====================================");
+    let _ = writeln!(
+        page,
+        "{} cataloged tools ({} built-in offline substitutes), {} embedded skills.",
+        assets.tools().len(),
+        assets.tools().iter().filter(|tool| tool.built_in).count(),
+        assets.skills().len()
+    );
+    let _ = writeln!(page);
+    let _ = writeln!(
+        page,
+        "{:<30}{:<52}Plain-English example (--ask / chat bar)",
+        "Function", "CLI command"
+    );
+    let _ = writeln!(page, "{}", "-".repeat(110));
+    for (function, command, example) in CAPABILITY_ROWS {
+        let _ = writeln!(page, "{function:<30}{command:<52}{example}");
+    }
+    let _ = writeln!(page);
+    let _ = write!(
+        page,
+        "Offline by default; live/active tools require the explicit --allow-network \
+         opt-in (see --offline-status). The chat bar only executes the read-only, \
+         no-authorization functions above that have a plain-English example; \
+         everything else needs the menu or the exact CLI command shown."
+    );
+    page
+}
+
 /// Read-only view of a persisted audit log (`--view-audit <path>.jsonl`).
 ///
 /// This command never plans, authorizes, executes, or writes — it only
@@ -1672,5 +2119,67 @@ criticality=2
     fn schedule_retest_reports_missing_path() {
         let mut arguments = std::iter::empty::<String>();
         assert_ne!(schedule_retest_command(&mut arguments), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn tui_banner_explains_the_menu_and_the_chat_bar() {
+        let banner = tui_banner();
+        assert!(banner.contains("Interactive Terminal UI"));
+        assert!(banner.contains("--ask"));
+        assert!(banner.contains("quit"));
+    }
+
+    #[test]
+    fn tui_menu_lists_every_agent_function() {
+        let menu = tui_menu();
+        // One numbered entry per underlying command, plus quit.
+        for token in ["[1]", "[5]", "[9]", "[13]", "[0]", "[q]"] {
+            assert!(menu.contains(token), "menu should list {token}");
+        }
+    }
+
+    #[test]
+    fn tui_capabilities_page_reflects_the_bundled_catalog_and_every_command() {
+        let assets = LocalAgentAssets::bundled();
+        let page = tui_capabilities_page(&assets);
+
+        assert!(page.contains("Capability Summary"));
+        assert!(page.contains(&format!("{} cataloged tools", assets.tools().len())));
+        // Every CLI command and its plain-English column header must appear.
+        for (function, command, _) in CAPABILITY_ROWS {
+            assert!(page.contains(function), "missing function: {function}");
+            assert!(page.contains(command), "missing command: {command}");
+        }
+        assert!(page.contains("--allow-network"));
+    }
+
+    #[test]
+    fn tui_answered_yes_accepts_only_y_and_yes_case_insensitively() {
+        assert!(tui_answered_yes("y"));
+        assert!(tui_answered_yes("Y"));
+        assert!(tui_answered_yes("yes"));
+        assert!(tui_answered_yes("YES"));
+        assert!(tui_answered_yes("  yes  "));
+        assert!(!tui_answered_yes("n"));
+        assert!(!tui_answered_yes(""));
+        assert!(!tui_answered_yes("sure"));
+    }
+
+    #[test]
+    fn tui_prompt_reads_the_next_line_and_stops_cleanly_at_eof() {
+        let mut lines = vec![Ok("first".to_string()), Ok("second".to_string())].into_iter();
+        assert_eq!(tui_prompt(&mut lines, "> "), Some("first".to_string()));
+        assert_eq!(tui_read_line(&mut lines), Some("second".to_string()));
+        assert_eq!(tui_read_line(&mut lines), None);
+    }
+
+    #[test]
+    fn dispatch_tui_choice_routes_free_text_through_ask() {
+        // A free-text menu choice with no matching menu token must not panic
+        // and must be handled entirely by the chat-bar (--ask) path; this
+        // just asserts it runs to completion without needing further input.
+        let assets = LocalAgentAssets::bundled();
+        let mut lines = std::iter::empty::<io::Result<String>>();
+        dispatch_tui_choice("what tools do you have", &assets, &mut lines);
     }
 }
