@@ -1,25 +1,32 @@
-//! A small, self-contained neural language model.
+//! A small, fully-local vector-quantized temporal-frequency neural language
+//! model.
 //!
-//! This is a genuine (if tiny) neural language model, not a wrapper around a
-//! large pretrained transformer: it learns word embeddings and a hidden
-//! layer by gradient descent, then predicts the next token from a softmax
-//! over the vocabulary. It is deliberately small so it stays true to the
-//! rest of the crate — **no external crates, no network, no model weights on
-//! disk**. The model trains itself, deterministically, from a compact
-//! security-domain corpus compiled into the binary
-//! ([`SECURITY_CORPUS`]), so the whole thing ships inside the offline
-//! binary like every other capability here.
+//! This is a genuine (if tiny) neural language model with a deliberately
+//! unusual architecture, and it stays true to the rest of the crate — **no
+//! external crates, no network, no model weights on disk**. It trains
+//! itself, deterministically, from a compact security-domain corpus
+//! compiled into the binary ([`SECURITY_CORPUS`]).
 //!
-//! Architecture: a word-level neural bigram/trigram model
-//! (context of [`CONTEXT`] previous tokens) —
-//! `embedding -> concat -> tanh hidden layer -> linear -> softmax`, trained
-//! with online SGD and cross-entropy loss. It exposes text generation and
-//! perplexity scoring through the [`LanguageModel`] trait, which is also the
-//! seam where a larger, feature-gated backend could plug in later.
+//! The prediction path is *temporal-frequency + vector-quantized*:
 //!
-//! Being tiny, its text is modest — it captures the domain's vocabulary and
-//! local phrasing, not long-range coherence. Like the cognitive layer, it is
-//! advisory: nothing here affects authorization.
+//! 1. **Embed** the recent window of [`CONTEXT`] tokens into learned
+//!    vectors, giving a short multi-channel *time signal*
+//!    (`CONTEXT` steps × [`EMBED`] channels).
+//! 2. **Temporal → frequency**: apply a Discrete Cosine Transform (DCT-II)
+//!    along the time axis of each channel, so the model reasons about *how*
+//!    the context changes across the window (its spectral content) rather
+//!    than the raw sequence.
+//! 3. **Vector-quantize** the flattened spectral features against a learned
+//!    codebook (VQ-VAE style, with a straight-through estimator and a
+//!    commitment penalty), collapsing them to the nearest discrete code.
+//! 4. **Predict** the next token from that quantized code through a tanh
+//!    hidden layer and a softmax over the vocabulary.
+//!
+//! Everything — the DCT, the codebook nearest-neighbor search, the forward
+//! and backward passes, and a deterministic `SplitMix64` RNG — is
+//! hand-rolled, so the whole model ships inside the offline binary like
+//! every other capability here. Being tiny, its text is modest; like the
+//! cognitive layer, it is advisory and never affects authorization.
 
 /// Anything that can continue a prompt and score how surprising text is.
 /// Implemented by [`NeuralLanguageModel`]; kept as a trait so a larger
@@ -34,18 +41,23 @@ pub trait LanguageModel {
     fn perplexity(&self, text: &str) -> f32;
 }
 
-/// Number of previous tokens the model conditions on.
-const CONTEXT: usize = 2;
-/// Embedding width per token.
+/// Number of previous tokens in the temporal window the model transforms.
+const CONTEXT: usize = 4;
+/// Embedding channels per token (the temporal signal's channel count).
 const EMBED: usize = 8;
-/// Hidden-layer width.
+/// Flattened spectral-feature width (`CONTEXT` frequencies × `EMBED`
+/// channels).
+const FEAT: usize = CONTEXT * EMBED;
+/// Number of entries in the vector-quantization codebook.
+const CODES: usize = 48;
+/// Hidden-layer width of the prediction head.
 const HIDDEN: usize = 24;
-/// Concatenated input width feeding the hidden layer.
-const INPUT: usize = CONTEXT * EMBED;
 /// Training passes over the corpus.
-const EPOCHS: usize = 160;
+const EPOCHS: usize = 150;
 /// SGD learning rate.
-const LEARNING_RATE: f32 = 0.1;
+const LEARNING_RATE: f32 = 0.05;
+/// Weight of the VQ commitment/codebook penalties.
+const COMMITMENT: f32 = 0.25;
 /// Deterministic seed for weight initialization.
 const SEED: u64 = 0x5EC0_0DED_1234_5678;
 
@@ -113,6 +125,20 @@ impl Rng {
 #[allow(clippy::cast_precision_loss)]
 const fn count(value: usize) -> f32 {
     value as f32
+}
+
+/// The DCT-II basis matrix (`CONTEXT` × `CONTEXT`), row-major:
+/// `dct[k*CONTEXT + n] = cos(pi/CONTEXT * (n + 0.5) * k)`. This turns a
+/// length-`CONTEXT` temporal signal into `CONTEXT` frequency coefficients.
+fn dct_matrix() -> Vec<f32> {
+    let mut matrix = vec![0.0_f32; CONTEXT * CONTEXT];
+    for k in 0..CONTEXT {
+        for n in 0..CONTEXT {
+            let angle = std::f32::consts::PI / count(CONTEXT) * (count(n) + 0.5) * count(k);
+            matrix[k * CONTEXT + n] = angle.cos();
+        }
+    }
+    matrix
 }
 
 /// Token vocabulary with stable id assignment.
@@ -189,16 +215,32 @@ fn encode_sentences(vocab: &Vocabulary, text: &str) -> Vec<Vec<usize>> {
         .collect()
 }
 
-/// A word-level neural language model with learned embeddings and one tanh
-/// hidden layer.
+/// Intermediates from a forward pass, retained so the backward pass can
+/// reuse them.
+struct Forward {
+    /// Embedded temporal window, `CONTEXT` steps × `EMBED` channels.
+    embeds: Vec<f32>,
+    /// Flattened DCT spectral features, length `FEAT`.
+    spectral: Vec<f32>,
+    /// Index of the nearest codebook entry (the discrete latent).
+    code: usize,
+    /// Hidden activations, length `HIDDEN`.
+    hidden: Vec<f32>,
+    /// Softmax distribution over the vocabulary.
+    probs: Vec<f32>,
+}
+
+/// A vector-quantized, temporal-frequency neural language model.
 #[derive(Debug, Clone)]
 pub struct NeuralLanguageModel {
     vocab: Vocabulary,
-    embed: Vec<f32>, // vocab_len * EMBED
-    w1: Vec<f32>,    // HIDDEN * INPUT
-    b1: Vec<f32>,    // HIDDEN
-    w2: Vec<f32>,    // vocab_len * HIDDEN
-    b2: Vec<f32>,    // vocab_len
+    dct: Vec<f32>,      // CONTEXT * CONTEXT
+    embed: Vec<f32>,    // vocab_len * EMBED
+    codebook: Vec<f32>, // CODES * FEAT
+    w1: Vec<f32>,       // HIDDEN * FEAT
+    b1: Vec<f32>,       // HIDDEN
+    w2: Vec<f32>,       // vocab_len * HIDDEN
+    b2: Vec<f32>,       // vocab_len
 }
 
 impl Default for NeuralLanguageModel {
@@ -223,8 +265,10 @@ impl NeuralLanguageModel {
         let mut rng = Rng::new(SEED);
 
         let mut model = Self {
+            dct: dct_matrix(),
             embed: init(vocab_len * EMBED, 0.3, &mut rng),
-            w1: init(HIDDEN * INPUT, 0.3, &mut rng),
+            codebook: init(CODES * FEAT, 0.3, &mut rng),
+            w1: init(HIDDEN * FEAT, 0.3, &mut rng),
             b1: vec![0.0; HIDDEN],
             w2: init(vocab_len * HIDDEN, 0.3, &mut rng),
             b2: vec![0.0; vocab_len],
@@ -235,105 +279,184 @@ impl NeuralLanguageModel {
         for _ in 0..epochs {
             for sentence in &sentences {
                 for window in sentence.windows(CONTEXT + 1) {
-                    let context = [window[0], window[1]];
-                    let target = window[2];
-                    model.train_step(context, target);
+                    let mut context = [0usize; CONTEXT];
+                    context.copy_from_slice(&window[..CONTEXT]);
+                    model.train_step(context, window[CONTEXT]);
                 }
             }
         }
         model
     }
 
-    /// Forward pass: returns the concatenated input, hidden activations, and
-    /// softmax probabilities over the vocabulary for `context`.
-    // Flat-indexed matrix math reads more clearly as range loops than as
-    // zipped iterators, since each step indexes weights by a computed offset.
-    #[allow(clippy::needless_range_loop)]
-    fn forward(&self, context: [usize; CONTEXT]) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
-        let mut input = vec![0.0_f32; INPUT];
-        for (slot, &token) in context.iter().enumerate() {
+    /// Embeds the temporal window, then applies the DCT along the time axis
+    /// of each channel to produce the flattened spectral features.
+    // Flat-indexed spectral/matrix math reads more clearly as range loops
+    // with `sum += a * b` than as iterator/`mul_add` rewrites.
+    #[allow(clippy::needless_range_loop, clippy::suboptimal_flops)]
+    fn spectral_features(&self, context: [usize; CONTEXT]) -> (Vec<f32>, Vec<f32>) {
+        let mut embeds = vec![0.0_f32; CONTEXT * EMBED];
+        for (step, &token) in context.iter().enumerate() {
             let base = token * EMBED;
-            input[slot * EMBED..(slot + 1) * EMBED]
+            embeds[step * EMBED..(step + 1) * EMBED]
                 .copy_from_slice(&self.embed[base..base + EMBED]);
         }
 
-        let mut hidden = vec![0.0_f32; HIDDEN];
-        for (h, hidden_value) in hidden.iter_mut().enumerate() {
-            let mut sum = self.b1[h];
-            for i in 0..INPUT {
-                sum += self.w1[h * INPUT + i] * input[i];
+        // spectral[k*EMBED + d] = sum_n dct[k][n] * embeds[n][d]
+        let mut spectral = vec![0.0_f32; FEAT];
+        for k in 0..CONTEXT {
+            for d in 0..EMBED {
+                let mut sum = 0.0;
+                for n in 0..CONTEXT {
+                    sum += self.dct[k * CONTEXT + n] * embeds[n * EMBED + d];
+                }
+                spectral[k * EMBED + d] = sum;
             }
-            *hidden_value = sum.tanh();
+        }
+        (embeds, spectral)
+    }
+
+    /// Index of the codebook entry nearest (in squared Euclidean distance)
+    /// to `spectral`. Ties resolve to the lowest index (deterministic).
+    #[allow(clippy::needless_range_loop, clippy::suboptimal_flops)]
+    fn nearest_code(&self, spectral: &[f32]) -> usize {
+        let mut best = 0;
+        let mut best_dist = f32::INFINITY;
+        for c in 0..CODES {
+            let mut dist = 0.0;
+            for f in 0..FEAT {
+                let diff = spectral[f] - self.codebook[c * FEAT + f];
+                dist += diff * diff;
+            }
+            if dist < best_dist {
+                best_dist = dist;
+                best = c;
+            }
+        }
+        best
+    }
+
+    /// Full forward pass for `context`.
+    #[allow(clippy::needless_range_loop, clippy::suboptimal_flops)]
+    fn forward(&self, context: [usize; CONTEXT]) -> Forward {
+        let (embeds, spectral) = self.spectral_features(context);
+        let code = self.nearest_code(&spectral);
+        let quant = &self.codebook[code * FEAT..code * FEAT + FEAT];
+
+        let mut hidden = vec![0.0_f32; HIDDEN];
+        for i in 0..HIDDEN {
+            let mut sum = self.b1[i];
+            for f in 0..FEAT {
+                sum += self.w1[i * FEAT + f] * quant[f];
+            }
+            hidden[i] = sum.tanh();
         }
 
         let vocab_len = self.vocab.len();
         let mut logits = vec![0.0_f32; vocab_len];
-        for (v, logit) in logits.iter_mut().enumerate() {
+        for v in 0..vocab_len {
             let mut sum = self.b2[v];
-            for h in 0..HIDDEN {
-                sum += self.w2[v * HIDDEN + h] * hidden[h];
+            for i in 0..HIDDEN {
+                sum += self.w2[v * HIDDEN + i] * hidden[i];
             }
-            *logit = sum;
+            logits[v] = sum;
         }
-
         softmax(&mut logits);
-        (input, hidden, logits)
+
+        Forward {
+            embeds,
+            spectral,
+            code,
+            hidden,
+            probs: logits,
+        }
     }
 
-    /// One SGD step of cross-entropy loss for `context -> target`.
-    #[allow(clippy::needless_range_loop)]
+    /// One SGD step of cross-entropy loss (plus VQ commitment/codebook
+    /// penalties) for `context -> target`.
+    #[allow(clippy::needless_range_loop, clippy::suboptimal_flops)]
     fn train_step(&mut self, context: [usize; CONTEXT], target: usize) {
-        let (input, hidden, probs) = self.forward(context);
+        let pass = self.forward(context);
         let vocab_len = self.vocab.len();
+        // Snapshot the chosen code vector before any parameter updates.
+        let quant: Vec<f32> = self.codebook[pass.code * FEAT..pass.code * FEAT + FEAT].to_vec();
 
         // dL/dlogits for softmax + cross-entropy.
-        let mut dlogits = probs;
+        let mut dlogits = pass.probs;
         dlogits[target] -= 1.0;
 
-        // Gradients into the hidden layer (using current w2, before update).
+        // Hidden-layer gradient (using current w2, before update).
         let mut dhidden = [0.0_f32; HIDDEN];
-        for (h, dh) in dhidden.iter_mut().enumerate() {
+        for i in 0..HIDDEN {
             let mut sum = 0.0;
             for v in 0..vocab_len {
-                sum += self.w2[v * HIDDEN + h] * dlogits[v];
+                sum += self.w2[v * HIDDEN + i] * dlogits[v];
             }
-            // tanh'(z) = 1 - tanh(z)^2, and hidden already holds tanh(z).
-            *dh = sum * hidden[h].mul_add(-hidden[h], 1.0);
+            dhidden[i] = sum * (1.0 - pass.hidden[i] * pass.hidden[i]);
         }
 
-        // Gradients into the input (using current w1, before update).
-        let mut dinput = [0.0_f32; INPUT];
-        for (i, di) in dinput.iter_mut().enumerate() {
+        // Gradient w.r.t. the quantized code fed to the head (using current
+        // w1). The straight-through estimator passes this straight back to
+        // the spectral features.
+        let mut dquant = [0.0_f32; FEAT];
+        for f in 0..FEAT {
             let mut sum = 0.0;
-            for h in 0..HIDDEN {
-                sum += self.w1[h * INPUT + i] * dhidden[h];
+            for i in 0..HIDDEN {
+                sum += self.w1[i * FEAT + f] * dhidden[i];
             }
-            *di = sum;
+            dquant[f] = sum;
         }
 
-        // Apply updates.
+        // Update the prediction head.
         for v in 0..vocab_len {
-            for h in 0..HIDDEN {
-                self.w2[v * HIDDEN + h] -= LEARNING_RATE * dlogits[v] * hidden[h];
+            for i in 0..HIDDEN {
+                self.w2[v * HIDDEN + i] -= LEARNING_RATE * dlogits[v] * pass.hidden[i];
             }
             self.b2[v] -= LEARNING_RATE * dlogits[v];
         }
-        for h in 0..HIDDEN {
-            for i in 0..INPUT {
-                self.w1[h * INPUT + i] -= LEARNING_RATE * dhidden[h] * input[i];
+        for i in 0..HIDDEN {
+            for f in 0..FEAT {
+                self.w1[i * FEAT + f] -= LEARNING_RATE * dhidden[i] * quant[f];
             }
-            self.b1[h] -= LEARNING_RATE * dhidden[h];
+            self.b1[i] -= LEARNING_RATE * dhidden[i];
         }
-        for (slot, &token) in context.iter().enumerate() {
+
+        // VQ codebook loss ||sg(spectral) - code||^2 pulls the chosen code
+        // toward the spectral features; commitment loss pulls the features
+        // toward the code and is added to the straight-through gradient.
+        let base = pass.code * FEAT;
+        for f in 0..FEAT {
+            let toward = quant[f] - pass.spectral[f];
+            self.codebook[base + f] -= LEARNING_RATE * COMMITMENT * 2.0 * toward;
+        }
+
+        let mut dspectral = [0.0_f32; FEAT];
+        for f in 0..FEAT {
+            dspectral[f] = dquant[f] + COMMITMENT * 2.0 * (pass.spectral[f] - quant[f]);
+        }
+
+        // Backprop the spectral gradient through the (linear) DCT to the
+        // embeddings: dEmbed[n][d] = sum_k dct[k][n] * dSpectral[k][d].
+        let mut dembeds = [0.0_f32; CONTEXT * EMBED];
+        for n in 0..CONTEXT {
+            for d in 0..EMBED {
+                let mut sum = 0.0;
+                for k in 0..CONTEXT {
+                    sum += self.dct[k * CONTEXT + n] * dspectral[k * EMBED + d];
+                }
+                dembeds[n * EMBED + d] = sum;
+            }
+        }
+        let _ = pass.embeds; // embeddings enter only through the DCT above
+        for (step, &token) in context.iter().enumerate() {
             let base = token * EMBED;
-            for j in 0..EMBED {
-                self.embed[base + j] -= LEARNING_RATE * dinput[slot * EMBED + j];
+            for d in 0..EMBED {
+                self.embed[base + d] -= LEARNING_RATE * dembeds[step * EMBED + d];
             }
         }
     }
 
-    /// Mean cross-entropy loss over the bundled corpus — used by tests to
-    /// confirm the model actually learns.
+    /// Mean cross-entropy loss over `corpus` — used by tests to confirm the
+    /// model actually learns.
     #[cfg(test)]
     #[must_use]
     fn mean_loss(&self, corpus: &str) -> f32 {
@@ -342,8 +465,10 @@ impl NeuralLanguageModel {
         let mut steps = 0usize;
         for sentence in &sentences {
             for window in sentence.windows(CONTEXT + 1) {
-                let (_, _, probs) = self.forward([window[0], window[1]]);
-                total += -(probs[window[2]].max(f32::MIN_POSITIVE)).ln();
+                let mut context = [0usize; CONTEXT];
+                context.copy_from_slice(&window[..CONTEXT]);
+                let pass = self.forward(context);
+                total += -(pass.probs[window[CONTEXT]].max(f32::MIN_POSITIVE)).ln();
                 steps += 1;
             }
         }
@@ -356,8 +481,8 @@ impl NeuralLanguageModel {
 
     /// The most probable next token id for `context`.
     fn argmax_next(&self, context: [usize; CONTEXT]) -> usize {
-        let (_, _, probs) = self.forward(context);
-        probs
+        let pass = self.forward(context);
+        pass.probs
             .iter()
             .enumerate()
             .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
@@ -400,7 +525,11 @@ impl LanguageModel for NeuralLanguageModel {
             if next != bos {
                 produced.push(self.vocab.token(next).to_string());
             }
-            context = [context[1], next];
+            // Slide the temporal window forward by one token.
+            for slot in 0..CONTEXT - 1 {
+                context[slot] = context[slot + 1];
+            }
+            context[CONTEXT - 1] = next;
         }
         produced.join(" ")
     }
@@ -411,8 +540,10 @@ impl LanguageModel for NeuralLanguageModel {
         let mut steps = 0usize;
         for sentence in &sentences {
             for window in sentence.windows(CONTEXT + 1) {
-                let (_, _, probs) = self.forward([window[0], window[1]]);
-                total += -(probs[window[2]].max(f32::MIN_POSITIVE)).ln();
+                let mut context = [0usize; CONTEXT];
+                context.copy_from_slice(&window[..CONTEXT]);
+                let pass = self.forward(context);
+                total += -(pass.probs[window[CONTEXT]].max(f32::MIN_POSITIVE)).ln();
                 steps += 1;
             }
         }
@@ -466,6 +597,26 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::suboptimal_flops)]
+    fn dct_concentrates_a_constant_signal_in_the_zeroth_coefficient() {
+        // DCT-II of a constant signal puts all energy in coefficient 0.
+        let dct = dct_matrix();
+        let signal = [2.0_f32; CONTEXT];
+        let mut coeffs = [0.0_f32; CONTEXT];
+        for k in 0..CONTEXT {
+            let mut sum = 0.0;
+            for n in 0..CONTEXT {
+                sum += dct[k * CONTEXT + n] * signal[n];
+            }
+            coeffs[k] = sum;
+        }
+        assert!((coeffs[0] - 2.0 * count(CONTEXT)).abs() < 1e-4);
+        for &c in &coeffs[1..] {
+            assert!(c.abs() < 1e-3, "non-DC coefficient should be ~0, got {c}");
+        }
+    }
+
+    #[test]
     fn training_reduces_loss() {
         let untrained = NeuralLanguageModel::trained_on(SECURITY_CORPUS, 0);
         let trained = NeuralLanguageModel::trained_on(SECURITY_CORPUS, EPOCHS);
@@ -478,10 +629,40 @@ mod tests {
     }
 
     #[test]
+    fn vector_quantization_uses_multiple_codes() {
+        // A trained model should route different contexts to more than one
+        // codebook entry (the VQ bottleneck is not collapsed to one code).
+        let model = NeuralLanguageModel::bundled();
+        let sentences = encode_sentences(&model.vocab, SECURITY_CORPUS);
+        let mut used = std::collections::HashSet::new();
+        for sentence in &sentences {
+            for window in sentence.windows(CONTEXT + 1) {
+                let mut context = [0usize; CONTEXT];
+                context.copy_from_slice(&window[..CONTEXT]);
+                used.insert(model.forward(context).code);
+            }
+        }
+        assert!(
+            used.len() > 1,
+            "expected multiple codes in use, got {}",
+            used.len()
+        );
+    }
+
+    #[test]
+    fn nearest_code_picks_the_closest_codebook_entry() {
+        let model = NeuralLanguageModel::bundled();
+        // A query equal to code 3's vector must select code 3.
+        let target = 3;
+        let query: Vec<f32> = model.codebook[target * FEAT..target * FEAT + FEAT].to_vec();
+        assert_eq!(model.nearest_code(&query), target);
+    }
+
+    #[test]
     fn generation_is_deterministic_and_in_vocabulary() {
         let model = NeuralLanguageModel::bundled();
-        let first = model.generate("the coordinator", 8);
-        let second = model.generate("the coordinator", 8);
+        let first = model.generate("the coordinator plans an", 8);
+        let second = model.generate("the coordinator plans an", 8);
         assert_eq!(first, second, "greedy decoding must be deterministic");
 
         let vocab = Vocabulary::from_corpus(SECURITY_CORPUS);
@@ -496,14 +677,11 @@ mod tests {
     #[test]
     fn generation_handles_unknown_and_empty_prompts() {
         let model = NeuralLanguageModel::bundled();
-        // Out-of-vocabulary prompt: falls back to BOS padding, still emits
-        // only in-vocabulary tokens without panicking.
         let out = model.generate("qqqq zzzz", 6);
         let vocab = Vocabulary::from_corpus(SECURITY_CORPUS);
         for token in out.split_whitespace() {
             assert!(vocab.id(token).is_some());
         }
-        // Empty prompt is fine too.
         let _ = model.generate("", 4);
     }
 
@@ -511,7 +689,7 @@ mod tests {
     fn in_domain_text_has_lower_perplexity_than_gibberish() {
         let model = NeuralLanguageModel::bundled();
         let in_domain = model.perplexity("the policy engine denies out of scope targets");
-        let gibberish = model.perplexity("calibration attacker remediation the the api scope");
+        let gibberish = model.perplexity("targets scope of out denies engine policy the");
         assert!(
             in_domain < gibberish,
             "in-domain text should be less surprising: in_domain={in_domain:.2} gibberish={gibberish:.2}"
@@ -535,11 +713,9 @@ mod tests {
         for _ in 0..100 {
             assert_eq!(a.next_u64(), b.next_u64());
         }
-        // Samples stay within the requested symmetric range.
         let mut rng = Rng::new(SEED);
         for _ in 0..1000 {
-            let value = rng.symmetric(0.3);
-            assert!((-0.3..0.3).contains(&value));
+            assert!((-0.3..0.3).contains(&rng.symmetric(0.3)));
         }
     }
 }
