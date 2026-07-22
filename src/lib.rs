@@ -1,6 +1,7 @@
 pub mod advanced;
 pub mod audit_log;
 pub mod builtin_tools;
+pub mod calibration;
 pub mod capability_graph;
 pub mod cognition;
 pub mod cognitive_engine;
@@ -33,6 +34,9 @@ pub use audit_log::{AuditLogError, append_audit_records, load_audit_records};
 pub use builtin_tools::{
     AutopsyReport, BuiltInToolError, EmbeddedSignature, EvidenceFile, MemoryString,
     VolatilityReport, is_builtin_tool, run_autopsy, run_builtin_tool, run_volatility,
+};
+pub use calibration::{
+    CalibrationRecord, CalibrationTendency, CalibrationTracker, ReliabilityBin,
 };
 pub use capability_graph::{CapabilityGraph, CapabilityNode, CapabilityStage, FunctionFamily};
 pub use cognition::{

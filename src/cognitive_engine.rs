@@ -30,6 +30,7 @@
 //! [`crate::policy::PolicyEngine`] has already authorized and never grants,
 //! restricts, or executes anything.
 
+use crate::calibration::CalibrationTracker;
 use crate::cognition::{CognitiveMemory, generate_hypotheses};
 use crate::coordinator::ExecutionPlan;
 use crate::findings::Finding;
@@ -498,6 +499,10 @@ pub struct CognitiveDeliberation {
     pub adversary_moves: Vec<AdversaryMove>,
     pub attention: Vec<AttentionFocus>,
     pub metacognition: Metacognition,
+    /// How well the agent's *prior* (type-based) predictions match the
+    /// findings actually recorded in memory. Empty when there is no history
+    /// to score against.
+    pub calibration: CalibrationTracker,
 }
 
 /// Orchestrates the cognitive faculties into a single deliberation over an
@@ -530,6 +535,7 @@ impl CognitiveEngine {
         let adversary_moves = self.adversary.predict_moves(targets, &self.memory);
         let attention = AttentionAllocator::allocate(targets, &self.memory);
         let metacognition = self.reflect(&reasoning_chain, &beliefs, targets);
+        let calibration = self.assess_calibration(targets);
 
         CognitiveDeliberation {
             reasoning_chain,
@@ -537,7 +543,29 @@ impl CognitiveEngine {
             adversary_moves,
             attention,
             metacognition,
+            calibration,
         }
+    }
+
+    /// Scores the agent's *prior* predictions against realized outcomes,
+    /// without circularity: the prediction for each target is the
+    /// type-based prior confidence (generated from an **empty** memory, so
+    /// it is not boosted by the very history it will be judged against), and
+    /// the outcome is whether that target has any finding recorded in this
+    /// engine's memory. Over many targets and engagements this reveals
+    /// whether the priors are over- or under-confident.
+    #[must_use]
+    pub fn assess_calibration(&self, targets: &[Target]) -> CalibrationTracker {
+        let prior = CognitiveMemory::new();
+        let mut tracker = CalibrationTracker::new();
+        for target in targets {
+            let predicted = generate_hypotheses(&target.id, &target.target_type, &prior)
+                .first()
+                .map_or(0, |hypothesis| hypothesis.confidence_percent);
+            let occurred = self.memory.history_for(&target.id).0 > 0;
+            tracker.record(predicted, occurred);
+        }
+        tracker
     }
 
     /// Builds the explicit train of thought: for each target, ground an
@@ -814,6 +842,38 @@ impl fmt::Display for CognitiveDeliberation {
             }
         }
         writeln!(formatter, "  judgement: {}", self.metacognition.reasoning)?;
+        writeln!(formatter)?;
+
+        self.write_calibration(formatter)
+    }
+}
+
+impl CognitiveDeliberation {
+    /// Renders the confidence-calibration section of the deliberation.
+    /// Split out of the `Display` body to keep each rendering unit small.
+    fn write_calibration(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(formatter, "Confidence Calibration (prior vs. realized)")?;
+        writeln!(formatter, "-------------------------------------------")?;
+        if self.calibration.is_empty() {
+            return writeln!(formatter, "  no scored predictions yet");
+        }
+        writeln!(formatter, "  scored predictions : {}", self.calibration.len())?;
+        if let (Some(predicted), Some(empirical)) = (
+            self.calibration.mean_predicted(),
+            self.calibration.empirical_rate(),
+        ) {
+            writeln!(formatter, "  mean predicted     : {:.0}%", predicted * 100.0)?;
+            writeln!(formatter, "  realized rate      : {:.0}%", empirical * 100.0)?;
+        }
+        if let Some(brier) = self.calibration.brier_score() {
+            writeln!(formatter, "  brier score        : {brier:.3} (0 = perfect)")?;
+        }
+        if let Some(ece) = self.calibration.expected_calibration_error(10) {
+            writeln!(formatter, "  calibration error  : {ece:.3} (0 = perfect)")?;
+        }
+        if let Some(tendency) = self.calibration.tendency(0.05) {
+            writeln!(formatter, "  tendency           : {tendency}")?;
+        }
         Ok(())
     }
 }
@@ -993,6 +1053,42 @@ mod tests {
         assert!(rendered.contains("Predicted Adversary Moves"));
         assert!(rendered.contains("Attention Allocation"));
         assert!(rendered.contains("Metacognition"));
+        assert!(rendered.contains("Confidence Calibration"));
         assert!(rendered.contains("api-1"));
+    }
+
+    #[test]
+    fn calibration_is_non_circular_and_scores_priors_against_history() {
+        // api-1 (criticality 9) has findings; web-1 (criticality 4) does not.
+        let (_, targets) = build_plan_and_targets();
+        let mut memory = CognitiveMemory::new();
+        memory.record_findings(&[finding("api-1", Severity::Critical)]);
+        let engine = CognitiveEngine::new(memory, AdversaryModel::default());
+
+        let calibration = engine.assess_calibration(&targets);
+        // One record per target, and the predictions are the *type-based
+        // priors* — unaffected by the history they are scored against.
+        assert_eq!(calibration.len(), targets.len());
+        let prior = CognitiveMemory::new();
+        for target in &targets {
+            let prior_confidence =
+                generate_hypotheses(&target.id, &target.target_type, &prior)[0].confidence_percent;
+            let recorded = calibration
+                .records()
+                .iter()
+                .find(|record| record.predicted_percent == prior_confidence);
+            assert!(
+                recorded.is_some(),
+                "prediction must be the un-boosted prior for {}",
+                target.id
+            );
+        }
+        // Exactly the target with findings counts as an occurrence.
+        let occurred = calibration
+            .records()
+            .iter()
+            .filter(|record| record.occurred)
+            .count();
+        assert_eq!(occurred, 1);
     }
 }
