@@ -2,12 +2,13 @@
 # scripts/deploy.sh — build, verify, and package the Security-Agent CLI
 # binary for distribution.
 #
-# This is a release/packaging script for the offline Rust CLI: it runs the
-# same quality gate CI enforces, builds an optimized binary (optionally
-# cross-compiled), and packages it into a checksummed archive under
-# dist/. There is no web service or network call involved — the agent is a
-# terminal tool, so "deploying" it means producing a trustworthy, versioned
-# release artifact a user can download and run locally.
+# This is a release/packaging script for the offline Rust CLI: it runs
+# CI's required formatting and lint gate plus the full `cargo test` suite
+# (a superset of CI's `cargo test --lib`), builds an optimized binary
+# (optionally cross-compiled), and packages it into a checksummed archive
+# under dist/. There is no web service or network call involved — the agent
+# is a terminal tool, so "deploying" it means producing a trustworthy,
+# versioned release artifact a user can download and run locally.
 #
 # Usage:
 #   scripts/deploy.sh [--target <triple>] [--skip-checks] [--out <dir>] [--no-color]
@@ -85,7 +86,13 @@ fi
 TOTAL_STEPS=5
 STEP_INDEX=0
 DEPLOY_START=$(date +%s)
-REPO_DIR=$(pwd)
+
+# Anchor to the repo root (this script's parent directory) regardless of the
+# caller's working directory, so Cargo.toml/LICENSE/README.md resolve and
+# --out/dist land in the right place whether run as `./scripts/deploy.sh`,
+# `bash /path/to/scripts/deploy.sh`, or via `make deploy` from elsewhere.
+REPO_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$REPO_DIR"
 
 banner() {
     printf '%s%s\n' "$CYAN" "$BOLD"
@@ -120,6 +127,7 @@ kv() {
 banner
 
 command -v cargo >/dev/null 2>&1 || fail "cargo not found on PATH"
+command -v rustc >/dev/null 2>&1 || fail "rustc not found on PATH"
 
 PKG_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 HOST_TRIPLE=$(rustc -vV | sed -n 's/^host: //p')
@@ -130,14 +138,20 @@ kv "Package" "security-agent $PKG_VERSION"
 kv "Target" "$BUILD_TRIPLE"
 kv "Cargo" "$(cargo --version)"
 
-# ── quality gate (mirrors CI exactly) ───────────────────────────────────────
+# ── quality gate ─────────────────────────────────────────────────────────────
+# Formatting and lint are identical to CI's required gate. Tests run the full
+# `cargo test` (lib + binary unit tests + tests/cli.rs integration tests +
+# doctests) rather than CI's `cargo test --lib` — a deliberate superset, not
+# a mismatch: a release artifact should be verified by at least as much as
+# CI requires, and the CLI integration suite in particular exercises the
+# actual compiled binary the way the packaged archive will be used.
 
 if [ "$SKIP_CHECKS" -eq 1 ]; then
     step_start "Formatting (cargo fmt --all --check)"
     step_skip
     step_start "Lint (cargo clippy, pedantic + nursery)"
     step_skip
-    step_start "Tests (cargo test)"
+    step_start "Tests (cargo test — full suite, beyond CI's --lib gate)"
     step_skip
 else
     step_start "Formatting (cargo fmt --all --check)"
@@ -149,7 +163,7 @@ else
         || fail "clippy found issues"
     step_ok
 
-    step_start "Tests (cargo test)"
+    step_start "Tests (cargo test — full suite, beyond CI's --lib gate)"
     cargo test || fail "test suite failed"
     step_ok
 fi
@@ -192,7 +206,11 @@ cp "$BIN_PATH" "$STAGE_DIR/security-agent"
 
 tar -czf "$ARCHIVE_PATH" -C "$STAGE_DIR" .
 CHECKSUM=$(sha256_of "$ARCHIVE_PATH")
-printf '%s  %s\n' "$CHECKSUM" "$ARCHIVE_NAME" >"$ARCHIVE_PATH.sha256"
+# Record the archive's path relative to the repo root (not just its
+# basename), so `sha256sum -c dist/<name>.sha256` verifies correctly when
+# run from the repo root — where this script always ends up (see the cd to
+# $REPO_DIR above) — rather than only working from inside dist/ itself.
+printf '%s  %s\n' "$CHECKSUM" "$ARCHIVE_PATH" >"$ARCHIVE_PATH.sha256"
 BIN_SIZE=$(wc -c <"$BIN_PATH" | tr -d ' ')
 
 step_ok

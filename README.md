@@ -247,15 +247,23 @@ make deploy                               # same, via the Makefile
 make deploy DEPLOY_FLAGS="--skip-checks"  # pass flags through
 ```
 
-It runs the identical quality gate CI enforces (`cargo fmt --all --check`,
-`cargo clippy --all-targets -- -D warnings -W clippy::pedantic -W
-clippy::nursery`, `cargo test`), builds an optimized `--release` binary
+It runs CI's required formatting and lint gate exactly (`cargo fmt --all
+--check`, `cargo clippy --all-targets -- -D warnings -W clippy::pedantic -W
+clippy::nursery`), plus the full `cargo test` — a deliberate superset of
+CI's `cargo test --lib`, since a release artifact should be verified by at
+least as much as CI requires, and the CLI integration suite in
+`tests/cli.rs` exercises the actual compiled binary the way the packaged
+archive will be used. It then builds an optimized `--release` binary
 (optionally cross-compiled via `--target`), and packages it — plus
 `README.md` and `LICENSE` — into a checksummed
 `dist/security-agent-<version>-<target-triple>.tar.gz` with a matching
-`.sha256` file. Colors are automatically disabled when not attached to a
-terminal (or with `--no-color` / `NO_COLOR`), so CI logs stay clean. Pure
-POSIX-ish bash — no new dependency, consistent with the rest of the crate.
+`.sha256` file (recording the archive's repo-root-relative path, so
+`sha256sum -c dist/<name>.sha256` verifies correctly from the repo root).
+Colors are automatically disabled when not attached to a terminal (or with
+`--no-color` / `NO_COLOR`), so CI logs stay clean. The script always
+operates from the repo root regardless of the caller's working directory.
+Pure POSIX-ish bash — no new dependency, consistent with the rest of the
+crate.
 
 The console styling deliberately follows the same conventions used across
 this org's other launch/verify scripts: a plain colored title (no boxed
