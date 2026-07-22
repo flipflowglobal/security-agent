@@ -283,6 +283,21 @@ cargo install --path . --locked
 After installation, replace `./target/release/security-agent` with
 `security-agent`.
 
+To build a distributable, checksummed release package instead (for handing
+the binary to someone else, or archiving a release), run:
+
+```bash
+./scripts/deploy.sh
+# or: make deploy
+```
+
+This runs the full quality gate, builds the release binary, and packages it
+with `README.md`/`LICENSE` into `dist/security-agent-<version>-<target-triple>.tar.gz`
+plus a `.sha256` checksum file. Add `--target <triple>` to cross-compile (e.g.
+`--target aarch64-linux-android`), or `--skip-checks` to skip straight to
+build + package when the code has already been verified. See `README.md`'s
+"Release deployment" section for the full flag list.
+
 ---
 
 ## 8a) Writing an engagement configuration file
