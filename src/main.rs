@@ -227,15 +227,16 @@ fn run_external_tool_command(
     let tool_arguments: Vec<String> = arguments.collect();
 
     // The direct CLI path has no declared engagement, so advise against a
-    // default Standard ceiling. Advisory only for tools that actually reach
-    // a live target — static-local tools never touch the network.
-    if tool.definition.execution_class != security_agent::ExecutionClass::StaticLocalAnalysis {
-        if mode.allows_active() {
-            eprintln!(
-                "online mode engaged (--allow-network): running live tool '{name}' against \
-                 operator-supplied targets"
-            );
-        }
+    // default Standard ceiling — but only for a live tool that will actually
+    // run, i.e. a non-static tool under the online opt-in. In offline mode
+    // such a tool is refused, so an intensity advisory would just be noise.
+    let is_live_tool =
+        tool.definition.execution_class != security_agent::ExecutionClass::StaticLocalAnalysis;
+    if is_live_tool && mode.allows_active() {
+        eprintln!(
+            "online mode engaged (--allow-network): running live tool '{name}' against \
+             operator-supplied targets"
+        );
         print_intensity_advisories(&tool_arguments, security_agent::TestIntensity::Standard);
     }
 
