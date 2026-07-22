@@ -170,6 +170,7 @@ Run these from the repository root after `cargo build --release`:
 ./target/release/security-agent --schedule-retest <findings-log-path>.jsonl
 ./target/release/security-agent --llm-generate <prompt words...>
 ./target/release/security-agent --llm-perplexity <text words...>
+./target/release/security-agent --ask <plain-English instruction...>
 ```
 
 - No argument and `--offline-status` report the same local runtime state,
@@ -224,6 +225,15 @@ Run these from the repository root after `cargo build --release`:
   trained deterministically on a bundled security corpus — no network, no
   weights on disk. `--llm-perplexity <text>` scores how in-domain the text
   reads (lower is more expected). Advisory/inspection only.
+- `--ask <plain-English instruction>` interprets a natural-language
+  instruction against the agent's own capabilities (`src/nlu.rs`), prints the
+  understood intent, a confidence, and a reply, then carries out the
+  read-only action (report status, list/explain tools or skills, generate
+  text, or score text for anomaly). Off-topic requests decline as
+  `out-of-scope`. Intents that require an engagement, a persisted log, or
+  authorization (planning a scan, scheduling a retest, viewing an audit log)
+  are explained — it tells you the exact command — but never executed through
+  `--ask`, so plain English cannot widen the agent's authority.
 - `--view-audit <path>` is a read-only view: it loads a persisted audit
   log and prints its records (operating under the least-privilege `Viewer`
   role). It never plans, authorizes, executes, or writes.

@@ -31,9 +31,11 @@ pub struct AnomalyFlag {
     pub anomalous: bool,
 }
 
-/// Scores each finding's title with `model` and flags the out-of-domain
-/// ones (perplexity at or above `threshold`, or text the model cannot score
-/// at all). Returns one [`AnomalyFlag`] per finding, most surprising first.
+/// Scores each finding's title with `model` and flags the out-of-domain ones.
+///
+/// A finding is flagged when its perplexity is at or above `threshold`, or
+/// when the model cannot score its text at all. Returns one [`AnomalyFlag`]
+/// per finding, most surprising first.
 #[must_use]
 pub fn scan_findings(
     findings: &[Finding],

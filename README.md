@@ -183,7 +183,9 @@ The `MobileAndroid` specialist uses a dedicated tool set for APK/DEX analysis an
 | `src/cognitive_engine.rs` | Advanced cognitive architecture: chained reasoning, Bayesian belief revision, adversary theory-of-mind, attention allocation, metacognition, calibration, and compromise propagation |
 | `src/calibration.rs` | Confidence-calibration tracking: Brier score, reliability bins, expected calibration error, over/under-confidence tendency, and histogram recalibration |
 | `src/belief_propagation.rs` | Noisy-OR compromise-risk propagation across the attack graph (lateral movement) |
-| `src/language_model.rs` | Small from-scratch **vector-quantized temporal-frequency** neural language model (embed → DCT → VQ codebook → softmax), self-trained on a bundled security corpus; text generation and perplexity scoring |
+| `src/language_model.rs` | Small from-scratch **vector-quantized temporal-frequency** neural language model (embed → DCT → residual VQ codebooks → softmax), self-trained on a bundled security corpus; text generation and perplexity scoring |
+| `src/anomaly.rs` | Language-model perplexity as an anomaly lens: flags out-of-domain finding text in the cognitive review |
+| `src/nlu.rs` | Grounded plain-English intent router behind `--ask`: lexical + semantic mapping of instructions to real capabilities |
 | `src/memory_store.rs` | Folds the append-only findings log into cognitive memory, so cognition learns across engagements from one shared format |
 | `src/compat.rs` | Integration adapter contracts and wire-format envelope (audit + finding records) |
 | `src/roadmap.rs` | Phased rollout model (surfaced by `--about`) |
@@ -252,10 +254,14 @@ external skill source:
 ./target/release/security-agent --run-tool autopsy <local-path> --output <report-path>.txt
 ./target/release/security-agent --llm-generate <prompt words...>
 ./target/release/security-agent --llm-perplexity <text words...>
+./target/release/security-agent --ask <plain-English instruction...>
 ```
 
 `--about` (alias `--version`) prints the package version, mission statement,
 and the four roadmap phases.
+
+`--ask` takes a plain-English instruction and routes it to the matching
+capability (see [Plain-English instructions](#plain-english-instructions--ask)).
 
 ### Built-in small language model
 
@@ -269,17 +275,22 @@ binary. The prediction path is:
 2. **Temporal → frequency**: a Discrete Cosine Transform (DCT-II) along the
    time axis, so the model reasons about *how* the context changes across
    the window (its spectral content).
-3. **Vector-quantize** the spectral features against a learned codebook
-   (VQ-VAE style: nearest-code lookup, straight-through estimator,
-   commitment penalty).
+3. **Residually vector-quantize** the spectral features against a *stack* of
+   learned codebooks (VQ-VAE style: nearest-code lookup, straight-through
+   estimator, commitment penalty). Each stage quantizes what the previous
+   stage could not represent — the final code is the sum of the per-stage
+   codes (`q = q1 + q2`), a **residual path around the quantizer** that
+   halves the reconstruction error a single codebook leaves behind while
+   keeping the discrete bottleneck.
 4. **Predict** the next token from the quantized code through a tanh hidden
    layer and a softmax over the vocabulary.
 
-The DCT, codebook search, and forward/backward passes are all hand-rolled:
-**no external crates, no network, no weights on disk**. The model trains
-itself at startup (~0.5 s) and ships inside the offline binary. Being tiny —
-and quantized through a discrete bottleneck — its text is modest; it learns
-the domain vocabulary and local phrasing rather than long-range coherence.
+The DCT, residual codebook search, and forward/backward passes are all
+hand-rolled: **no external crates, no network, no weights on disk**. The
+model trains itself at startup (~0.5 s) and ships inside the offline binary.
+Being tiny — and quantized through a discrete bottleneck — its text is
+modest; it learns the domain vocabulary and local phrasing rather than
+long-range coherence.
 
 ```bash
 # Greedy continuation of a prompt (deterministic).
@@ -293,6 +304,42 @@ The `LanguageModel` trait is the seam where a larger model could plug in
 later; this is distinct from the still-optional `inference` feature flag
 (below), which is reserved for a heavier candle-based back-end and is not
 used by the core.
+
+The same perplexity signal is looped back into the cognitive layer as an
+**anomaly lens**: during a `--plan-scan ... --cognitive-review --memory
+<log>` run, every prior finding's text is scored against the model, and text
+that does not read like ordinary security-domain English (high perplexity,
+or unscorable) is flagged as out-of-domain — a cheap, fully-local check for
+encoded payloads, injected markup, or noise stuffed into third-party tool
+output. See `src/anomaly.rs`.
+
+### Plain-English instructions (`--ask`)
+
+`--ask` lets the agent understand a plain-English instruction and *carry it
+out*, entirely offline. A grounded intent router (`src/nlu.rs`) maps the
+instruction to one of the agent's real capabilities — report status, list or
+explain tools/skills, plan a scan, generate text, or score a string for
+anomaly — using two fully-local signals: lexical anchoring against each
+capability's trigger vocabulary (and recognition of the agent's own
+tool/skill names), plus semantic similarity in the built-in model's learned
+embedding space to rank paraphrases. It prints what it understood (intent and
+confidence) and a plain-English reply, then runs the action:
+
+```bash
+./target/release/security-agent --ask "what tools do you have"
+./target/release/security-agent --ask "are you healthy and ready"
+./target/release/security-agent --ask "explain the nmap skill"
+./target/release/security-agent --ask "generate text about scanning targets"
+./target/release/security-agent --ask 'is this suspicious: "zzq xqv vfrb qwx"'
+```
+
+Routing is **scoped to defensive security**: an off-topic request with no
+capability match declines cleanly (`out-of-scope`) rather than guessing. And
+`--ask` only *executes* the read-only, no-authorization intents; anything
+that touches an engagement, a persisted log, or authorization (planning a
+scan, scheduling a retest, viewing an audit log) is explained — the agent
+tells you the exact command to run — but never run through `--ask`, so plain
+English can never widen the agent's authority.
 
 Running without arguments is equivalent to `--offline-status`. To install the
 binary into Cargo's local binary directory, run `cargo install --path . --locked`;
