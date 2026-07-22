@@ -196,7 +196,7 @@ The `MobileAndroid` specialist uses a dedicated tool set for APK/DEX analysis an
 | `src/memory_store.rs` | Folds the append-only findings log into cognitive memory, so cognition learns across engagements from one shared format |
 | `src/compat.rs` | Integration adapter contracts and wire-format envelope (audit + finding records) |
 | `src/roadmap.rs` | Phased rollout model (surfaced by `--about`) |
-| `src/main.rs` | Offline local runtime entry point (also cross-compiles for Android) |
+| `src/main.rs` | Offline local runtime entry point (also cross-compiles for Android); includes the `--tui` interactive terminal UI, built entirely on the same command functions the plain CLI dispatches to |
 
 ---
 
@@ -266,6 +266,7 @@ external skill source:
 ./target/release/security-agent --llm-generate <prompt words...>
 ./target/release/security-agent --llm-perplexity <text words...>
 ./target/release/security-agent --ask <plain-English instruction...>
+./target/release/security-agent --tui
 ```
 
 `--about` (alias `--version`) prints the package version, mission statement,
@@ -273,6 +274,9 @@ and the four roadmap phases.
 
 `--ask` takes a plain-English instruction and routes it to the matching
 capability (see [Plain-English instructions](#plain-english-instructions--ask)).
+
+`--tui` launches an interactive terminal UI over every command above (see
+[Interactive terminal UI](#interactive-terminal-ui---tui)).
 
 ### Built-in small language model
 
@@ -351,6 +355,42 @@ that touches an engagement, a persisted log, or authorization (planning a
 scan, scheduling a retest, viewing an audit log) is explained — the agent
 tells you the exact command to run — but never run through `--ask`, so plain
 English can never widen the agent's authority.
+
+### Interactive terminal UI (`--tui`)
+
+`--tui` opens a menu- and chat-bar-driven REPL over every command above, all
+offline, with no new dependencies (pure `std::io`):
+
+```bash
+./target/release/security-agent --tui
+```
+
+```
+[1]  Offline status              [2]  About
+[3]  List tools                  [4]  Show a skill or tool
+[5]  List skills                 [6]  Run a built-in local tool
+[7]  Run a real external tool    [8]  Plan a scan (engagement config)
+[9]  Record findings (merge)     [10] View audit log
+[11] Schedule retest             [12] Generate text (LLM)
+[13] Score text for anomaly (LLM)
+[0]  Help / full capability summary          [q] Quit
+```
+
+Type a menu number to run that function (each prompts for the arguments it
+needs, the same ones its CLI flag takes), or just type a plain-English
+instruction at the `>` prompt and press Enter — that's the **chat bar**,
+routed through the exact same grounded router as `--ask`, including
+prompting the built-in language model directly (`generate text about ...`,
+`is this suspicious: "..."`). Menu option `0` (or typing `help`) prints the
+**capability summary page**: every function the agent exposes, its CLI
+command, and — where the chat bar can run it — a plain-English example.
+
+`--tui` is a thin wrapper: every menu choice calls the identical command
+function the plain CLI dispatches to (`src/main.rs`), so behavior — including
+the offline/online gating from `--allow-network` — is exactly the same either
+way. It reads lines from stdin and exits cleanly at end-of-input, so it is
+fully scriptable and tested the same way as the rest of the CLI (see
+`tests/cli.rs`).
 
 Running without arguments is equivalent to `--offline-status`. To install the
 binary into Cargo's local binary directory, run `cargo install --path . --locked`;

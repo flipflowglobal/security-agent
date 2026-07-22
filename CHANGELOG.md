@@ -10,6 +10,23 @@ conventions. Releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## [Unreleased]
 
 ### Added
+- **`--tui` interactive terminal UI** — a menu- and chat-bar-driven REPL
+  over every existing command, added entirely with `std::io` (no new
+  dependencies). A numbered menu covers every agent function (status, about,
+  tools/skills, running built-in and real external tools, planning a scan,
+  recording findings, viewing the audit log, scheduling a retest, and
+  prompting the built-in language model for generation or anomaly scoring);
+  typing anything else at the prompt is a **chat bar** routed through the
+  same grounded `--ask` router, including direct language-model prompting.
+  Menu option `0`/`help` prints a **capability summary page**: every
+  function, its CLI command, and — where the chat bar can run it — a
+  plain-English example. Every menu choice calls the identical private
+  command function the plain CLI dispatches to (`src/main.rs`), so behavior,
+  including the `--allow-network` offline/online gating, is identical either
+  way; no business logic is duplicated. Exits cleanly at end-of-input, so it
+  is fully scriptable and covered by both unit tests (the pure banner/menu/
+  capability-page text) and CLI integration tests (`tests/cli.rs`) that pipe
+  scripted stdin into the real binary.
 - **`src/network_policy.rs` — offline-by-default / online opt-in egress
   governance.** A new `NetworkMode` is threaded into the execution path so the
   runtime performs no live-target or network activity unless the operator

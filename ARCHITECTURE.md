@@ -15,7 +15,7 @@ layer it belongs to.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│  CLI / entry point         main.rs · lib.rs                           │
+│  CLI / entry point         main.rs (incl. --tui terminal UI) · lib.rs │
 ├─────────────────────────────────────────────────────────────────────┤
 │  Neural language layer     language_model.rs · anomaly.rs · nlu.rs    │
 ├─────────────────────────────────────────────────────────────────────┤
@@ -52,7 +52,7 @@ Tests:                              tests/cli.rs  +  per-module #[cfg(test)]
 
 | Layer | File | Responsibility | Key public API |
 |---|---|---|---|
-| Entry | `src/main.rs` | CLI arg parsing and command dispatch | `main` |
+| Entry | `src/main.rs` | CLI arg parsing and command dispatch, plus the `--tui` interactive terminal UI (menu + chat bar over the same command functions) | `main`, `run_tui_command` |
 | Entry | `src/lib.rs` | Crate root; module registry and re-exports | — |
 | Identity | `src/mission.rs` | Mission statement constant | `MISSION_STATEMENT` |
 | Identity | `src/roadmap.rs` | Phased rollout model (surfaced by `--about`) | `ROADMAP_PHASES` |

@@ -10,14 +10,35 @@
 //! files, never on optional external scanners (`semgrep`, `nmap`, …) being
 //! installed.
 
+use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 fn run(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_security-agent"))
         .args(args)
         .output()
         .expect("binary should run")
+}
+
+/// Runs the binary with `args`, feeding `stdin_script` as its standard
+/// input and then closing it (signaling end-of-input, exactly like a
+/// non-interactive pipe). Used to drive `--tui` deterministically.
+fn run_with_stdin(args: &[&str], stdin_script: &str) -> Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_security-agent"))
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("binary should spawn");
+    child
+        .stdin
+        .take()
+        .expect("stdin should be piped")
+        .write_all(stdin_script.as_bytes())
+        .expect("write scripted stdin");
+    child.wait_with_output().expect("binary should run")
 }
 
 fn stdout(output: &Output) -> String {
@@ -314,4 +335,67 @@ fn ask_declines_out_of_scope_requests() {
 fn ask_requires_an_instruction() {
     let output = run(&["--ask"]);
     assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn tui_shows_the_banner_and_menu_on_launch() {
+    let output = run_with_stdin(&["--tui"], "q\n");
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("Interactive Terminal UI"));
+    assert!(text.contains("[1]  Offline status"));
+    assert!(text.contains("goodbye"));
+}
+
+#[test]
+fn tui_exits_cleanly_on_end_of_input_with_no_commands() {
+    // A closed/empty stdin (e.g. `security-agent --tui < /dev/null`) must
+    // exit successfully rather than hang or error.
+    let output = run_with_stdin(&["--tui"], "");
+    assert!(output.status.success());
+    assert!(stdout(&output).contains("end of input"));
+}
+
+#[test]
+fn tui_menu_option_runs_offline_status() {
+    let output = run_with_stdin(&["--tui"], "1\nq\n");
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("network_required=false"));
+    assert!(text.contains("default_network_mode=offline"));
+}
+
+#[test]
+fn tui_menu_option_zero_prints_the_capability_page() {
+    let output = run_with_stdin(&["--tui"], "0\nq\n");
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("Capability Summary"));
+    assert!(text.contains("--ask <instruction>"));
+}
+
+#[test]
+fn tui_chat_bar_routes_plain_english_through_ask() {
+    let output = run_with_stdin(&["--tui"], "what tools do you have\nq\n");
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("Understood: list-tools"));
+    assert!(text.contains("cataloged"));
+}
+
+#[test]
+fn tui_menu_option_show_skill_prompts_for_and_prints_a_skill() {
+    let output = run_with_stdin(&["--tui"], "4\nnmap\nq\n");
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("skill or tool name"));
+    assert!(text.contains("Network discovery"));
+}
+
+#[test]
+fn tui_menu_option_generate_prompts_and_continues_text() {
+    let output = run_with_stdin(&["--tui"], "12\nthe coordinator\nq\n");
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("the coordinator"));
 }
