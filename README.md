@@ -87,6 +87,10 @@ The resulting binary is fully self-contained — no JVM, no framework, no intern
 
 ## Architecture
 
+For a full file-system → architecture map (layer diagram, per-module
+directory, data-flow, and the neural-LM integration map), see
+[`ARCHITECTURE.md`](./ARCHITECTURE.md).
+
 Federated model (not an unrestricted super-agent):
 
 - **Coordinator** — plans scoped runs, maps targets to specialists, writes immutable audit records, emits execution plans.
