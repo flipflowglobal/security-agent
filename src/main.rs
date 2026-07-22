@@ -901,9 +901,20 @@ fn run_tui_command(assets: &LocalAgentAssets) -> ExitCode {
     loop {
         print!("\n> ");
         let _ = io::stdout().flush();
-        let Some(Ok(raw)) = lines.next() else {
-            println!("\n(end of input) goodbye.");
-            break;
+        // Distinguish a real stdin I/O error from clean end-of-input: an
+        // error is reported (to stderr, and distinctly on stdout) rather
+        // than silently treated as a quiet, successful exit.
+        let raw = match lines.next() {
+            Some(Ok(line)) => line,
+            Some(Err(error)) => {
+                eprintln!("stdin read error: {error}");
+                println!("\nstdin error — exiting.");
+                break;
+            }
+            None => {
+                println!("\n(end of input) goodbye.");
+                break;
+            }
         };
         let input = raw.trim();
         if input.is_empty() {
@@ -992,19 +1003,30 @@ fn dispatch_tui_choice(
             let _ = llm_perplexity_command(&mut std::iter::once(text));
         }
         // The chat bar: anything else typed is a plain-English instruction,
-        // routed through the same grounded router as `--ask`.
+        // routed through the same grounded router as `--ask`. Passed as one
+        // already-trimmed line (not split into words) — `ask_command` joins
+        // its arguments with spaces anyway, so a single element avoids
+        // needless per-word allocations and preserves the line's internal
+        // spacing exactly, matching how every other TUI prompt hands over
+        // a full line rather than a word list.
         _ => {
-            let _ = ask_command(assets, &mut input.split_whitespace().map(str::to_string));
+            let _ = ask_command(assets, &mut std::iter::once(input.to_string()));
         }
     }
 }
 
-/// Reads one line from `lines`; `None` at end-of-input (e.g. a
-/// non-interactive/piped stdin that has been exhausted or closed).
+/// Reads one line from `lines`. Returns `None` at clean end-of-input (e.g. a
+/// non-interactive/piped stdin that has been exhausted or closed) — and also
+/// on a real stdin I/O error, but that case is reported to stderr first, so
+/// it is never silently indistinguishable from a normal, quiet EOF.
 fn tui_read_line(lines: &mut impl Iterator<Item = io::Result<String>>) -> Option<String> {
     match lines.next() {
         Some(Ok(line)) => Some(line),
-        _ => None,
+        Some(Err(error)) => {
+            eprintln!("stdin read error: {error}");
+            None
+        }
+        None => None,
     }
 }
 
