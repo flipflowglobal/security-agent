@@ -77,6 +77,16 @@ conventions. Releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - **`CHANGELOG.md`** — this file; documents project history going forward.
 
 ### Changed
+- **Closed the calibration self-correction loop.** Confidence calibration
+  now feeds back into live reasoning: each target's reported hypothesis
+  confidence is corrected through `CalibrationTracker::calibrated_percent`,
+  using calibration supplied to the engine
+  (`CognitiveEngine::with_calibration`) plus **leave-one-out** evidence from
+  the other targets in the run — never the target's own outcome, so the
+  correction stays non-circular. Calibration adjusts how sure the agent is,
+  not which technique is likeliest, and the reasoning chain annotates a
+  corrected value (`[calibration-adjusted from N%]`). New helper
+  `cognition::recalibrate_hypotheses`.
 - **Unified the findings-persistence format.** `--memory`,
   `--findings-log`, `--record-findings`, and `--schedule-retest` now all
   use the single `finding_record` JSON Lines format (`src/findings_log.rs`).
