@@ -1,5 +1,6 @@
 pub mod advanced;
 pub mod audit_log;
+pub mod belief_propagation;
 pub mod builtin_tools;
 pub mod calibration;
 pub mod capability_graph;
@@ -31,13 +32,15 @@ pub use advanced::{
     AttackPathEdge, AttackPathGraph, RetestSchedule, ThreatModelNode, propose_retest_schedule,
 };
 pub use audit_log::{AuditLogError, append_audit_records, load_audit_records};
+pub use belief_propagation::{
+    NodeBelief, PropagationEdge, PropagationGraph, PropagationNode,
+    from_targets_and_findings as propagate_from_targets_and_findings,
+};
 pub use builtin_tools::{
     AutopsyReport, BuiltInToolError, EmbeddedSignature, EvidenceFile, MemoryString,
     VolatilityReport, is_builtin_tool, run_autopsy, run_builtin_tool, run_volatility,
 };
-pub use calibration::{
-    CalibrationRecord, CalibrationTendency, CalibrationTracker, ReliabilityBin,
-};
+pub use calibration::{CalibrationRecord, CalibrationTendency, CalibrationTracker, ReliabilityBin};
 pub use capability_graph::{CapabilityGraph, CapabilityNode, CapabilityStage, FunctionFamily};
 pub use cognition::{
     CognitiveAssessment, CognitiveInsight, CognitiveMemory, Hypothesis, InsightSeverity,

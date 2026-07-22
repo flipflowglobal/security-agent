@@ -30,6 +30,7 @@
 //! [`crate::policy::PolicyEngine`] has already authorized and never grants,
 //! restricts, or executes anything.
 
+use crate::belief_propagation::{NodeBelief, from_targets_and_findings};
 use crate::calibration::CalibrationTracker;
 use crate::cognition::{CognitiveMemory, generate_hypotheses};
 use crate::coordinator::ExecutionPlan;
@@ -503,6 +504,11 @@ pub struct CognitiveDeliberation {
     /// findings actually recorded in memory. Empty when there is no history
     /// to score against.
     pub calibration: CalibrationTracker,
+    /// Per-node compromise probability after propagating lateral-movement
+    /// risk across the attack graph (highest first). Lets a finding-free
+    /// asset surface as at-risk because a compromised neighbor can pivot to
+    /// it.
+    pub propagation: Vec<NodeBelief>,
 }
 
 /// Orchestrates the cognitive faculties into a single deliberation over an
@@ -536,6 +542,13 @@ impl CognitiveEngine {
         let attention = AttentionAllocator::allocate(targets, &self.memory);
         let metacognition = self.reflect(&reasoning_chain, &beliefs, targets);
         let calibration = self.assess_calibration(targets);
+        let propagation = from_targets_and_findings(
+            targets,
+            findings,
+            Self::ENTRY_TRANSMISSION,
+            Self::LATERAL_TRANSMISSION,
+        )
+        .propagate(Self::PROPAGATION_ITERS, Self::PROPAGATION_EPSILON);
 
         CognitiveDeliberation {
             reasoning_chain,
@@ -544,8 +557,17 @@ impl CognitiveEngine {
             attention,
             metacognition,
             calibration,
+            propagation,
         }
     }
+
+    /// Probability that an attacker who has compromised one asset succeeds
+    /// in using a finding as an entry foothold (before evidence scaling).
+    const ENTRY_TRANSMISSION: f32 = 0.8;
+    /// Probability that compromise pivots between two co-scoped assets.
+    const LATERAL_TRANSMISSION: f32 = 0.3;
+    const PROPAGATION_ITERS: usize = 100;
+    const PROPAGATION_EPSILON: f32 = 1e-4;
 
     /// Scores the agent's *prior* predictions against realized outcomes,
     /// without circularity: the prediction for each target is the
@@ -628,7 +650,8 @@ impl CognitiveEngine {
                 (hypothesis_idx, top.confidence_percent)
             };
 
-            let residual = f32::from(target.criticality) * (f32::from(top.confidence_percent) / 100.0);
+            let residual =
+                f32::from(target.criticality) * (f32::from(top.confidence_percent) / 100.0);
             chain.push(
                 ThoughtKind::Counterfactual,
                 format!(
@@ -844,11 +867,30 @@ impl fmt::Display for CognitiveDeliberation {
         writeln!(formatter, "  judgement: {}", self.metacognition.reasoning)?;
         writeln!(formatter)?;
 
-        self.write_calibration(formatter)
+        self.write_calibration(formatter)?;
+        writeln!(formatter)?;
+        self.write_propagation(formatter)
     }
 }
 
 impl CognitiveDeliberation {
+    /// Renders the lateral-movement compromise-propagation section.
+    fn write_propagation(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(formatter, "Compromise Propagation (lateral movement)")?;
+        writeln!(formatter, "-----------------------------------------")?;
+        if self.propagation.is_empty() {
+            return writeln!(formatter, "  no assets to propagate over");
+        }
+        for belief in &self.propagation {
+            writeln!(
+                formatter,
+                "  P(compromise)={:.2}  {}  (prior {:.2})",
+                belief.posterior, belief.id, belief.prior
+            )?;
+        }
+        Ok(())
+    }
+
     /// Renders the confidence-calibration section of the deliberation.
     /// Split out of the `Display` body to keep each rendering unit small.
     fn write_calibration(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -857,13 +899,25 @@ impl CognitiveDeliberation {
         if self.calibration.is_empty() {
             return writeln!(formatter, "  no scored predictions yet");
         }
-        writeln!(formatter, "  scored predictions : {}", self.calibration.len())?;
+        writeln!(
+            formatter,
+            "  scored predictions : {}",
+            self.calibration.len()
+        )?;
         if let (Some(predicted), Some(empirical)) = (
             self.calibration.mean_predicted(),
             self.calibration.empirical_rate(),
         ) {
-            writeln!(formatter, "  mean predicted     : {:.0}%", predicted * 100.0)?;
-            writeln!(formatter, "  realized rate      : {:.0}%", empirical * 100.0)?;
+            writeln!(
+                formatter,
+                "  mean predicted     : {:.0}%",
+                predicted * 100.0
+            )?;
+            writeln!(
+                formatter,
+                "  realized rate      : {:.0}%",
+                empirical * 100.0
+            )?;
         }
         if let Some(brier) = self.calibration.brier_score() {
             writeln!(formatter, "  brier score        : {brier:.3} (0 = perfect)")?;
@@ -1054,6 +1108,7 @@ mod tests {
         assert!(rendered.contains("Attention Allocation"));
         assert!(rendered.contains("Metacognition"));
         assert!(rendered.contains("Confidence Calibration"));
+        assert!(rendered.contains("Compromise Propagation"));
         assert!(rendered.contains("api-1"));
     }
 

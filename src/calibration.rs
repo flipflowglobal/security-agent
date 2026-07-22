@@ -316,7 +316,10 @@ mod tests {
         assert!((tracker.empirical_rate().unwrap() - 1.0).abs() < 1e-6);
         assert!((tracker.mean_predicted().unwrap() - 1.0).abs() < 1e-6);
         assert_eq!(tracker.mean_calibration_error(), Some(0.0));
-        assert_eq!(tracker.tendency(0.05), Some(CalibrationTendency::WellCalibrated));
+        assert_eq!(
+            tracker.tendency(0.05),
+            Some(CalibrationTendency::WellCalibrated)
+        );
     }
 
     #[test]
@@ -326,7 +329,10 @@ mod tests {
         for i in 0..10 {
             tracker.record(90, i < 3);
         }
-        assert_eq!(tracker.tendency(0.05), Some(CalibrationTendency::Overconfident));
+        assert_eq!(
+            tracker.tendency(0.05),
+            Some(CalibrationTendency::Overconfident)
+        );
         // gap = 0.9 - 0.3 = 0.6
         assert!((tracker.mean_calibration_error().unwrap() - 0.6).abs() < 1e-6);
     }
@@ -338,7 +344,10 @@ mod tests {
         for i in 0..10 {
             tracker.record(20, i < 8);
         }
-        assert_eq!(tracker.tendency(0.05), Some(CalibrationTendency::Underconfident));
+        assert_eq!(
+            tracker.tendency(0.05),
+            Some(CalibrationTendency::Underconfident)
+        );
     }
 
     #[test]
