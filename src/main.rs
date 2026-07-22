@@ -33,6 +33,7 @@ fn main() -> ExitCode {
         Some("--schedule-retest") => schedule_retest_command(&mut arguments),
         Some("--llm-generate") => llm_generate_command(&mut arguments),
         Some("--llm-perplexity") => llm_perplexity_command(&mut arguments),
+        Some("--ask") => ask_command(&assets, &mut arguments),
         Some(command) => {
             eprintln!("unknown command: {command}");
             ExitCode::from(2)
@@ -299,10 +300,15 @@ impl fmt::Display for PlanScanError {
 /// (`StaticLocalAnalysis`, plus `nmap`/`masscan` as explicit exceptions)
 /// and returns their outcomes alongside the plan.
 /// The advisory cognitive output for a `--cognitive-review` run: the flat
-/// [`CognitiveAssessment`] (prioritization, hypotheses, insights) plus the
-/// deep [`CognitiveDeliberation`] (train of thought, beliefs, adversary
-/// model, attention, and metacognition).
-type CognitiveReview = (CognitiveAssessment, CognitiveDeliberation);
+/// [`CognitiveAssessment`] (prioritization, hypotheses, insights), the deep
+/// [`CognitiveDeliberation`] (train of thought, beliefs, adversary model,
+/// attention, and metacognition), and language-model anomaly flags over the
+/// finding text loaded from `--memory`.
+type CognitiveReview = (
+    CognitiveAssessment,
+    CognitiveDeliberation,
+    Vec<security_agent::AnomalyFlag>,
+);
 
 type PlanScanOutcome = (
     security_agent::ExecutionPlan,
@@ -310,6 +316,24 @@ type PlanScanOutcome = (
     Option<Vec<security_agent::TaskExecutionOutcome>>,
     Vec<security_agent::Finding>,
 );
+
+/// Loops the language model's perplexity signal into the cognitive review:
+/// flags finding text that does not look like ordinary security-domain
+/// English. Only builds the model (and pays its startup cost) when there
+/// are prior findings to scan; otherwise returns no flags.
+fn scan_prior_findings(
+    prior_findings: &[security_agent::Finding],
+) -> Vec<security_agent::AnomalyFlag> {
+    if prior_findings.is_empty() {
+        return Vec::new();
+    }
+    let model = security_agent::NeuralLanguageModel::bundled();
+    security_agent::scan_findings(
+        prior_findings,
+        &model,
+        security_agent::DEFAULT_ANOMALY_THRESHOLD,
+    )
+}
 
 fn plan_scan(
     arguments: &mut impl Iterator<Item = String>,
@@ -400,7 +424,8 @@ fn plan_scan(
         let assessment = assess_plan_cognitively(&plan, &targets_for_review, &memory);
         let engine = CognitiveEngine::new(memory, security_agent::AdversaryModel::default());
         let deliberation = engine.deliberate(&plan, &targets_for_review, &prior_findings);
-        (assessment, deliberation)
+        let anomalies = scan_prior_findings(&prior_findings);
+        (assessment, deliberation, anomalies)
     });
 
     if let Some(tool_arguments) = &tool_arguments {
@@ -449,11 +474,28 @@ fn plan_scan_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
     match plan_scan(arguments) {
         Ok((plan, cognitive_output, outcomes, findings)) => {
             print!("{plan}");
-            if let Some((assessment, deliberation)) = cognitive_output {
+            if let Some((assessment, deliberation, anomalies)) = cognitive_output {
                 println!();
                 print!("{assessment}");
                 println!();
                 print!("{deliberation}");
+                if !anomalies.is_empty() {
+                    println!();
+                    println!("Anomaly Scan (language-model surprise over finding text)");
+                    println!("--------------------------------------------------------");
+                    for flag in &anomalies {
+                        let marker = if flag.anomalous { "ANOMALOUS" } else { "ok" };
+                        let perplexity = if flag.perplexity.is_finite() {
+                            format!("{:.1}", flag.perplexity)
+                        } else {
+                            "inf".to_string()
+                        };
+                        println!(
+                            "  [{marker:>9}] ppl={perplexity:>6}  {} : {}",
+                            flag.finding_id, flag.text
+                        );
+                    }
+                }
             }
             if let Some(outcomes) = outcomes {
                 println!();
@@ -630,6 +672,133 @@ fn llm_perplexity_command(arguments: &mut impl Iterator<Item = String>) -> ExitC
     }
     let model = security_agent::NeuralLanguageModel::bundled();
     println!("perplexity={:.3}", model.perplexity(&text));
+    ExitCode::SUCCESS
+}
+
+/// Plain-English entry point (`--ask <instruction words...>`).
+///
+/// Interprets a natural-language instruction against the agent's own
+/// capabilities using the fully-local grounded router
+/// (`security_agent::nlu`), prints what it understood (intent, confidence,
+/// and a plain-English reply), and then *carries out* the read-only,
+/// no-authorization intents directly — reporting status, listing or
+/// explaining tools/skills, generating text, or scoring a string for
+/// anomaly. Intents that require an engagement, a persisted log, or
+/// authorization are never executed here: the agent explains the exact
+/// command to run instead, so `--ask` can plan nothing it is not allowed to.
+fn ask_command(
+    assets: &LocalAgentAssets,
+    arguments: &mut impl Iterator<Item = String>,
+) -> ExitCode {
+    use security_agent::Intent;
+
+    let instruction = arguments.collect::<Vec<String>>().join(" ");
+    if instruction.trim().is_empty() {
+        eprintln!("missing instruction for --ask");
+        return ExitCode::from(2);
+    }
+
+    let model = security_agent::NeuralLanguageModel::bundled();
+    let interpretation = security_agent::interpret(&instruction, assets, &model);
+
+    println!(
+        "Understood: {} (confidence {}%)",
+        interpretation.intent.label(),
+        interpretation.confidence
+    );
+    println!("{}", interpretation.reply);
+
+    // Only the read-only, no-authorization intents actually run. Everything
+    // that touches an engagement, a log, or authorization is described, not
+    // executed, so plain English can never widen the agent's authority.
+    let slot = interpretation.slot.as_deref();
+    match interpretation.intent {
+        Intent::OfflineStatus => {
+            println!();
+            print_offline_status(assets);
+            ExitCode::SUCCESS
+        }
+        Intent::About => {
+            println!();
+            print_about()
+        }
+        Intent::ListTools => {
+            println!();
+            list_tools(assets)
+        }
+        Intent::ListSkills => {
+            println!();
+            list_skills(assets)
+        }
+        Intent::ShowSkill => ask_show_skill(assets, slot),
+        Intent::Generate => ask_generate(&model, slot),
+        Intent::AnomalyCheck => ask_anomaly(&model, slot),
+        // Help, PlanScan, ScheduleRetest, ViewAudit, OutOfScope: the reply
+        // already told the operator what to do next; nothing to execute.
+        Intent::Help
+        | Intent::PlanScan
+        | Intent::ScheduleRetest
+        | Intent::ViewAudit
+        | Intent::OutOfScope => ExitCode::SUCCESS,
+    }
+}
+
+/// Prints a resolved skill's body for `--ask` (the `ShowSkill` intent).
+/// A missing or unrecognized skill name is a soft failure (exit 2) — the
+/// interpretation's reply already told the operator what to try instead.
+fn ask_show_skill(assets: &LocalAgentAssets, name: Option<&str>) -> ExitCode {
+    let Some(name) = name else {
+        return ExitCode::from(2);
+    };
+    let Some(skill) = assets.skill(name) else {
+        return ExitCode::from(2);
+    };
+    println!();
+    print!("{}", skill.content);
+    ExitCode::SUCCESS
+}
+
+/// Continues an extracted prompt with the built-in language model for
+/// `--ask` (the `Generate` intent). An empty prompt is a no-op success.
+fn ask_generate(model: &security_agent::NeuralLanguageModel, prompt: Option<&str>) -> ExitCode {
+    use security_agent::LanguageModel;
+    let prompt = prompt.unwrap_or("").trim();
+    if prompt.is_empty() {
+        return ExitCode::SUCCESS;
+    }
+    let continuation = model.generate(prompt, 24);
+    println!();
+    if continuation.is_empty() {
+        println!("{prompt}");
+    } else {
+        println!("{prompt} {continuation}");
+    }
+    ExitCode::SUCCESS
+}
+
+/// Scores extracted text for language-model surprise for `--ask` (the
+/// `AnomalyCheck` intent), labelling it against
+/// [`security_agent::DEFAULT_ANOMALY_THRESHOLD`]. Empty text is a no-op
+/// success.
+fn ask_anomaly(model: &security_agent::NeuralLanguageModel, text: Option<&str>) -> ExitCode {
+    use security_agent::LanguageModel;
+    let text = text.unwrap_or("").trim();
+    if text.is_empty() {
+        return ExitCode::SUCCESS;
+    }
+    let perplexity = model.perplexity(text);
+    let verdict =
+        if !perplexity.is_finite() || perplexity >= security_agent::DEFAULT_ANOMALY_THRESHOLD {
+            "ANOMALOUS (out-of-domain)"
+        } else {
+            "looks in-domain"
+        };
+    println!();
+    if perplexity.is_finite() {
+        println!("perplexity={perplexity:.3} — {verdict}");
+    } else {
+        println!("perplexity=inf — {verdict}");
+    }
     ExitCode::SUCCESS
 }
 
@@ -971,7 +1140,7 @@ criticality=3
         fs::remove_file(&path).expect("remove temp config");
 
         let (_, review, outcomes, _) = result.expect("valid config should authorize and plan");
-        let (assessment, deliberation) =
+        let (assessment, deliberation, _anomalies) =
             review.expect("--cognitive-review should produce Some(review)");
         assert_eq!(assessment.hypotheses_by_target.len(), 1);
         assert!(!assessment.prioritized_tasks.is_empty());
@@ -1068,7 +1237,7 @@ criticality=3
         fs::remove_file(&memory_path).expect("remove temp ledger");
 
         let (_, cognitive_output, _, _) = result.expect("valid config should authorize and plan");
-        let (assessment, deliberation) =
+        let (assessment, deliberation, _anomalies) =
             cognitive_output.expect("--cognitive-review should produce Some(review)");
 
         // The top hypothesis confidence is boosted above its cold 60% base

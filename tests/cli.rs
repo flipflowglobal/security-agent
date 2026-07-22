@@ -178,3 +178,47 @@ criticality=2
     assert_eq!(output.status.code(), Some(1));
     assert!(stderr(&output).contains("authorization denied"));
 }
+
+#[test]
+fn ask_routes_plain_english_to_list_tools_and_runs_it() {
+    let output = run(&["--ask", "what tools do you have"]);
+    assert!(output.status.success());
+    let text = stdout(&output);
+    // Reports what it understood, then actually carries out the action.
+    assert!(text.contains("Understood: list-tools"));
+    assert!(text.contains("cataloged"));
+}
+
+#[test]
+fn ask_reports_offline_status_from_plain_english() {
+    let output = run(&["--ask", "are you healthy and ready"]);
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("Understood: offline-status"));
+    assert!(text.contains("network_required=false"));
+}
+
+#[test]
+fn ask_scores_a_quoted_string_for_anomaly() {
+    let output = run(&["--ask", "is this suspicious: \"zzq xqv vfrb qwx ncbz\""]);
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("Understood: anomaly-check"));
+    assert!(text.contains("ANOMALOUS"));
+}
+
+#[test]
+fn ask_declines_out_of_scope_requests() {
+    let output = run(&["--ask", "book me a flight to paris"]);
+    // Declining is still a successful, well-formed response.
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("Understood: out-of-scope"));
+    assert!(text.contains("outside my scope"));
+}
+
+#[test]
+fn ask_requires_an_instruction() {
+    let output = run(&["--ask"]);
+    assert_eq!(output.status.code(), Some(2));
+}

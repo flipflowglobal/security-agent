@@ -22,6 +22,31 @@ conventions. Releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.h
   forward/backward passes are all hand-rolled. Exposes generation and
   perplexity through a `LanguageModel` trait (the seam for a heavier back-end
   later), surfaced via `--llm-generate` and `--llm-perplexity`.
+- **Residual vector quantization** in the language model — a *residual path
+  around the quantizer*: the spectral features are quantized against a stack
+  of codebooks where each stage encodes the residual the previous stage left
+  behind, and the final code is the sum of the per-stage codes (`q = q1 +
+  q2`). This roughly halves the reconstruction error a single codebook
+  leaves while keeping the discrete bottleneck; a regression test asserts the
+  two-stage error is lower than one stage.
+- **`src/anomaly.rs`** — the language model's perplexity signal looped back
+  into the cognitive layer as an anomaly lens. During a `--cognitive-review`
+  with `--memory`, each prior finding's text is scored, and out-of-domain
+  text (high perplexity, or unscorable — e.g. encoded payloads, injected
+  markup, non-English noise stuffed into third-party tool output) is flagged
+  most-surprising-first in the plan's review output. Advisory only: it never
+  changes authorization or execution.
+- **`--ask` command and `src/nlu.rs`** — a grounded, fully-local
+  plain-English intent router. It maps an instruction to one of the agent's
+  real capabilities using lexical anchoring against each capability's trigger
+  vocabulary (and recognition of the agent's own tool/skill names) plus
+  semantic similarity in the model's learned embedding space to rank
+  paraphrases, then prints the understood intent, a confidence, and a
+  plain-English reply before carrying out the action. Routing is scoped to
+  defensive security (off-topic requests decline as `out-of-scope`), and
+  `--ask` executes only the read-only, no-authorization intents — anything
+  requiring an engagement, a log, or authorization is explained, not run, so
+  plain English cannot widen the agent's authority.
 - **`src/calibration.rs`** — confidence-calibration tracking for the
   cognitive layer. `CalibrationTracker` accumulates predicted-vs-realized
   outcomes and computes the Brier score, reliability bins, expected

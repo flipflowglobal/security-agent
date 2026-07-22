@@ -1,4 +1,5 @@
 pub mod advanced;
+pub mod anomaly;
 pub mod audit_log;
 pub mod belief_propagation;
 pub mod builtin_tools;
@@ -22,6 +23,7 @@ pub mod local_assets;
 pub mod memory_store;
 pub mod mission;
 pub mod model;
+pub mod nlu;
 pub mod pcap;
 pub mod policy;
 pub mod registry;
@@ -32,6 +34,7 @@ pub mod workflow;
 pub use advanced::{
     AttackPathEdge, AttackPathGraph, RetestSchedule, ThreatModelNode, propose_retest_schedule,
 };
+pub use anomaly::{AnomalyFlag, DEFAULT_ANOMALY_THRESHOLD, scan_findings};
 pub use audit_log::{AuditLogError, append_audit_records, load_audit_records};
 pub use belief_propagation::{
     NodeBelief, PropagationEdge, PropagationGraph, PropagationNode,
@@ -77,6 +80,7 @@ pub use mission::MISSION_STATEMENT;
 pub use model::{
     EngagementProfile, SpecialistKind, Target, TargetType, Technique, TestIntensity, TimeWindow,
 };
+pub use nlu::{Intent, Interpretation, interpret};
 pub use pcap::{CaptureTimestamp, ProtocolCounts, WiresharkReport, run_wireshark};
 pub use policy::{AuthorizationError, AuthorizationOutcome, PolicyEngine};
 pub use registry::{
