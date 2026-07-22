@@ -299,10 +299,15 @@ impl fmt::Display for PlanScanError {
 /// (`StaticLocalAnalysis`, plus `nmap`/`masscan` as explicit exceptions)
 /// and returns their outcomes alongside the plan.
 /// The advisory cognitive output for a `--cognitive-review` run: the flat
-/// [`CognitiveAssessment`] (prioritization, hypotheses, insights) plus the
-/// deep [`CognitiveDeliberation`] (train of thought, beliefs, adversary
-/// model, attention, and metacognition).
-type CognitiveReview = (CognitiveAssessment, CognitiveDeliberation);
+/// [`CognitiveAssessment`] (prioritization, hypotheses, insights), the deep
+/// [`CognitiveDeliberation`] (train of thought, beliefs, adversary model,
+/// attention, and metacognition), and language-model anomaly flags over the
+/// finding text loaded from `--memory`.
+type CognitiveReview = (
+    CognitiveAssessment,
+    CognitiveDeliberation,
+    Vec<security_agent::AnomalyFlag>,
+);
 
 type PlanScanOutcome = (
     security_agent::ExecutionPlan,
@@ -400,7 +405,21 @@ fn plan_scan(
         let assessment = assess_plan_cognitively(&plan, &targets_for_review, &memory);
         let engine = CognitiveEngine::new(memory, security_agent::AdversaryModel::default());
         let deliberation = engine.deliberate(&plan, &targets_for_review, &prior_findings);
-        (assessment, deliberation)
+        // Loop the language model's perplexity signal into the review: flag
+        // finding text that does not look like ordinary security-domain
+        // English. Only runs (and only pays the model's startup cost) when
+        // there are prior findings to scan.
+        let anomalies = if prior_findings.is_empty() {
+            Vec::new()
+        } else {
+            let model = security_agent::NeuralLanguageModel::bundled();
+            security_agent::scan_findings(
+                &prior_findings,
+                &model,
+                security_agent::DEFAULT_ANOMALY_THRESHOLD,
+            )
+        };
+        (assessment, deliberation, anomalies)
     });
 
     if let Some(tool_arguments) = &tool_arguments {
@@ -449,11 +468,28 @@ fn plan_scan_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
     match plan_scan(arguments) {
         Ok((plan, cognitive_output, outcomes, findings)) => {
             print!("{plan}");
-            if let Some((assessment, deliberation)) = cognitive_output {
+            if let Some((assessment, deliberation, anomalies)) = cognitive_output {
                 println!();
                 print!("{assessment}");
                 println!();
                 print!("{deliberation}");
+                if !anomalies.is_empty() {
+                    println!();
+                    println!("Anomaly Scan (language-model surprise over finding text)");
+                    println!("--------------------------------------------------------");
+                    for flag in &anomalies {
+                        let marker = if flag.anomalous { "ANOMALOUS" } else { "ok" };
+                        let perplexity = if flag.perplexity.is_finite() {
+                            format!("{:.1}", flag.perplexity)
+                        } else {
+                            "inf".to_string()
+                        };
+                        println!(
+                            "  [{marker:>9}] ppl={perplexity:>6}  {} : {}",
+                            flag.finding_id, flag.text
+                        );
+                    }
+                }
             }
             if let Some(outcomes) = outcomes {
                 println!();
@@ -971,7 +1007,7 @@ criticality=3
         fs::remove_file(&path).expect("remove temp config");
 
         let (_, review, outcomes, _) = result.expect("valid config should authorize and plan");
-        let (assessment, deliberation) =
+        let (assessment, deliberation, _anomalies) =
             review.expect("--cognitive-review should produce Some(review)");
         assert_eq!(assessment.hypotheses_by_target.len(), 1);
         assert!(!assessment.prioritized_tasks.is_empty());
@@ -1068,7 +1104,7 @@ criticality=3
         fs::remove_file(&memory_path).expect("remove temp ledger");
 
         let (_, cognitive_output, _, _) = result.expect("valid config should authorize and plan");
-        let (assessment, deliberation) =
+        let (assessment, deliberation, _anomalies) =
             cognitive_output.expect("--cognitive-review should produce Some(review)");
 
         // The top hypothesis confidence is boosted above its cold 60% base
