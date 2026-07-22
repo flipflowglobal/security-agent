@@ -1218,7 +1218,8 @@ fn tui_record_findings(lines: &mut impl Iterator<Item = io::Result<String>>) {
 fn tui_banner() -> String {
     "Security-Agent — Interactive Terminal UI\n\
      =========================================\n\
-     Offline, defensive/offensive security orchestration agent (see --about).\n\
+     Defensive and offensive security orchestration agent (see --about).\n\
+     Offline by default; live/active tools need the --allow-network opt-in.\n\
      Type a menu number below, or type a plain-English instruction and press\n\
      Enter — that's the chat bar, routed through the same grounded router as\n\
      --ask, including prompting the built-in language model. Type '0' for the\n\
