@@ -183,6 +183,7 @@ The `MobileAndroid` specialist uses a dedicated tool set for APK/DEX analysis an
 | `src/cognitive_engine.rs` | Advanced cognitive architecture: chained reasoning, Bayesian belief revision, adversary theory-of-mind, attention allocation, metacognition, calibration, and compromise propagation |
 | `src/calibration.rs` | Confidence-calibration tracking: Brier score, reliability bins, expected calibration error, over/under-confidence tendency, and histogram recalibration |
 | `src/belief_propagation.rs` | Noisy-OR compromise-risk propagation across the attack graph (lateral movement) |
+| `src/language_model.rs` | Small from-scratch **vector-quantized temporal-frequency** neural language model (embed → DCT → VQ codebook → softmax), self-trained on a bundled security corpus; text generation and perplexity scoring |
 | `src/memory_store.rs` | Folds the append-only findings log into cognitive memory, so cognition learns across engagements from one shared format |
 | `src/compat.rs` | Integration adapter contracts and wire-format envelope (audit + finding records) |
 | `src/roadmap.rs` | Phased rollout model (surfaced by `--about`) |
@@ -249,10 +250,49 @@ external skill source:
 ./target/release/security-agent --list-tools
 ./target/release/security-agent --run-tool autopsy <local-path>
 ./target/release/security-agent --run-tool autopsy <local-path> --output <report-path>.txt
+./target/release/security-agent --llm-generate <prompt words...>
+./target/release/security-agent --llm-perplexity <text words...>
 ```
 
 `--about` (alias `--version`) prints the package version, mission statement,
 and the four roadmap phases.
+
+### Built-in small language model
+
+`src/language_model.rs` is a small, from-scratch **neural** language model
+with a vector-quantized, temporal-frequency architecture, trained
+deterministically on a compact security-domain corpus compiled into the
+binary. The prediction path is:
+
+1. **Embed** the recent window of tokens into learned vectors — a short
+   multi-channel time signal.
+2. **Temporal → frequency**: a Discrete Cosine Transform (DCT-II) along the
+   time axis, so the model reasons about *how* the context changes across
+   the window (its spectral content).
+3. **Vector-quantize** the spectral features against a learned codebook
+   (VQ-VAE style: nearest-code lookup, straight-through estimator,
+   commitment penalty).
+4. **Predict** the next token from the quantized code through a tanh hidden
+   layer and a softmax over the vocabulary.
+
+The DCT, codebook search, and forward/backward passes are all hand-rolled:
+**no external crates, no network, no weights on disk**. The model trains
+itself at startup (~0.5 s) and ships inside the offline binary. Being tiny —
+and quantized through a discrete bottleneck — its text is modest; it learns
+the domain vocabulary and local phrasing rather than long-range coherence.
+
+```bash
+# Greedy continuation of a prompt (deterministic).
+./target/release/security-agent --llm-generate the coordinator plans an
+
+# Perplexity: how surprising text is to the model (lower = more in-domain).
+./target/release/security-agent --llm-perplexity the policy engine denies scope
+```
+
+The `LanguageModel` trait is the seam where a larger model could plug in
+later; this is distinct from the still-optional `inference` feature flag
+(below), which is reserved for a heavier candle-based back-end and is not
+used by the core.
 
 Running without arguments is equivalent to `--offline-status`. To install the
 binary into Cargo's local binary directory, run `cargo install --path . --locked`;

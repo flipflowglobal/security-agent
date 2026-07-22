@@ -10,6 +10,18 @@ conventions. Releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## [Unreleased]
 
 ### Added
+- **`src/language_model.rs`** — a small, from-scratch **neural** language
+  model with a *vector-quantized temporal-frequency* architecture: it embeds
+  the recent token window into a multi-channel time signal, applies a DCT-II
+  along the time axis (temporal → frequency), vector-quantizes the spectral
+  features against a learned codebook (VQ-VAE style: nearest-code lookup,
+  straight-through estimator, commitment penalty), and predicts the next
+  token through a tanh hidden layer and softmax. Trained deterministically by
+  SGD on a compact security corpus compiled into the binary — no external
+  crates, no network, no weights on disk; the DCT, codebook search, and
+  forward/backward passes are all hand-rolled. Exposes generation and
+  perplexity through a `LanguageModel` trait (the seam for a heavier back-end
+  later), surfaced via `--llm-generate` and `--llm-perplexity`.
 - **`src/calibration.rs`** — confidence-calibration tracking for the
   cognitive layer. `CalibrationTracker` accumulates predicted-vs-realized
   outcomes and computes the Brier score, reliability bins, expected
