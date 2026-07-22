@@ -1,1 +1,1 @@
-pub const MISSION_STATEMENT: &str = "Defensive security orchestration agent for authorized vulnerability testing across platform applications, tools, APIs, and infrastructure.";
+pub const MISSION_STATEMENT: &str = "Defensive and offensive security orchestration agent for authorized vulnerability and penetration testing across platform applications, tools, APIs, and infrastructure.";

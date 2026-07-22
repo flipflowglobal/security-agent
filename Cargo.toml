@@ -3,7 +3,7 @@ name = "security-agent"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-description = "Defensive security orchestration agent for authorized vulnerability testing."
+description = "Defensive and offensive security orchestration agent for authorized vulnerability and penetration testing."
 license = "MIT"
 repository = "https://github.com/flipflowglobal/security-agent"
 

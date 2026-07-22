@@ -2,11 +2,11 @@
 
 [![CI](https://github.com/flipflowglobal/security-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/flipflowglobal/security-agent/actions/workflows/ci.yml)
 
-Rust-first hybrid defensive security orchestration agent for authorized vulnerability testing across web, API, mobile (Android), blockchain, cloud, and infrastructure targets.
+Rust-first hybrid defensive and offensive security orchestration agent for authorized vulnerability and penetration testing across web, API, mobile (Android), blockchain, cloud, and infrastructure targets.
 
 ## Mission
 
-Defensive security orchestration agent for authorized vulnerability testing across platform applications, tools, APIs, and infrastructure.
+Defensive and offensive security orchestration agent for authorized vulnerability and penetration testing across platform applications, tools, APIs, and infrastructure.
 
 ## Operating Guide
 
@@ -388,8 +388,9 @@ confidence) and a plain-English reply, then runs the action:
 ./target/release/security-agent --ask 'is this suspicious: "zzq xqv vfrb qwx"'
 ```
 
-Routing is **scoped to defensive security**: an off-topic request with no
-capability match declines cleanly (`out-of-scope`) rather than guessing. And
+Routing is **scoped to authorized defensive and offensive security work**: an
+off-topic request with no capability match declines cleanly (`out-of-scope`)
+rather than guessing. And
 `--ask` only *executes* the read-only, no-authorization intents; anything
 that touches an engagement, a persisted log, or authorization (planning a
 scan, scheduling a retest, viewing an audit log) is explained — the agent

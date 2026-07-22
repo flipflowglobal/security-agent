@@ -6,11 +6,15 @@ This guide explains how to run and use Security-Agent step by step, with simple 
 
 ## 1) What this project is
 
-Security-Agent is a Rust application for **authorized defensive security testing**.
+Security-Agent is a Rust application for **authorized defensive and offensive
+security testing** — both hardening/detection work and hands-on penetration
+testing against systems you (or your client) own or have explicit permission
+to test.
 
 It helps you:
-- organize security checks,
-- run tests in a controlled way,
+- organize security checks, both defensive and offensive,
+- run tests in a controlled way — live/active (offensive) tools require an
+  explicit online opt-in on top of authorization (see `--allow-network`),
 - and keep an audit record of what was done.
 
 It is designed for legal, approved security work only.

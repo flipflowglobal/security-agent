@@ -274,7 +274,11 @@ mod tests {
             .skill("security-agent")
             .expect("security-agent skill should be bundled");
 
-        assert!(skill.content.contains("Plan defensive security work"));
+        assert!(
+            skill
+                .content
+                .contains("Plan defensive and offensive security work")
+        );
         assert!(skill.content.contains("runtime: offline"));
     }
 

@@ -9,6 +9,20 @@ conventions. Releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ## [Unreleased]
 
+### Changed
+- **Identity updated from purely defensive to defensive/offensive.** The
+  agent's mission statement, package description, and every user-facing
+  description of its scope (README, `OPERATING_GUIDE.md`, the embedded
+  `security-agent` skill, the `--tui` banner, and the `--ask` router's
+  out-of-scope decline message) now describe it as a **defensive and
+  offensive** security orchestration agent for authorized vulnerability and
+  **penetration** testing, reflecting the online-opt-in execution path
+  (`--allow-network`, added earlier) that already lets it orchestrate real,
+  installed offensive (`ActiveNetwork`/`ActiveExploitation`) tools under
+  authorization and audit. This is a naming/documentation update, not a new
+  capability or a loosened control — authorization, scope, and the online
+  opt-in are unchanged.
+
 ### Added
 - **`scripts/deploy.sh` (`make deploy`)** — a release/packaging script for
   the CLI binary. Runs the exact CI quality gate (fmt, clippy pedantic +
