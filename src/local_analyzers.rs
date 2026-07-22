@@ -226,11 +226,16 @@ pub fn run_binwalk(input: &Path) -> Result<BinwalkReport, BuiltInToolError> {
 
 /// Scans every offset for any known magic, returning the bounded hit list and
 /// whether it was truncated at [`MAX_REPORTED_ITEMS`].
+///
+/// Magics are bucketed by their first byte so each offset only tests the
+/// candidates that could possibly match there, rather than the whole table —
+/// `O(n + hits)` on typical evidence instead of `O(n * MAGICS)`.
 fn scan_signatures(data: &[u8]) -> (Vec<SignatureHit>, bool) {
+    let buckets = bucket_by_first_byte(MAGICS, |magic| magic.bytes);
     let mut hits = Vec::new();
-    for (offset, _) in data.iter().enumerate() {
+    for (offset, &byte) in data.iter().enumerate() {
         let tail = &data[offset..];
-        for magic in MAGICS {
+        for &magic in &buckets[byte as usize] {
             if tail.starts_with(magic.bytes) {
                 if hits.len() >= MAX_REPORTED_ITEMS {
                     return (hits, true);
@@ -243,6 +248,19 @@ fn scan_signatures(data: &[u8]) -> (Vec<SignatureHit>, bool) {
         }
     }
     (hits, false)
+}
+
+/// Indexes `items` into 256 buckets keyed by the first byte of each item's
+/// pattern, so a scanner can look up only the candidates relevant to the
+/// byte under the cursor. Empty patterns are skipped.
+fn bucket_by_first_byte<T>(items: &[T], pattern: impl Fn(&T) -> &'static [u8]) -> [Vec<&T>; 256] {
+    let mut buckets: [Vec<&T>; 256] = std::array::from_fn(|_| Vec::new());
+    for item in items {
+        if let Some(&first) = pattern(item).first() {
+            buckets[first as usize].push(item);
+        }
+    }
+    buckets
 }
 
 /// Sweeps fixed-size blocks and merges adjacent high-entropy ones into
@@ -412,10 +430,13 @@ pub fn run_foremost(input: &Path) -> Result<ForemostReport, BuiltInToolError> {
 }
 
 fn carve_files(data: &[u8]) -> (Vec<CarvedFile>, bool) {
+    // Bucket carve headers by their first byte so each offset only tests the
+    // types that could start there (see `bucket_by_first_byte`).
+    let buckets = bucket_by_first_byte(CARVE_TYPES, |carve| carve.header);
     let mut carved = Vec::new();
-    for (offset, _) in data.iter().enumerate() {
+    for (offset, &byte) in data.iter().enumerate() {
         let tail = &data[offset..];
-        for carve in CARVE_TYPES {
+        for &carve in &buckets[byte as usize] {
             if !tail.starts_with(carve.header) {
                 continue;
             }
@@ -535,33 +556,32 @@ pub fn run_bulk_extractor(input: &Path) -> Result<FeatureReport, BuiltInToolErro
         ipv4: FeatureGroup::new("IPv4 addresses"),
         path,
     };
-    for run in printable_runs(&data) {
-        extract_urls(&run, &mut report.urls);
-        extract_emails(&run, &mut report.emails);
-        extract_ipv4(&run, &mut report.ipv4);
-    }
-    Ok(report)
-}
-
-/// Splits the blob into runs of printable ASCII of length >= 4, the unit the
-/// feature scanners parse.
-fn printable_runs(data: &[u8]) -> Vec<String> {
-    let mut runs = Vec::new();
-    let mut current = Vec::new();
-    for &byte in data {
+    // Stream printable runs one at a time: decode the current run, extract
+    // its features, then drop it. Peak extra memory is bounded by the longest
+    // run rather than a `Vec<String>` holding the whole file decoded again.
+    let mut current: Vec<u8> = Vec::new();
+    for &byte in &data {
         if byte.is_ascii_graphic() || byte == b' ' {
             current.push(byte);
         } else {
-            if current.len() >= 4 {
-                runs.push(String::from_utf8_lossy(&current).into_owned());
-            }
+            extract_run(&current, &mut report);
             current.clear();
         }
     }
-    if current.len() >= 4 {
-        runs.push(String::from_utf8_lossy(&current).into_owned());
+    extract_run(&current, &mut report);
+    Ok(report)
+}
+
+/// Decodes one printable run (of length >= 4) and folds its features into
+/// `report`. Shorter runs are ignored as noise.
+fn extract_run(current: &[u8], report: &mut FeatureReport) {
+    if current.len() < 4 {
+        return;
     }
-    runs
+    let run = String::from_utf8_lossy(current);
+    extract_urls(&run, &mut report.urls);
+    extract_emails(&run, &mut report.emails);
+    extract_ipv4(&run, &mut report.ipv4);
 }
 
 fn extract_urls(run: &str, group: &mut FeatureGroup) {
