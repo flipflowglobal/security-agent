@@ -30,6 +30,8 @@
 //! [`crate::policy::PolicyEngine`] has already authorized and never grants,
 //! restricts, or executes anything.
 
+use crate::belief_propagation::{NodeBelief, from_targets_and_findings};
+use crate::calibration::CalibrationTracker;
 use crate::cognition::{CognitiveMemory, generate_hypotheses};
 use crate::coordinator::ExecutionPlan;
 use crate::findings::Finding;
@@ -344,7 +346,7 @@ impl AdversaryModel {
         let mut moves: Vec<AdversaryMove> = targets
             .iter()
             .map(|target| {
-                let technique = self.preferred_technique(&target.target_type);
+                let technique = Self::preferred_technique(&target.target_type);
                 let objective_fit = self.objective_fit(&target.target_type);
                 let (finding_count, average_severity) = memory.history_for(&target.id);
                 let history_factor = 1.0 + (average_severity / 10.0);
@@ -381,7 +383,7 @@ impl AdversaryModel {
 
     /// The single technique this adversary would most likely reach for
     /// against a given target type.
-    fn preferred_technique(&self, target_type: &TargetType) -> Technique {
+    const fn preferred_technique(target_type: &TargetType) -> Technique {
         match target_type {
             TargetType::WebApp => Technique::Dast,
             TargetType::Api | TargetType::MobileBackend => Technique::ApiSecurity,
@@ -396,7 +398,7 @@ impl AdversaryModel {
 
     /// How well compromising a given target type serves this adversary's
     /// objective, as a multiplier centered on 1.0.
-    fn objective_fit(&self, target_type: &TargetType) -> f32 {
+    const fn objective_fit(self, target_type: &TargetType) -> f32 {
         match self.objective {
             AdversaryObjective::DataExfiltration => match target_type {
                 TargetType::Api | TargetType::MobileBackend | TargetType::Cloud => 1.4,
@@ -498,6 +500,15 @@ pub struct CognitiveDeliberation {
     pub adversary_moves: Vec<AdversaryMove>,
     pub attention: Vec<AttentionFocus>,
     pub metacognition: Metacognition,
+    /// How well the agent's *prior* (type-based) predictions match the
+    /// findings actually recorded in memory. Empty when there is no history
+    /// to score against.
+    pub calibration: CalibrationTracker,
+    /// Per-node compromise probability after propagating lateral-movement
+    /// risk across the attack graph (highest first). Lets a finding-free
+    /// asset surface as at-risk because a compromised neighbor can pivot to
+    /// it.
+    pub propagation: Vec<NodeBelief>,
 }
 
 /// Orchestrates the cognitive faculties into a single deliberation over an
@@ -510,7 +521,7 @@ pub struct CognitiveEngine {
 
 impl CognitiveEngine {
     #[must_use]
-    pub fn new(memory: CognitiveMemory, adversary: AdversaryModel) -> Self {
+    pub const fn new(memory: CognitiveMemory, adversary: AdversaryModel) -> Self {
         Self { memory, adversary }
     }
 
@@ -530,6 +541,14 @@ impl CognitiveEngine {
         let adversary_moves = self.adversary.predict_moves(targets, &self.memory);
         let attention = AttentionAllocator::allocate(targets, &self.memory);
         let metacognition = self.reflect(&reasoning_chain, &beliefs, targets);
+        let calibration = self.assess_calibration(targets);
+        let propagation = from_targets_and_findings(
+            targets,
+            findings,
+            Self::ENTRY_TRANSMISSION,
+            Self::LATERAL_TRANSMISSION,
+        )
+        .propagate(Self::PROPAGATION_ITERS, Self::PROPAGATION_EPSILON);
 
         CognitiveDeliberation {
             reasoning_chain,
@@ -537,7 +556,38 @@ impl CognitiveEngine {
             adversary_moves,
             attention,
             metacognition,
+            calibration,
+            propagation,
         }
+    }
+
+    /// Probability that an attacker who has compromised one asset succeeds
+    /// in using a finding as an entry foothold (before evidence scaling).
+    const ENTRY_TRANSMISSION: f32 = 0.8;
+    /// Probability that compromise pivots between two co-scoped assets.
+    const LATERAL_TRANSMISSION: f32 = 0.3;
+    const PROPAGATION_ITERS: usize = 100;
+    const PROPAGATION_EPSILON: f32 = 1e-4;
+
+    /// Scores the agent's *prior* predictions against realized outcomes,
+    /// without circularity: the prediction for each target is the
+    /// type-based prior confidence (generated from an **empty** memory, so
+    /// it is not boosted by the very history it will be judged against), and
+    /// the outcome is whether that target has any finding recorded in this
+    /// engine's memory. Over many targets and engagements this reveals
+    /// whether the priors are over- or under-confident.
+    #[must_use]
+    pub fn assess_calibration(&self, targets: &[Target]) -> CalibrationTracker {
+        let prior = CognitiveMemory::new();
+        let mut tracker = CalibrationTracker::new();
+        for target in targets {
+            let predicted = generate_hypotheses(&target.id, &target.target_type, &prior)
+                .first()
+                .map_or(0, |hypothesis| hypothesis.confidence_percent);
+            let occurred = self.memory.history_for(&target.id).0 > 0;
+            tracker.record(predicted, occurred);
+        }
+        tracker
     }
 
     /// Builds the explicit train of thought: for each target, ground an
@@ -574,7 +624,7 @@ impl CognitiveEngine {
                 continue;
             };
 
-            let hypothesis = chain.push(
+            let hypothesis_idx = chain.push(
                 ThoughtKind::Hypothesis,
                 format!(
                     "{} is most likely exposed via {} — {}",
@@ -593,14 +643,15 @@ impl CognitiveEngine {
                         target.id
                     ),
                     top.confidence_percent.saturating_add(10).min(95),
-                    vec![observation, hypothesis],
+                    vec![observation, hypothesis_idx],
                 );
                 (inference, top.confidence_percent.saturating_add(10).min(95))
             } else {
-                (hypothesis, top.confidence_percent)
+                (hypothesis_idx, top.confidence_percent)
             };
 
-            let residual = f32::from(target.criticality) * (top.confidence_percent as f32 / 100.0);
+            let residual =
+                f32::from(target.criticality) * (f32::from(top.confidence_percent) / 100.0);
             chain.push(
                 ThoughtKind::Counterfactual,
                 format!(
@@ -608,7 +659,7 @@ impl CognitiveEngine {
                     top.technique, target.id
                 ),
                 top.confidence_percent,
-                vec![hypothesis],
+                vec![hypothesis_idx],
             );
 
             chain.push(
@@ -814,6 +865,69 @@ impl fmt::Display for CognitiveDeliberation {
             }
         }
         writeln!(formatter, "  judgement: {}", self.metacognition.reasoning)?;
+        writeln!(formatter)?;
+
+        self.write_calibration(formatter)?;
+        writeln!(formatter)?;
+        self.write_propagation(formatter)
+    }
+}
+
+impl CognitiveDeliberation {
+    /// Renders the lateral-movement compromise-propagation section.
+    fn write_propagation(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(formatter, "Compromise Propagation (lateral movement)")?;
+        writeln!(formatter, "-----------------------------------------")?;
+        if self.propagation.is_empty() {
+            return writeln!(formatter, "  no assets to propagate over");
+        }
+        for belief in &self.propagation {
+            writeln!(
+                formatter,
+                "  P(compromise)={:.2}  {}  (prior {:.2})",
+                belief.posterior, belief.id, belief.prior
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Renders the confidence-calibration section of the deliberation.
+    /// Split out of the `Display` body to keep each rendering unit small.
+    fn write_calibration(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(formatter, "Confidence Calibration (prior vs. realized)")?;
+        writeln!(formatter, "-------------------------------------------")?;
+        if self.calibration.is_empty() {
+            return writeln!(formatter, "  no scored predictions yet");
+        }
+        writeln!(
+            formatter,
+            "  scored predictions : {}",
+            self.calibration.len()
+        )?;
+        if let (Some(predicted), Some(empirical)) = (
+            self.calibration.mean_predicted(),
+            self.calibration.empirical_rate(),
+        ) {
+            writeln!(
+                formatter,
+                "  mean predicted     : {:.0}%",
+                predicted * 100.0
+            )?;
+            writeln!(
+                formatter,
+                "  realized rate      : {:.0}%",
+                empirical * 100.0
+            )?;
+        }
+        if let Some(brier) = self.calibration.brier_score() {
+            writeln!(formatter, "  brier score        : {brier:.3} (0 = perfect)")?;
+        }
+        if let Some(ece) = self.calibration.expected_calibration_error(10) {
+            writeln!(formatter, "  calibration error  : {ece:.3} (0 = perfect)")?;
+        }
+        if let Some(tendency) = self.calibration.tendency(0.05) {
+            writeln!(formatter, "  tendency           : {tendency}")?;
+        }
         Ok(())
     }
 }
@@ -993,6 +1107,43 @@ mod tests {
         assert!(rendered.contains("Predicted Adversary Moves"));
         assert!(rendered.contains("Attention Allocation"));
         assert!(rendered.contains("Metacognition"));
+        assert!(rendered.contains("Confidence Calibration"));
+        assert!(rendered.contains("Compromise Propagation"));
         assert!(rendered.contains("api-1"));
+    }
+
+    #[test]
+    fn calibration_is_non_circular_and_scores_priors_against_history() {
+        // api-1 (criticality 9) has findings; web-1 (criticality 4) does not.
+        let (_, targets) = build_plan_and_targets();
+        let mut memory = CognitiveMemory::new();
+        memory.record_findings(&[finding("api-1", Severity::Critical)]);
+        let engine = CognitiveEngine::new(memory, AdversaryModel::default());
+
+        let calibration = engine.assess_calibration(&targets);
+        // One record per target, and the predictions are the *type-based
+        // priors* — unaffected by the history they are scored against.
+        assert_eq!(calibration.len(), targets.len());
+        let prior = CognitiveMemory::new();
+        for target in &targets {
+            let prior_confidence =
+                generate_hypotheses(&target.id, &target.target_type, &prior)[0].confidence_percent;
+            let recorded = calibration
+                .records()
+                .iter()
+                .find(|record| record.predicted_percent == prior_confidence);
+            assert!(
+                recorded.is_some(),
+                "prediction must be the un-boosted prior for {}",
+                target.id
+            );
+        }
+        // Exactly the target with findings counts as an occurrence.
+        let occurred = calibration
+            .records()
+            .iter()
+            .filter(|record| record.occurred)
+            .count();
+        assert_eq!(occurred, 1);
     }
 }

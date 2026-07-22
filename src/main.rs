@@ -484,6 +484,8 @@ fn plan_scan_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
 /// score, and the node/edge counts of the
 /// [`security_agent::AttackPathGraph`] built from them.
 fn print_findings_summary(findings: &[security_agent::Finding]) {
+    const TOP_FINDINGS_SHOWN: usize = 5;
+
     println!();
     println!("Findings Summary");
     println!("================");
@@ -506,7 +508,6 @@ fn print_findings_summary(findings: &[security_agent::Finding]) {
     println!("--------------------------");
     let mut by_risk_score: Vec<&security_agent::Finding> = findings.iter().collect();
     by_risk_score.sort_by(|a, b| b.normalized_risk_score.total_cmp(&a.normalized_risk_score));
-    const TOP_FINDINGS_SHOWN: usize = 5;
     for finding in by_risk_score.iter().take(TOP_FINDINGS_SHOWN) {
         println!(
             "{:.2}\t{}\t{}\t{}",
