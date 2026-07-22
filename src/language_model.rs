@@ -48,8 +48,13 @@ const EMBED: usize = 8;
 /// Flattened spectral-feature width (`CONTEXT` frequencies × `EMBED`
 /// channels).
 const FEAT: usize = CONTEXT * EMBED;
-/// Number of entries in the vector-quantization codebook.
+/// Number of entries in each vector-quantization codebook.
 const CODES: usize = 48;
+/// Number of residual quantization stages. Each stage quantizes the
+/// residual the previous stage left behind (`q = q1 + q2 + ...`), a
+/// residual path *through* the quantizer that shrinks quantization error and
+/// recovers detail the discrete bottleneck would otherwise lose.
+const VQ_STAGES: usize = 2;
 /// Hidden-layer width of the prediction head.
 const HIDDEN: usize = 24;
 /// Training passes over the corpus.
@@ -218,29 +223,31 @@ fn encode_sentences(vocab: &Vocabulary, text: &str) -> Vec<Vec<usize>> {
 /// Intermediates from a forward pass, retained so the backward pass can
 /// reuse them.
 struct Forward {
-    /// Embedded temporal window, `CONTEXT` steps × `EMBED` channels.
-    embeds: Vec<f32>,
     /// Flattened DCT spectral features, length `FEAT`.
     spectral: Vec<f32>,
-    /// Index of the nearest codebook entry (the discrete latent).
-    code: usize,
+    /// Chosen codebook index at each residual stage.
+    codes: Vec<usize>,
+    /// Summed quantized code (`q1 + q2 + ...`), length `FEAT` — the residual
+    /// approximation of `spectral` fed to the prediction head.
+    quant: Vec<f32>,
     /// Hidden activations, length `HIDDEN`.
     hidden: Vec<f32>,
     /// Softmax distribution over the vocabulary.
     probs: Vec<f32>,
 }
 
-/// A vector-quantized, temporal-frequency neural language model.
+/// A vector-quantized, temporal-frequency neural language model with
+/// residual (multi-stage) quantization.
 #[derive(Debug, Clone)]
 pub struct NeuralLanguageModel {
     vocab: Vocabulary,
-    dct: Vec<f32>,      // CONTEXT * CONTEXT
-    embed: Vec<f32>,    // vocab_len * EMBED
-    codebook: Vec<f32>, // CODES * FEAT
-    w1: Vec<f32>,       // HIDDEN * FEAT
-    b1: Vec<f32>,       // HIDDEN
-    w2: Vec<f32>,       // vocab_len * HIDDEN
-    b2: Vec<f32>,       // vocab_len
+    dct: Vec<f32>,            // CONTEXT * CONTEXT
+    embed: Vec<f32>,          // vocab_len * EMBED
+    codebooks: Vec<Vec<f32>>, // stages × (CODES * FEAT)
+    w1: Vec<f32>,             // HIDDEN * FEAT
+    b1: Vec<f32>,             // HIDDEN
+    w2: Vec<f32>,             // vocab_len * HIDDEN
+    b2: Vec<f32>,             // vocab_len
 }
 
 impl Default for NeuralLanguageModel {
@@ -264,17 +271,29 @@ impl NeuralLanguageModel {
             .clone()
     }
 
-    /// Builds a vocabulary from `corpus` and trains for `epochs` passes.
+    /// Builds a vocabulary from `corpus` and trains for `epochs` passes using
+    /// the default number of residual quantization stages.
     #[must_use]
     pub fn trained_on(corpus: &str, epochs: usize) -> Self {
+        Self::trained_staged(corpus, epochs, VQ_STAGES)
+    }
+
+    /// Like [`Self::trained_on`], but with an explicit number of residual
+    /// quantization `stages` (used to compare quantization depth).
+    #[must_use]
+    pub fn trained_staged(corpus: &str, epochs: usize, stages: usize) -> Self {
         let vocab = Vocabulary::from_corpus(corpus);
         let vocab_len = vocab.len();
         let mut rng = Rng::new(SEED);
 
+        let stages = stages.max(1);
+        let codebooks = (0..stages)
+            .map(|_| init(CODES * FEAT, 0.3, &mut rng))
+            .collect();
         let mut model = Self {
             dct: dct_matrix(),
             embed: init(vocab_len * EMBED, 0.3, &mut rng),
-            codebook: init(CODES * FEAT, 0.3, &mut rng),
+            codebooks,
             w1: init(HIDDEN * FEAT, 0.3, &mut rng),
             b1: vec![0.0; HIDDEN],
             w2: init(vocab_len * HIDDEN, 0.3, &mut rng),
@@ -293,6 +312,33 @@ impl NeuralLanguageModel {
             }
         }
         model
+    }
+
+    /// Mean-pooled embedding of `text` over its in-vocabulary tokens (a
+    /// bag-of-embeddings sentence vector), length [`EMBED`]. Zero vector when
+    /// no token is known. Used by the natural-language intent router to
+    /// compare an instruction against capability descriptions in the model's
+    /// learned semantic space.
+    #[must_use]
+    pub fn embed_text(&self, text: &str) -> Vec<f32> {
+        let mut sum = vec![0.0_f32; EMBED];
+        let mut n = 0usize;
+        for token in text.split_whitespace().filter_map(normalize) {
+            if let Some(id) = self.vocab.id(&token) {
+                let base = id * EMBED;
+                for (acc, &value) in sum.iter_mut().zip(&self.embed[base..base + EMBED]) {
+                    *acc += value;
+                }
+                n += 1;
+            }
+        }
+        if n > 0 {
+            let inv = 1.0 / count(n);
+            for value in &mut sum {
+                *value *= inv;
+            }
+        }
+        sum
     }
 
     /// Embeds the temporal window, then applies the DCT along the time axis
@@ -322,32 +368,31 @@ impl NeuralLanguageModel {
         (embeds, spectral)
     }
 
-    /// Index of the codebook entry nearest (in squared Euclidean distance)
-    /// to `spectral`. Ties resolve to the lowest index (deterministic).
-    #[allow(clippy::needless_range_loop, clippy::suboptimal_flops)]
-    fn nearest_code(&self, spectral: &[f32]) -> usize {
-        let mut best = 0;
-        let mut best_dist = f32::INFINITY;
-        for c in 0..CODES {
-            let mut dist = 0.0;
+    /// Residual (multi-stage) quantization of `spectral`: each stage picks
+    /// the nearest entry in its codebook to the running residual, adds it to
+    /// the reconstruction, and passes the shrinking residual on. Returns the
+    /// per-stage code indices and the summed quantized vector.
+    fn residual_quantize(&self, spectral: &[f32]) -> (Vec<usize>, Vec<f32>) {
+        let mut residual = spectral.to_vec();
+        let mut quant = vec![0.0_f32; FEAT];
+        let mut codes = Vec::with_capacity(self.codebooks.len());
+        for codebook in &self.codebooks {
+            let code = nearest_code(codebook, &residual);
+            codes.push(code);
+            let base = code * FEAT;
             for f in 0..FEAT {
-                let diff = spectral[f] - self.codebook[c * FEAT + f];
-                dist += diff * diff;
-            }
-            if dist < best_dist {
-                best_dist = dist;
-                best = c;
+                quant[f] += codebook[base + f];
+                residual[f] -= codebook[base + f];
             }
         }
-        best
+        (codes, quant)
     }
 
     /// Full forward pass for `context`.
     #[allow(clippy::needless_range_loop, clippy::suboptimal_flops)]
     fn forward(&self, context: [usize; CONTEXT]) -> Forward {
-        let (embeds, spectral) = self.spectral_features(context);
-        let code = self.nearest_code(&spectral);
-        let quant = &self.codebook[code * FEAT..code * FEAT + FEAT];
+        let (_embeds, spectral) = self.spectral_features(context);
+        let (codes, quant) = self.residual_quantize(&spectral);
 
         let mut hidden = vec![0.0_f32; HIDDEN];
         for i in 0..HIDDEN {
@@ -370,9 +415,9 @@ impl NeuralLanguageModel {
         softmax(&mut logits);
 
         Forward {
-            embeds,
             spectral,
-            code,
+            codes,
+            quant,
             hidden,
             probs: logits,
         }
@@ -384,8 +429,6 @@ impl NeuralLanguageModel {
     fn train_step(&mut self, context: [usize; CONTEXT], target: usize) {
         let pass = self.forward(context);
         let vocab_len = self.vocab.len();
-        // Snapshot the chosen code vector before any parameter updates.
-        let quant: Vec<f32> = self.codebook[pass.code * FEAT..pass.code * FEAT + FEAT].to_vec();
 
         // dL/dlogits for softmax + cross-entropy.
         let mut dlogits = pass.probs;
@@ -422,23 +465,31 @@ impl NeuralLanguageModel {
         }
         for i in 0..HIDDEN {
             for f in 0..FEAT {
-                self.w1[i * FEAT + f] -= LEARNING_RATE * dhidden[i] * quant[f];
+                self.w1[i * FEAT + f] -= LEARNING_RATE * dhidden[i] * pass.quant[f];
             }
             self.b1[i] -= LEARNING_RATE * dhidden[i];
         }
 
-        // VQ codebook loss ||sg(spectral) - code||^2 pulls the chosen code
-        // toward the spectral features; commitment loss pulls the features
-        // toward the code and is added to the straight-through gradient.
-        let base = pass.code * FEAT;
-        for f in 0..FEAT {
-            let toward = quant[f] - pass.spectral[f];
-            self.codebook[base + f] -= LEARNING_RATE * COMMITMENT * 2.0 * toward;
+        // Each residual stage's codebook moves its chosen code toward that
+        // stage's input residual; the commitment loss pulls the spectral
+        // features toward the full reconstruction and joins the
+        // straight-through gradient.
+        let mut residual = pass.spectral.clone();
+        for (stage, &code) in pass.codes.iter().enumerate() {
+            let base = code * FEAT;
+            for f in 0..FEAT {
+                // Use the code value from the forward pass to advance the
+                // residual, then move the code toward the residual it saw.
+                let code_value = self.codebooks[stage][base + f];
+                let toward = code_value - residual[f];
+                self.codebooks[stage][base + f] -= LEARNING_RATE * COMMITMENT * 2.0 * toward;
+                residual[f] -= code_value;
+            }
         }
 
         let mut dspectral = [0.0_f32; FEAT];
         for f in 0..FEAT {
-            dspectral[f] = dquant[f] + COMMITMENT * 2.0 * (pass.spectral[f] - quant[f]);
+            dspectral[f] = dquant[f] + COMMITMENT * 2.0 * (pass.spectral[f] - pass.quant[f]);
         }
 
         // Backprop the spectral gradient through the (linear) DCT to the
@@ -453,7 +504,6 @@ impl NeuralLanguageModel {
                 dembeds[n * EMBED + d] = sum;
             }
         }
-        let _ = pass.embeds; // embeddings enter only through the DCT above
         for (step, &token) in context.iter().enumerate() {
             let base = token * EMBED;
             for d in 0..EMBED {
@@ -561,6 +611,27 @@ impl LanguageModel for NeuralLanguageModel {
     }
 }
 
+/// Index of the entry in `codebook` (a flat `CODES × FEAT` matrix) nearest
+/// to `query` in squared Euclidean distance. Ties resolve to the lowest
+/// index (deterministic).
+#[allow(clippy::needless_range_loop, clippy::suboptimal_flops)]
+fn nearest_code(codebook: &[f32], query: &[f32]) -> usize {
+    let mut best = 0;
+    let mut best_dist = f32::INFINITY;
+    for c in 0..CODES {
+        let mut dist = 0.0;
+        for f in 0..FEAT {
+            let diff = query[f] - codebook[c * FEAT + f];
+            dist += diff * diff;
+        }
+        if dist < best_dist {
+            best_dist = dist;
+            best = c;
+        }
+    }
+    best
+}
+
 /// Initializes `len` weights uniformly in `[-scale, scale)`.
 fn init(len: usize, scale: f32, rng: &mut Rng) -> Vec<f32> {
     (0..len).map(|_| rng.symmetric(scale)).collect()
@@ -638,7 +709,7 @@ mod tests {
     #[test]
     fn vector_quantization_uses_multiple_codes() {
         // A trained model should route different contexts to more than one
-        // codebook entry (the VQ bottleneck is not collapsed to one code).
+        // first-stage codebook entry (the VQ bottleneck is not collapsed).
         let model = NeuralLanguageModel::bundled();
         let sentences = encode_sentences(&model.vocab, SECURITY_CORPUS);
         let mut used = std::collections::HashSet::new();
@@ -646,7 +717,7 @@ mod tests {
             for window in sentence.windows(CONTEXT + 1) {
                 let mut context = [0usize; CONTEXT];
                 context.copy_from_slice(&window[..CONTEXT]);
-                used.insert(model.forward(context).code);
+                used.insert(model.forward(context).codes[0]);
             }
         }
         assert!(
@@ -659,10 +730,51 @@ mod tests {
     #[test]
     fn nearest_code_picks_the_closest_codebook_entry() {
         let model = NeuralLanguageModel::bundled();
-        // A query equal to code 3's vector must select code 3.
+        // A query equal to code 3's first-stage vector must select code 3.
         let target = 3;
-        let query: Vec<f32> = model.codebook[target * FEAT..target * FEAT + FEAT].to_vec();
-        assert_eq!(model.nearest_code(&query), target);
+        let codebook = &model.codebooks[0];
+        let query: Vec<f32> = codebook[target * FEAT..target * FEAT + FEAT].to_vec();
+        assert_eq!(nearest_code(codebook, &query), target);
+    }
+
+    #[test]
+    fn residual_quantization_lowers_error_and_loss() {
+        // A second residual stage should reconstruct the spectral features
+        // more accurately (lower quantization error) and, in turn, not
+        // increase — and here reduce — the model's loss.
+        let one = NeuralLanguageModel::trained_staged(SECURITY_CORPUS, EPOCHS, 1);
+        let two = NeuralLanguageModel::trained_staged(SECURITY_CORPUS, EPOCHS, 2);
+
+        // Average residual quantization error over the corpus.
+        let quant_error = |model: &NeuralLanguageModel| -> f32 {
+            let sentences = encode_sentences(&model.vocab, SECURITY_CORPUS);
+            let mut total = 0.0;
+            let mut steps = 0usize;
+            for sentence in &sentences {
+                for window in sentence.windows(CONTEXT + 1) {
+                    let mut context = [0usize; CONTEXT];
+                    context.copy_from_slice(&window[..CONTEXT]);
+                    let (_, spectral) = model.spectral_features(context);
+                    let (_, quant) = model.residual_quantize(&spectral);
+                    total += spectral
+                        .iter()
+                        .zip(&quant)
+                        .map(|(s, q)| (s - q) * (s - q))
+                        .sum::<f32>();
+                    steps += 1;
+                }
+            }
+            total / count(steps.max(1))
+        };
+
+        assert!(
+            quant_error(&two) < quant_error(&one),
+            "residual VQ should reduce quantization error"
+        );
+        assert!(
+            two.mean_loss(SECURITY_CORPUS) <= one.mean_loss(SECURITY_CORPUS) + 1e-3,
+            "residual VQ should not worsen loss"
+        );
     }
 
     #[test]
