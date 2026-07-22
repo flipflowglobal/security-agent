@@ -19,6 +19,7 @@ pub mod integrity;
 pub mod intensity_guard;
 mod json;
 pub mod language_model;
+pub mod local_analyzers;
 pub mod local_assets;
 pub mod memory_store;
 pub mod mission;
@@ -74,6 +75,11 @@ pub use governance::{AuditLedger, AuditRecord, Role};
 pub use integrity::{IntegrityManifest, IntegrityStatus, verify};
 pub use intensity_guard::{IntensityAdvisory, advise};
 pub use language_model::{LanguageModel, NeuralLanguageModel};
+pub use local_analyzers::{
+    BinwalkReport, CarvedFile, EntropyRegion, FeatureGroup, FeatureReport, ForemostReport,
+    HashdeepReport, HashedFile, SignatureHit, run_binwalk, run_bulk_extractor, run_foremost,
+    run_hashdeep,
+};
 pub use local_assets::{LocalAgentAssets, LocalSkill, LocalTool};
 pub use memory_store::load_memory;
 pub use mission::MISSION_STATEMENT;

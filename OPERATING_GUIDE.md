@@ -156,6 +156,10 @@ Run these from the repository root after `cargo build --release`:
 ./target/release/security-agent --run-tool volatility <local-memory-image> --output <report-path>.txt
 ./target/release/security-agent --run-tool wireshark <local-capture.pcap>
 ./target/release/security-agent --run-tool wireshark <local-capture.pcap> --output <report-path>.txt
+./target/release/security-agent --run-tool binwalk <local-blob>
+./target/release/security-agent --run-tool foremost <local-blob>
+./target/release/security-agent --run-tool bulk_extractor <local-blob>
+./target/release/security-agent --run-tool hashdeep <local-path>
 ./target/release/security-agent --run-external-tool semgrep --version
 ./target/release/security-agent --run-external-tool nmap -sV <in-scope-host>
 ./target/release/security-agent --run-external-tool masscan -p80 <in-scope-range>
@@ -190,6 +194,16 @@ Run these from the repository root after `cargo build --release`:
   embedded executable/archive signatures, and printable strings.
 - `--run-tool wireshark` parses a local classic PCAP and reports capture,
   link-layer, network-layer, and transport-layer statistics.
+- `--run-tool binwalk` maps embedded magic signatures and high-entropy
+  (likely compressed/encrypted) regions in a local firmware image or blob.
+- `--run-tool foremost` carves recoverable embedded files by header, bounding
+  their length with a footer where the format defines one.
+- `--run-tool bulk_extractor` extracts indicators of compromise (emails,
+  URLs, IPv4 addresses) from a local blob's printable content.
+- `--run-tool hashdeep` recursively hashes a local directory tree with
+  SHA-256 and CRC-32 and reports files that share a digest. These four
+  (`src/local_analyzers.rs`) are offline, defensive, local-file analyzers;
+  offensive and live-network catalog tools are not reimplemented in-house.
 - `--output` writes the same human-readable report to a `.txt` file.
 - `--run-external-tool <name> <args>` runs a real, locally installed
   cataloged tool directly. Only tools classified for static local

@@ -82,6 +82,61 @@ fn unknown_command_exits_2() {
 }
 
 #[test]
+fn offline_status_counts_all_builtin_substitutes() {
+    let output = run(&["--offline-status"]);
+    assert!(output.status.success());
+    // autopsy, volatility, wireshark, binwalk, foremost, bulk_extractor,
+    // hashdeep are all in-house local analyzers.
+    assert!(stdout(&output).contains("built_in_substitute_tools=7"));
+}
+
+#[test]
+fn run_tool_binwalk_analyzes_a_local_blob() {
+    let path = unique_temp_path("binwalk-blob");
+    // A gzip magic embedded after some padding.
+    std::fs::write(&path, b"\x00\x00\x00\x00\x1f\x8b\x08rest-of-stream").expect("write temp blob");
+    let output = run(&["--run-tool", "binwalk", &path.to_string_lossy()]);
+    let _ = std::fs::remove_file(&path);
+
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("Binwalk Local Firmware Report"));
+    assert!(text.contains("gzip stream"));
+}
+
+#[test]
+fn run_tool_bulk_extractor_pulls_indicators() {
+    let path = unique_temp_path("bulk-blob");
+    std::fs::write(
+        &path,
+        b"reach admin@example.com via https://c2.example/x from 198.51.100.9",
+    )
+    .expect("write temp blob");
+    let output = run(&["--run-tool", "bulk_extractor", &path.to_string_lossy()]);
+    let _ = std::fs::remove_file(&path);
+
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("admin@example.com"));
+    assert!(text.contains("198.51.100.9"));
+    assert!(text.contains("https://c2.example/x"));
+}
+
+#[test]
+fn run_tool_hashdeep_hashes_a_local_file() {
+    let path = unique_temp_path("hashdeep-file");
+    std::fs::write(&path, b"evidence").expect("write temp file");
+    let output = run(&["--run-tool", "hashdeep", &path.to_string_lossy()]);
+    let _ = std::fs::remove_file(&path);
+
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("Hashdeep Local Hash Audit"));
+    assert!(text.contains("sha256 :"));
+    assert!(text.contains("crc32  :"));
+}
+
+#[test]
 fn plan_scan_end_to_end_from_a_temp_config() {
     let config = unique_temp_path("plan-scan-ok");
     std::fs::write(

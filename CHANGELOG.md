@@ -10,6 +10,19 @@ conventions. Releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## [Unreleased]
 
 ### Added
+- **`src/local_analyzers.rs`** — four new offline, in-house forensic
+  substitutes that make more of the cataloged tools executable locally with
+  no network and no external crates, extending the built-in-substitute
+  pattern (`--run-tool <name> <path>`): **binwalk** (embedded magic-signature
+  map plus high-entropy region sweep of a firmware image or blob),
+  **foremost** (file carving by header, bounded by a footer where the format
+  defines one), **bulk_extractor** (indicator-of-compromise extraction —
+  emails, URLs, IPv4 addresses — from printable content), and **hashdeep**
+  (recursive SHA-256 + hand-rolled CRC-32 audit of a directory tree with
+  duplicate-digest detection). All four are defensive analyzers over local
+  evidence; the offensive (`ActiveExploitation`) and live-network
+  (`ActiveNetwork`) catalog tools are deliberately not reimplemented as
+  in-house executables. `built_in_substitute_tools` rises from 3 to 7.
 - **`src/language_model.rs`** — a small, from-scratch **neural** language
   model with a *vector-quantized temporal-frequency* architecture: it embeds
   the recent token window into a multi-channel time signal, applies a DCT-II
