@@ -10,6 +10,14 @@ conventions. Releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## [Unreleased]
 
 ### Added
+- **`src/language_model.rs`** — a small, from-scratch **neural** language
+  model (learned word embeddings → tanh hidden layer → softmax over the
+  vocabulary), trained deterministically by SGD on a compact security-domain
+  corpus compiled into the binary. No external crates, no network, no
+  weights on disk — it trains itself at startup and ships inside the offline
+  binary. Exposes text generation and perplexity scoring through a
+  `LanguageModel` trait (the seam for a heavier back-end later), surfaced via
+  the `--llm-generate` and `--llm-perplexity` commands.
 - **`src/calibration.rs`** — confidence-calibration tracking for the
   cognitive layer. `CalibrationTracker` accumulates predicted-vs-realized
   outcomes and computes the Brier score, reliability bins, expected

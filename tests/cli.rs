@@ -116,6 +116,37 @@ criticality=3
 }
 
 #[test]
+fn llm_generate_echoes_prompt_and_continues() {
+    let output = run(&["--llm-generate", "the", "coordinator"]);
+    assert!(output.status.success());
+    let text = stdout(&output);
+    // The prompt is echoed and a continuation appended; the bundled model
+    // is trained on a security corpus, so a domain word should appear.
+    assert!(text.contains("the coordinator"));
+    assert!(text.split_whitespace().count() > 2);
+}
+
+#[test]
+fn llm_generate_requires_a_prompt() {
+    let output = run(&["--llm-generate"]);
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn llm_perplexity_scores_text() {
+    let output = run(&[
+        "--llm-perplexity",
+        "the",
+        "policy",
+        "engine",
+        "denies",
+        "scope",
+    ]);
+    assert!(output.status.success());
+    assert!(stdout(&output).contains("perplexity="));
+}
+
+#[test]
 fn plan_scan_denied_config_exits_1() {
     let config = unique_temp_path("plan-scan-denied");
     std::fs::write(

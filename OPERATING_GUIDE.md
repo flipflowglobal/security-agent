@@ -168,6 +168,8 @@ Run these from the repository root after `cargo build --release`:
 ./target/release/security-agent --record-findings <destination-log>.jsonl <source-log>.jsonl
 ./target/release/security-agent --view-audit <log-path>.jsonl
 ./target/release/security-agent --schedule-retest <findings-log-path>.jsonl
+./target/release/security-agent --llm-generate <prompt words...>
+./target/release/security-agent --llm-perplexity <text words...>
 ```
 
 - No argument and `--offline-status` report the same local runtime state,
@@ -217,6 +219,11 @@ Run these from the repository root after `cargo build --release`:
 - `--record-findings <destination-log> <source-log>` appends findings from
   one findings log onto another (merging/curating logs). It never plans,
   authorizes, or executes.
+- `--llm-generate <prompt>` continues the prompt with the built-in small
+  neural language model (`src/language_model.rs`), a from-scratch model
+  trained deterministically on a bundled security corpus — no network, no
+  weights on disk. `--llm-perplexity <text>` scores how in-domain the text
+  reads (lower is more expected). Advisory/inspection only.
 - `--view-audit <path>` is a read-only view: it loads a persisted audit
   log and prints its records (operating under the least-privilege `Viewer`
   role). It never plans, authorizes, executes, or writes.

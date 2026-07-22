@@ -31,6 +31,8 @@ fn main() -> ExitCode {
         Some("--record-findings") => record_findings_command(&mut arguments),
         Some("--view-audit") => view_audit_command(&mut arguments),
         Some("--schedule-retest") => schedule_retest_command(&mut arguments),
+        Some("--llm-generate") => llm_generate_command(&mut arguments),
+        Some("--llm-perplexity") => llm_perplexity_command(&mut arguments),
         Some(command) => {
             eprintln!("unknown command: {command}");
             ExitCode::from(2)
@@ -587,6 +589,43 @@ fn record_findings_command(arguments: &mut impl Iterator<Item = String>) -> Exit
             ExitCode::from(1)
         }
     }
+}
+
+/// Continues a prompt with the built-in small neural language model
+/// (`--llm-generate <prompt words...>`).
+///
+/// The model (`security_agent::language_model`) is a tiny, from-scratch
+/// neural language model trained deterministically on a bundled
+/// security-domain corpus — no network, no weights on disk. Decoding is
+/// greedy, so the same prompt always yields the same continuation. Text is
+/// modest given the model's size; this exists to make the offline
+/// language-model capability usable and inspectable.
+fn llm_generate_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    use security_agent::LanguageModel;
+    let prompt = arguments.collect::<Vec<String>>().join(" ");
+    if prompt.trim().is_empty() {
+        eprintln!("missing prompt for --llm-generate");
+        return ExitCode::from(2);
+    }
+    let model = security_agent::NeuralLanguageModel::bundled();
+    let continuation = model.generate(&prompt, 24);
+    println!("{prompt} {continuation}");
+    ExitCode::SUCCESS
+}
+
+/// Scores how surprising text is to the built-in language model
+/// (`--llm-perplexity <text words...>`). Lower perplexity means the text
+/// reads more like the security-domain corpus the model learned.
+fn llm_perplexity_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    use security_agent::LanguageModel;
+    let text = arguments.collect::<Vec<String>>().join(" ");
+    if text.trim().is_empty() {
+        eprintln!("missing text for --llm-perplexity");
+        return ExitCode::from(2);
+    }
+    let model = security_agent::NeuralLanguageModel::bundled();
+    println!("perplexity={:.3}", model.perplexity(&text));
+    ExitCode::SUCCESS
 }
 
 /// Read-only view of a persisted audit log (`--view-audit <path>.jsonl`).
