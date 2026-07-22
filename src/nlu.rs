@@ -17,10 +17,10 @@
 //!   learned embedding space ([`crate::language_model::NeuralLanguageModel::embed_text`]),
 //!   which generalizes to paraphrases the keywords miss.
 //!
-//! Scope is defensive security: an instruction that matches nothing routes
-//! to [`Intent::OutOfScope`] with a polite decline. Nothing here executes or
-//! authorizes anything — it only *interprets*; the caller decides what to
-//! run.
+//! Scope is authorized defensive and offensive security work: an instruction
+//! that matches nothing routes to [`Intent::OutOfScope`] with a polite
+//! decline. Nothing here executes or authorizes anything — it only
+//! *interprets*; the caller decides what to run.
 
 use crate::language_model::NeuralLanguageModel;
 use crate::local_assets::LocalAgentAssets;
@@ -432,9 +432,10 @@ fn build_reply(intent: Intent, slot: Option<&str>, assets: &LocalAgentAssets) ->
                 .to_string()
         }
         Intent::OutOfScope => {
-            "That's outside my scope. I'm a defensive-security orchestration agent — I can plan \
-             authorized scans, run local analysis tools, explain skills, report status, and score \
-             text. Try 'list tools' or 'help'."
+            "That's outside my scope. I'm a defensive and offensive security orchestration agent \
+             — I can plan authorized scans and penetration tests, run local analysis tools, \
+             explain skills, report status, and score text. I'm offline by default; live/active \
+             tools need the --allow-network opt-in. Try 'list tools' or 'help'."
                 .to_string()
         }
     }

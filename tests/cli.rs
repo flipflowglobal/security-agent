@@ -70,7 +70,7 @@ fn about_prints_mission_and_roadmap() {
     let output = run(&["--about"]);
     assert!(output.status.success());
     let text = stdout(&output);
-    assert!(text.contains("Defensive security orchestration"));
+    assert!(text.contains("Defensive and offensive security orchestration"));
     assert!(text.contains("Phase 1"));
     assert!(text.contains("Phase 4"));
 }
