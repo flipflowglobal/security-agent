@@ -2,28 +2,32 @@
 //!
 //! Unlike `crate::builtin_tools` and `crate::pcap`, which are offline
 //! substitutes implemented entirely in this crate, this module actually
-//! spawns a locally installed third-party binary. To keep that safe, only
-//! tools classified [`ExecutionClass::StaticLocalAnalysis`] may be run
-//! this way by default: tools that operate solely on local files, with no
-//! network or live-target interaction. Most `ActiveNetwork` and
-//! `ActiveExploitation` tools (sqlmap, hydra, msfconsole, and similar) are
-//! rejected here — real execution of those needs a live-target
-//! confirmation/rate-limit design layered on
-//! [`crate::policy::AuthorizationOutcome`], which does not exist yet.
+//! spawns a locally installed third-party binary. Eligibility is governed by
+//! a [`NetworkMode`] the caller passes in, which reflects an explicit,
+//! per-invocation operator opt-in (see [`crate::network_policy`]):
 //!
-//! `nmap` is a deliberate, explicit exception (see
-//! `WIRED_DESPITE_EXECUTION_CLASS`): it has been reviewed and wired for
-//! real execution the same way `StaticLocalAnalysis` tools are — gated
-//! only by the coordinator's existing planning approval (scope + technique
-//! allow-list) and the tool being locally installed, with no additional
-//! target-confirmation, approval, or rate-limiting beyond that. Arguments
-//! passed to `--execute`/`execute_plan` are trusted as-is, exactly like
-//! the already-wired static tools.
+//! - **Offline** (the default): only tools classified
+//!   [`ExecutionClass::StaticLocalAnalysis`] may run — they operate solely on
+//!   local files with no network or live-target interaction. Live
+//!   `ActiveNetwork` / `ActiveExploitation` tools are refused with
+//!   [`ToolExecutionError::RequiresOnlineMode`].
+//! - **Online** (operator opted in for this run): the real, installed
+//!   `ActiveNetwork` and `ActiveExploitation` tools additionally become
+//!   eligible, so authorized engagements get full tool scope.
+//!
+//! This is only the *egress* gate. When these tools run as part of a planned
+//! scan, the coordinator's authorization policy ([`crate::policy`]) still
+//! enforces target scope, the technique allow-list, deny-lists, approval
+//! gates, and the time window — going online never bypasses that. Arguments
+//! passed to `--execute`/`execute_plan` are trusted as-is. Only real,
+//! installed third-party binaries are ever spawned; this crate never
+//! reimplements a tool's offensive behavior itself.
 
 use crate::coordinator::{ExecutionPlan, ScanTask};
 use crate::integrity::IntegrityStatus;
 use crate::local_assets::LocalAgentAssets;
 use crate::local_assets::LocalTool;
+use crate::network_policy::NetworkMode;
 use crate::registry::ExecutionClass;
 use std::fmt;
 use std::io::Read;
@@ -39,7 +43,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(20);
 #[derive(Debug)]
 pub enum ToolExecutionError {
     NotInstalled(String),
-    NotEligibleForExecution(String),
+    RequiresOnlineMode(String),
     IntegrityMismatch(String),
     Spawn {
         tool: String,
@@ -55,10 +59,10 @@ impl fmt::Display for ToolExecutionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotInstalled(name) => write!(formatter, "{name} is not installed locally"),
-            Self::NotEligibleForExecution(name) => write!(
+            Self::RequiresOnlineMode(name) => write!(
                 formatter,
-                "{name} is not classified as static-local-analysis and has no explicit \
-                 execution exception; real execution is not wired up for it yet"
+                "{name} performs live network / active-target activity and is refused in \
+                 offline mode; re-run with the explicit --allow-network opt-in to enable it"
             ),
             Self::IntegrityMismatch(name) => write!(
                 formatter,
@@ -115,51 +119,46 @@ impl fmt::Display for ToolExecutionReport {
     }
 }
 
-/// Tools classified `ActiveNetwork`/`ActiveExploitation` that have been
-/// explicitly reviewed and wired for real execution anyway. Kept to an
-/// explicit, named list rather than loosening the execution-class check
-/// itself, so enabling a new tool here is always a deliberate, visible
-/// decision rather than an accidental side effect of some other change.
+/// Whether `tool` may be executed under network mode `mode`.
 ///
-/// `nmap` and `masscan` are the entries today: both are approved the same
-/// way the `StaticLocalAnalysis` tools are — via the coordinator's existing
-/// planning gate (scope + technique allow-list) plus local installation,
-/// with no additional target-confirmation, approval, or rate-limiting.
-/// Arguments given to `--execute`/[`execute_plan`] are trusted as-is.
-/// Because `masscan` can saturate a link at its default rate, its
-/// arguments are additionally passed through the non-blocking intensity
-/// advisory (see `crate::intensity_guard`) at the CLI layer, but that only
-/// warns — it never gates execution here.
-const WIRED_DESPITE_EXECUTION_CLASS: &[&str] = &["nmap", "masscan"];
-
-fn is_eligible_for_execution(tool: &LocalTool) -> bool {
-    tool.definition.execution_class == ExecutionClass::StaticLocalAnalysis
-        || WIRED_DESPITE_EXECUTION_CLASS.contains(&tool.definition.name.as_str())
+/// `StaticLocalAnalysis` tools touch only local files and are always
+/// eligible. Live `ActiveNetwork` / `ActiveExploitation` tools are eligible
+/// only when the operator has opted into [`NetworkMode::Online`] for this
+/// invocation — the explicit egress gate. When these run inside a planned
+/// scan the coordinator's authorization policy still governs scope,
+/// technique, approval, and the time window on top of this.
+const fn is_eligible_for_execution(tool: &LocalTool, mode: NetworkMode) -> bool {
+    matches!(
+        tool.definition.execution_class,
+        ExecutionClass::StaticLocalAnalysis
+    ) || mode.allows_active()
 }
 
-/// Runs `tool` with `arguments`, enforcing a bounded execution window.
+/// Runs `tool` with `arguments` under network mode `mode`, enforcing a
+/// bounded execution window.
 ///
 /// # Errors
 ///
 /// Returns [`ToolExecutionError::NotInstalled`] if the tool has no
-/// resolved executable path, [`ToolExecutionError::NotEligibleForExecution`]
-/// if the tool isn't classified for direct execution and has no explicit
-/// exception (see `WIRED_DESPITE_EXECUTION_CLASS`),
-/// [`ToolExecutionError::Spawn`] if the process could not be started, and
-/// [`ToolExecutionError::TimedOut`] if it exceeded `timeout` and had to be
-/// killed. A non-zero exit code from the tool itself is not an error: it
-/// is reported in [`ToolExecutionReport::exit_code`].
+/// resolved executable path, [`ToolExecutionError::RequiresOnlineMode`]
+/// if the tool is a live `ActiveNetwork`/`ActiveExploitation` tool and
+/// `mode` is [`NetworkMode::Offline`], [`ToolExecutionError::Spawn`] if the
+/// process could not be started, and [`ToolExecutionError::TimedOut`] if it
+/// exceeded `timeout` and had to be killed. A non-zero exit code from the
+/// tool itself is not an error: it is reported in
+/// [`ToolExecutionReport::exit_code`].
 pub fn run_external_tool(
     tool: &LocalTool,
     arguments: &[String],
     timeout: Duration,
+    mode: NetworkMode,
 ) -> Result<ToolExecutionReport, ToolExecutionError> {
     let name = tool.definition.name.clone();
     let Some(executable) = tool.executable.as_ref() else {
         return Err(ToolExecutionError::NotInstalled(name));
     };
-    if !is_eligible_for_execution(tool) {
-        return Err(ToolExecutionError::NotEligibleForExecution(name));
+    if !is_eligible_for_execution(tool, mode) {
+        return Err(ToolExecutionError::RequiresOnlineMode(name));
     }
     // A pinned binary whose hash no longer matches the manifest is refused;
     // Unpinned (the default) and Verified both proceed.
@@ -214,8 +213,9 @@ pub fn run_external_tool(
 pub fn run_external_tool_with_default_timeout(
     tool: &LocalTool,
     arguments: &[String],
+    mode: NetworkMode,
 ) -> Result<ToolExecutionReport, ToolExecutionError> {
-    run_external_tool(tool, arguments, DEFAULT_TIMEOUT)
+    run_external_tool(tool, arguments, DEFAULT_TIMEOUT, mode)
 }
 
 /// The result of attempting to run one approved tool for one planned task.
@@ -253,11 +253,10 @@ impl fmt::Display for TaskExecutionOutcome {
 ///
 /// This only actually executes tools the coordinator approved for a task
 /// (`ScanTask::approved_tools`, which is already filtered to what's locally
-/// installed) — it never expands scope beyond what was planned. Tools not
-/// eligible for direct execution (see `WIRED_DESPITE_EXECUTION_CLASS`)
-/// are still attempted (so the caller sees why, via
-/// [`ToolExecutionError::NotEligibleForExecution`] in the outcome) rather
-/// than silently skipped.
+/// installed) — it never expands scope beyond what was planned. Live tools
+/// attempted under [`NetworkMode::Offline`] are still reported (so the caller
+/// sees why, via [`ToolExecutionError::RequiresOnlineMode`] in the outcome)
+/// rather than silently skipped.
 ///
 /// When a task carries a [`ScanTask::network_address`] and the tool is not
 /// [`ExecutionClass::StaticLocalAnalysis`] (i.e. it is a network tool like
@@ -271,6 +270,7 @@ pub fn execute_plan(
     plan: &ExecutionPlan,
     assets: &LocalAgentAssets,
     arguments: &[String],
+    mode: NetworkMode,
 ) -> Vec<TaskExecutionOutcome> {
     let mut outcomes = Vec::new();
     for task in &plan.tasks {
@@ -282,7 +282,7 @@ pub fn execute_plan(
             outcomes.push(TaskExecutionOutcome {
                 target_id: task.target_id.clone(),
                 tool: tool_name.clone(),
-                result: run_external_tool_with_default_timeout(tool, &effective_arguments),
+                result: run_external_tool_with_default_timeout(tool, &effective_arguments, mode),
             });
         }
     }
@@ -422,7 +422,7 @@ mod tests {
         }
         let tool = tool_at("/bin/true", ExecutionClass::StaticLocalAnalysis);
 
-        let report = run_external_tool(&tool, &[], Duration::from_secs(5))
+        let report = run_external_tool(&tool, &[], Duration::from_secs(5), NetworkMode::Offline)
             .expect("execution should succeed");
 
         assert_eq!(report.exit_code, Some(0));
@@ -437,7 +437,7 @@ mod tests {
         }
         let tool = tool_at("/bin/false", ExecutionClass::StaticLocalAnalysis);
 
-        let report = run_external_tool(&tool, &[], Duration::from_secs(5))
+        let report = run_external_tool(&tool, &[], Duration::from_secs(5), NetworkMode::Offline)
             .expect("execution should succeed");
 
         assert_eq!(report.exit_code, Some(1));
@@ -459,7 +459,7 @@ mod tests {
             integrity: IntegrityStatus::Unpinned,
         };
 
-        let result = run_external_tool(&tool, &[], Duration::from_secs(5));
+        let result = run_external_tool(&tool, &[], Duration::from_secs(5), NetworkMode::Offline);
 
         assert!(
             matches!(result, Err(ToolExecutionError::NotInstalled(name)) if name == "missing-tool")
@@ -481,7 +481,7 @@ mod tests {
             IntegrityStatus::Mismatch,
         );
 
-        let result = run_external_tool(&tool, &[], Duration::from_secs(5));
+        let result = run_external_tool(&tool, &[], Duration::from_secs(5), NetworkMode::Offline);
 
         assert!(matches!(
             result,
@@ -503,49 +503,54 @@ mod tests {
             IntegrityStatus::Unpinned,
         );
 
-        let report = run_external_tool(&tool, &[], Duration::from_secs(5))
+        let report = run_external_tool(&tool, &[], Duration::from_secs(5), NetworkMode::Offline)
             .expect("unpinned tools execute exactly as before");
         assert_eq!(report.exit_code, Some(0));
     }
 
     #[test]
     #[cfg(unix)]
-    fn rejects_a_tool_not_classified_static_local_analysis() {
+    fn refuses_active_tools_in_offline_mode() {
         let tool = tool_at("/bin/true", ExecutionClass::ActiveNetwork);
 
-        let result = run_external_tool(&tool, &[], Duration::from_secs(5));
+        let result = run_external_tool(&tool, &[], Duration::from_secs(5), NetworkMode::Offline);
 
         assert!(matches!(
             result,
-            Err(ToolExecutionError::NotEligibleForExecution(name)) if name == "test-tool"
+            Err(ToolExecutionError::RequiresOnlineMode(name)) if name == "test-tool"
         ));
     }
 
     #[test]
     #[cfg(unix)]
-    fn rejects_other_active_network_tools_not_on_the_explicit_allowlist() {
-        // Only "nmap" is on WIRED_DESPITE_EXECUTION_CLASS; a differently
-        // named ActiveNetwork tool (e.g. hydra) must still be rejected.
-        let tool = tool_named("hydra", "/bin/true", ExecutionClass::ActiveNetwork);
+    fn refuses_exploitation_tools_in_offline_mode() {
+        // A live exploitation tool (e.g. hydra) is refused offline and must
+        // name the online opt-in as the way to enable it.
+        let tool = tool_named("hydra", "/bin/true", ExecutionClass::ActiveExploitation);
 
-        let result = run_external_tool(&tool, &[], Duration::from_secs(5));
+        let result = run_external_tool(&tool, &[], Duration::from_secs(5), NetworkMode::Offline);
 
         assert!(matches!(
             result,
-            Err(ToolExecutionError::NotEligibleForExecution(name)) if name == "hydra"
+            Err(ToolExecutionError::RequiresOnlineMode(name)) if name == "hydra"
         ));
     }
 
     #[test]
     #[cfg(unix)]
-    fn nmap_is_eligible_for_real_execution_despite_being_active_network() {
+    fn active_network_tool_runs_when_operator_opts_into_online_mode() {
         if !Path::new("/bin/true").exists() {
             return;
         }
         let tool = tool_named("nmap", "/bin/true", ExecutionClass::ActiveNetwork);
 
-        let report = run_external_tool(&tool, &[], Duration::from_secs(5))
-            .expect("nmap should be an explicit execution exception");
+        // Offline: refused. Online (explicit opt-in): eligible and runs.
+        assert!(matches!(
+            run_external_tool(&tool, &[], Duration::from_secs(5), NetworkMode::Offline),
+            Err(ToolExecutionError::RequiresOnlineMode(_))
+        ));
+        let report = run_external_tool(&tool, &[], Duration::from_secs(5), NetworkMode::Online)
+            .expect("online opt-in should make an ActiveNetwork tool eligible");
 
         assert_eq!(report.exit_code, Some(0));
         assert_eq!(report.tool, "nmap");
@@ -553,17 +558,17 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn masscan_is_eligible_for_real_execution_despite_being_active_network() {
+    fn exploitation_tool_runs_when_operator_opts_into_online_mode() {
         if !Path::new("/bin/true").exists() {
             return;
         }
-        let tool = tool_named("masscan", "/bin/true", ExecutionClass::ActiveNetwork);
+        let tool = tool_named("sqlmap", "/bin/true", ExecutionClass::ActiveExploitation);
 
-        let report = run_external_tool(&tool, &[], Duration::from_secs(5))
-            .expect("masscan should be an explicit execution exception");
+        let report = run_external_tool(&tool, &[], Duration::from_secs(5), NetworkMode::Online)
+            .expect("online opt-in should make an ActiveExploitation tool eligible");
 
         assert_eq!(report.exit_code, Some(0));
-        assert_eq!(report.tool, "masscan");
+        assert_eq!(report.tool, "sqlmap");
     }
 
     #[test]
@@ -574,7 +579,12 @@ mod tests {
         }
         let tool = tool_at("/bin/sleep", ExecutionClass::StaticLocalAnalysis);
 
-        let result = run_external_tool(&tool, &["2".to_string()], Duration::from_millis(100));
+        let result = run_external_tool(
+            &tool,
+            &["2".to_string()],
+            Duration::from_millis(100),
+            NetworkMode::Offline,
+        );
 
         assert!(matches!(
             result,
@@ -598,7 +608,7 @@ mod tests {
             vec!["tool-a".to_string(), "not-cataloged".to_string()],
         )]);
 
-        let outcomes = execute_plan(&plan, &assets, &[]);
+        let outcomes = execute_plan(&plan, &assets, &[], NetworkMode::Offline);
 
         // "not-cataloged" isn't in `assets`, so it's skipped rather than
         // producing a spurious outcome.
@@ -627,7 +637,7 @@ mod tests {
             minimal_task("target-b", vec!["tool-b".to_string()]),
         ]);
 
-        let outcomes = execute_plan(&plan, &assets, &[]);
+        let outcomes = execute_plan(&plan, &assets, &[], NetworkMode::Offline);
 
         assert_eq!(outcomes.len(), 2);
         assert_eq!(outcomes[0].target_id, "target-a");
@@ -649,7 +659,9 @@ mod tests {
             task_with_network_address("target-a", vec!["nmap".to_string()], Some("10.0.0.5"));
         let plan = minimal_plan(vec![task]);
 
-        let outcomes = execute_plan(&plan, &assets, &["-sV".to_string()]);
+        // nmap is ActiveNetwork, so injecting a live target requires the
+        // online opt-in.
+        let outcomes = execute_plan(&plan, &assets, &["-sV".to_string()], NetworkMode::Online);
 
         assert_eq!(outcomes.len(), 1);
         let report = outcomes[0].result.as_ref().expect("nmap should execute");
@@ -674,7 +686,12 @@ mod tests {
             task_with_network_address("target-a", vec!["tool-a".to_string()], Some("10.0.0.5"));
         let plan = minimal_plan(vec![task]);
 
-        let outcomes = execute_plan(&plan, &assets, &["--version".to_string()]);
+        let outcomes = execute_plan(
+            &plan,
+            &assets,
+            &["--version".to_string()],
+            NetworkMode::Offline,
+        );
 
         let report = outcomes[0].result.as_ref().expect("should execute");
         assert_eq!(report.arguments, vec!["--version".to_string()]);

@@ -27,7 +27,7 @@ Requires the target to be in-scope and the relevant technique present in the eng
 
 ## Execution status in Security-Agent
 
-Real execution is available: `--run-external-tool nmap <args>` and `--plan-scan <config> --execute <args>` both run the locally installed binary directly (see `src/execution.rs`), bounded by an execution timeout with stdout/stderr/exit-code capture. `nmap` is an explicit, reviewed exception to the general rule that only `StaticLocalAnalysis` tools get real execution (tracked as `WIRED_DESPITE_EXECUTION_CLASS` in `src/execution.rs`, alongside `masscan`) — it is gated only by the coordinator's existing planning approval (scope + technique allow-list) and local installation, with no additional target-confirmation, approval, or rate-limiting. Arguments are trusted as-is. Every other `ActiveNetwork`/`ActiveExploitation` tool remains catalog/detection-only.
+Real execution is available for authorized work: `--run-external-tool --allow-network nmap <args>` and `--plan-scan <config> --allow-network --execute <args>` run the locally installed binary directly (see `src/execution.rs`), bounded by an execution timeout with stdout/stderr/exit-code capture. As an `ActiveNetwork` tool, nmap performs live-target activity, so it runs only under the explicit per-invocation `--allow-network` opt-in (the runtime is offline by default; see `src/network_policy.rs`); without it the run is refused. Under a planned scan the coordinator's authorization policy (scope + technique allow-list + deny-lists + approval gates + time window) still governs, and arguments are trusted as-is. Only the real installed binary is spawned.
 
 ## Availability
 

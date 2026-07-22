@@ -186,6 +186,7 @@ The `MobileAndroid` specialist uses a dedicated tool set for APK/DEX analysis an
 | `src/language_model.rs` | Small from-scratch **vector-quantized temporal-frequency** neural language model (embed → DCT → residual VQ codebooks → softmax), self-trained on a bundled security corpus; text generation and perplexity scoring |
 | `src/builtin_tools.rs` | Offline built-in substitutes (autopsy, volatility) plus the in-house SHA-256; real local-file analysis, no network |
 | `src/local_analyzers.rs` | Offline forensic substitutes — binwalk (signature/entropy), foremost (carving), bulk_extractor (IOC features), hashdeep (recursive multi-hash + dedup) |
+| `src/network_policy.rs` | `NetworkMode` egress governance: offline by default, live network/active tools only under the explicit per-invocation `--allow-network` opt-in |
 | `src/anomaly.rs` | Language-model perplexity as an anomaly lens: flags out-of-domain finding text in the cognitive review |
 | `src/nlu.rs` | Grounded plain-English intent router behind `--ask`: lexical + semantic mapping of instructions to real capabilities |
 | `src/memory_store.rs` | Folds the append-only findings log into cognitive memory, so cognition learns across engagements from one shared format |
@@ -423,10 +424,32 @@ feature-extraction family of the catalog:
 
 Each accepts the same optional `--output <report-path>.txt`. These are
 **defensive** analyzers over evidence you already hold — none contacts a live
-target. Offensive (`ActiveExploitation`) and live-network (`ActiveNetwork`)
-catalog tools are deliberately **not** reimplemented as in-house executables;
-they remain cataloged with skills and run only via the real binary under
-`--run-external-tool` when policy allows.
+target. The offensive (`ActiveExploitation`) and live-network
+(`ActiveNetwork`) catalog tools are deliberately **not** reimplemented as
+in-house attack code; instead the agent *orchestrates the real, installed
+binaries* under the online opt-in and authorization controls described next.
+
+### Offline by default, online by explicit opt-in
+
+The runtime is **fully offline by default**: no command performs live-target
+or network activity unless you opt in *for that invocation* with the explicit
+`--allow-network` flag (`src/network_policy.rs`, `NetworkMode`). This makes
+going online a deliberate, per-invocation, auditable choice — `--offline-status`
+reports `default_network_mode=offline` and the `online_opt_in_flag`.
+
+- **Offline** (default): only the built-in substitutes and
+  `StaticLocalAnalysis` tools (local files only) may run.
+- **Online** (`--allow-network`): the real, installed `ActiveNetwork` and
+  `ActiveExploitation` tools additionally become eligible, so an **authorized**
+  engagement has full tool scope. Going online never bypasses the
+  authorization policy — when run through a planned scan, target scope, the
+  technique allow-list, deny-lists, approval gates, and the time window are
+  all still enforced.
+
+The agent only ever spawns the real third-party binaries you have installed;
+it never reimplements a tool's offensive behavior itself. Full-scope active
+testing is therefore available for authorized work, with the authorization
+and audit controls kept firmly in place.
 
 ### Running real cataloged tools
 
@@ -435,33 +458,31 @@ Every cataloged tool is classified by `ExecutionClass` (`src/registry.rs`):
 androguard, apktool, dex2jar, apksigner, and others), `ActiveNetwork`
 (scans or contacts a live target), or `ActiveExploitation` (attempts to
 compromise a live target or running process). `--run-external-tool`
-directly invokes a real, locally installed tool when it is classified
-`StaticLocalAnalysis`, or is `nmap` or `masscan` — explicit, reviewed
-exceptions (see `WIRED_DESPITE_EXECUTION_CLASS` in `src/execution.rs`):
+directly invokes a real, locally installed tool. `StaticLocalAnalysis`
+tools run in the default offline mode; live `ActiveNetwork` /
+`ActiveExploitation` tools require the explicit `--allow-network` opt-in
+placed immediately after `--run-external-tool`:
 
 ```bash
+# Offline (local files only) — no opt-in needed:
 ./target/release/security-agent --run-external-tool semgrep --version
 ./target/release/security-agent --run-external-tool jadx -d <out-dir> <apk-path>
-./target/release/security-agent --run-external-tool nmap -sV <in-scope-host>
-./target/release/security-agent --run-external-tool masscan -p80 <in-scope-range>
+
+# Online (live target) — requires the explicit opt-in:
+./target/release/security-agent --run-external-tool --allow-network nmap -sV <in-scope-host>
+./target/release/security-agent --run-external-tool --allow-network sqlmap -u <in-scope-url>
 ```
 
 The process is spawned with a bounded execution timeout and its stdout,
-stderr, exit code, and duration are captured into a report. `nmap` and
-`masscan` run under the same gate as the `StaticLocalAnalysis` tools
-above — the coordinator's existing planning approval (scope + technique
-allow-list) plus local installation — with no additional
-target-confirmation, approval, or rate-limiting: arguments given to
-`--execute`/`--run-external-tool` are trusted as-is. As a non-blocking
-aid, arguments to these network tools are passed through an intensity
-advisory (`src/intensity_guard.rs`): aggressive flags (`-T5`,
-`--min-rate`, full-range sweeps) that exceed the engagement's declared
-`max_intensity` print a warning to stderr, but execution still proceeds.
-Every other tool classified `ActiveNetwork` or `ActiveExploitation`
-(sqlmap, hydra, msfconsole, and similar) is still rejected by this
-command — real execution of those needs a live-target
-confirmation/rate-limit design layered on the policy engine's
-`AuthorizationOutcome`, which does not exist yet.
+stderr, exit code, and duration are captured into a report. Arguments given
+to `--execute`/`--run-external-tool` are trusted as-is. As a non-blocking
+aid, arguments to network tools are passed through an intensity advisory
+(`src/intensity_guard.rs`): aggressive flags (`-T5`, `--min-rate`,
+full-range sweeps) that exceed the engagement's declared `max_intensity`
+print a warning to stderr, but execution still proceeds. Without
+`--allow-network`, a live `ActiveNetwork`/`ActiveExploitation` tool is
+refused with a message pointing to the opt-in — it never runs active work
+in offline mode.
 
 ### Tool integrity
 
