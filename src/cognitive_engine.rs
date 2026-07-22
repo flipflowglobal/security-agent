@@ -593,11 +593,28 @@ impl CognitiveEngine {
     /// rate overrides a raw confidence; otherwise the raw value stands.
     const CALIBRATION_MIN_SAMPLES: usize = 5;
 
+    /// Each target's type-based prior top-confidence paired with whether it
+    /// has a finding in memory. Computed once per run (O(n)) and reused when
+    /// building every target's leave-one-out tracker, so recalibration does
+    /// not regenerate hypotheses O(n^2) times.
+    fn prediction_outcomes(&self, targets: &[Target]) -> Vec<(u8, bool)> {
+        let prior = CognitiveMemory::new();
+        targets
+            .iter()
+            .map(|target| {
+                let predicted = generate_hypotheses(&target.id, &target.target_type, &prior)
+                    .first()
+                    .map_or(0, |hypothesis| hypothesis.confidence_percent);
+                let occurred = self.memory.history_for(&target.id).0 > 0;
+                (predicted, occurred)
+            })
+            .collect()
+    }
+
     /// Builds the calibration used to correct target `exclude_idx`'s
     /// confidence: the engine's externally-supplied [`Self::calibration`]
-    /// plus **leave-one-out** evidence from every *other* target in this run
-    /// (each other target's type-based prior confidence scored against
-    /// whether it has a finding in memory).
+    /// plus **leave-one-out** evidence from every *other* target's
+    /// precomputed prediction/outcome pair (see [`Self::prediction_outcomes`]).
     ///
     /// Excluding the target being corrected is what keeps this non-circular
     /// — a target's own outcome never recalibrates its own confidence.
@@ -606,19 +623,14 @@ impl CognitiveEngine {
     /// one is exactly the right signal.
     fn recalibration_tracker_excluding(
         &self,
-        targets: &[Target],
+        prediction_outcomes: &[(u8, bool)],
         exclude_idx: usize,
     ) -> CalibrationTracker {
-        let prior = CognitiveMemory::new();
         let mut tracker = self.calibration.clone();
-        for (index, target) in targets.iter().enumerate() {
+        for (index, &(predicted, occurred)) in prediction_outcomes.iter().enumerate() {
             if index == exclude_idx {
                 continue;
             }
-            let predicted = generate_hypotheses(&target.id, &target.target_type, &prior)
-                .first()
-                .map_or(0, |hypothesis| hypothesis.confidence_percent);
-            let occurred = self.memory.history_for(&target.id).0 > 0;
             tracker.record(predicted, occurred);
         }
         tracker
@@ -663,6 +675,10 @@ impl CognitiveEngine {
             vec![],
         );
 
+        // Precomputed once and reused for every target's leave-one-out
+        // calibration (avoids O(n^2) hypothesis generation).
+        let prediction_outcomes = self.prediction_outcomes(targets);
+
         for (target_idx, target) in targets.iter().enumerate() {
             let observation = chain.push(
                 ThoughtKind::Observation,
@@ -688,12 +704,18 @@ impl CognitiveEngine {
             // targets (never this target's own outcome). Calibration adjusts
             // how sure the agent is, not which technique is likeliest, so the
             // domain ranking is preserved.
-            let calibration = self.recalibration_tracker_excluding(targets, target_idx);
-            let confidence = calibration.calibrated_percent(
-                raw_confidence,
-                Self::CALIBRATION_BINS,
-                Self::CALIBRATION_MIN_SAMPLES,
-            );
+            let calibration =
+                self.recalibration_tracker_excluding(&prediction_outcomes, target_idx);
+            // Clamp to the same 95% ceiling `generate_hypotheses` uses, so a
+            // calibrated value never exceeds a raw one and the finding-boosted
+            // inference step (`.min(95)`) can't end up below the hypothesis.
+            let confidence = calibration
+                .calibrated_percent(
+                    raw_confidence,
+                    Self::CALIBRATION_BINS,
+                    Self::CALIBRATION_MIN_SAMPLES,
+                )
+                .min(95);
             let calibration_note = if confidence == raw_confidence {
                 String::new()
             } else {
@@ -1306,13 +1328,50 @@ mod tests {
         memory.record_findings(&[finding("api-1", Severity::Critical)]);
         let engine = CognitiveEngine::new(memory, AdversaryModel::default());
 
+        let prediction_outcomes = engine.prediction_outcomes(&targets);
         for exclude_idx in 0..targets.len() {
-            let tracker = engine.recalibration_tracker_excluding(&targets, exclude_idx);
+            let tracker = engine.recalibration_tracker_excluding(&prediction_outcomes, exclude_idx);
             assert_eq!(
                 tracker.len(),
                 targets.len() - 1,
                 "the excluded target must not contribute its own record"
             );
         }
+    }
+
+    #[test]
+    fn recalibrated_confidence_respects_the_95_percent_ceiling() {
+        let (plan, targets) = build_plan_and_targets();
+        // api-1 has a finding, so the inference step (confidence + 10, capped
+        // at 95) runs. External calibration whose band always occurs would
+        // push the calibrated confidence to 100 without the cap.
+        let mut memory = CognitiveMemory::new();
+        memory.record_findings(&[finding("api-1", Severity::High)]);
+        let mut history = CalibrationTracker::new();
+        for _ in 0..8 {
+            history.record(60, true);
+        }
+        let engine =
+            CognitiveEngine::new(memory, AdversaryModel::default()).with_calibration(history);
+
+        let chain = engine.deliberate(&plan, &targets, &[]).reasoning_chain;
+        let thoughts = chain.thoughts();
+        let hypothesis = thoughts
+            .iter()
+            .find(|t| t.kind == ThoughtKind::Hypothesis && t.statement.contains("api-1"))
+            .expect("api-1 hypothesis");
+        let inference = thoughts
+            .iter()
+            .find(|t| t.kind == ThoughtKind::Inference && t.statement.contains("api-1"))
+            .expect("api-1 inference (finding present)");
+
+        assert!(
+            hypothesis.confidence_percent <= 95,
+            "calibrated confidence must respect the 95% ceiling, got {}",
+            hypothesis.confidence_percent
+        );
+        // With the cap, the finding-boosted inference is never *less*
+        // confident than the hypothesis it builds on.
+        assert!(inference.confidence_percent >= hypothesis.confidence_percent);
     }
 }
