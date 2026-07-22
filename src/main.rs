@@ -259,14 +259,23 @@ fn run_external_tool_command(
 enum PlanScanError {
     MissingConfigPath,
     MissingAuditLogPath,
+    MissingAuditDbPath,
     MissingMemoryPath,
+    MissingCalibrationDbPath,
     MissingFindingsLogPath,
+    MissingFindingsDbPath,
+    MissingReasoningLogDbPath,
     UnexpectedArgument(String),
     ConfigLoad(String),
     AuthorizationDenied(String),
     AuditLogWrite(String),
+    AuditDbWrite(String),
     MemoryLoad(String),
+    CalibrationDbLoad(String),
+    CalibrationDbWrite(String),
     FindingsLogWrite(String),
+    FindingsDbWrite(String),
+    ReasoningLogDbWrite(String),
 }
 
 impl fmt::Display for PlanScanError {
@@ -274,8 +283,16 @@ impl fmt::Display for PlanScanError {
         match self {
             Self::MissingConfigPath => formatter.write_str("missing engagement config file path"),
             Self::MissingAuditLogPath => formatter.write_str("missing --audit-log file path"),
+            Self::MissingAuditDbPath => formatter.write_str("missing --audit-db file path"),
             Self::MissingMemoryPath => formatter.write_str("missing --memory file path"),
+            Self::MissingCalibrationDbPath => {
+                formatter.write_str("missing --calibration-db file path")
+            }
             Self::MissingFindingsLogPath => formatter.write_str("missing --findings-log file path"),
+            Self::MissingFindingsDbPath => formatter.write_str("missing --findings-db file path"),
+            Self::MissingReasoningLogDbPath => {
+                formatter.write_str("missing --reasoning-log-db file path")
+            }
             Self::UnexpectedArgument(argument) => {
                 write!(formatter, "unexpected argument: {argument}")
             }
@@ -286,11 +303,29 @@ impl fmt::Display for PlanScanError {
             Self::AuditLogWrite(message) => {
                 write!(formatter, "failed to write audit log: {message}")
             }
+            Self::AuditDbWrite(message) => {
+                write!(formatter, "failed to write audit database: {message}")
+            }
             Self::MemoryLoad(message) => {
                 write!(formatter, "failed to load cognitive memory: {message}")
             }
+            Self::CalibrationDbLoad(message) => {
+                write!(formatter, "failed to load calibration database: {message}")
+            }
+            Self::CalibrationDbWrite(message) => {
+                write!(formatter, "failed to write calibration database: {message}")
+            }
             Self::FindingsLogWrite(message) => {
                 write!(formatter, "failed to write findings log: {message}")
+            }
+            Self::FindingsDbWrite(message) => {
+                write!(formatter, "failed to write findings database: {message}")
+            }
+            Self::ReasoningLogDbWrite(message) => {
+                write!(
+                    formatter,
+                    "failed to write reasoning log database: {message}"
+                )
             }
         }
     }
@@ -363,16 +398,35 @@ fn scan_prior_findings(
 struct PlanScanArgs {
     config_path: String,
     audit_log_path: Option<String>,
+    audit_db_path: Option<String>,
     cognitive_review: bool,
     memory_path: Option<String>,
+    calibration_db_path: Option<String>,
     findings_log_path: Option<String>,
+    findings_db_path: Option<String>,
+    reasoning_log_db_path: Option<String>,
     network_mode: security_agent::NetworkMode,
     tool_arguments: Option<Vec<String>>,
 }
 
-/// Parses `--plan-scan <config> [--audit-log <p>] [--cognitive-review]
-/// [--memory <p>] [--findings-log <p>] [--allow-network] [--execute <args>]`
-/// in fixed order, consuming `arguments`.
+/// Parses `--plan-scan <config> [--audit-log <p>] [--audit-db <p>]
+/// [--cognitive-review] [--memory <p>] [--calibration-db <p>]
+/// [--findings-log <p>] [--findings-db <p>] [--reasoning-log-db <p>]
+/// [--allow-network] [--execute <args>]` in fixed order, consuming
+/// `arguments`.
+///
+/// The `-db` flags are siblings of their `-log`/`-memory` counterparts,
+/// backed by the zero-dependency `.sadb` embedded store
+/// ([`security_agent::sadb`]) instead of JSON Lines text: `--audit-db`
+/// alongside `--audit-log`, `--calibration-db` alongside `--memory`
+/// (closing the loop documented on
+/// [`security_agent::CognitiveEngine::with_calibration`] -- see
+/// [`security_agent::calibration_db`]), and `--findings-db` alongside
+/// `--findings-log`. `--reasoning-log-db` has no JSON Lines counterpart:
+/// it archives each `--cognitive-review` run's full reasoning chain and
+/// metacognitive verdict (see [`security_agent::reasoning_log_db`]), and
+/// is a no-op unless `--cognitive-review` was also given, matching how
+/// `--findings-log`/`--findings-db` are no-ops without `--execute`.
 fn parse_plan_scan_args(
     arguments: &mut impl Iterator<Item = String>,
 ) -> Result<PlanScanArgs, PlanScanError> {
@@ -381,6 +435,13 @@ fn parse_plan_scan_args(
     let mut next_argument = arguments.next();
     let audit_log_path = if next_argument.as_deref() == Some("--audit-log") {
         let path = arguments.next().ok_or(PlanScanError::MissingAuditLogPath)?;
+        next_argument = arguments.next();
+        Some(path)
+    } else {
+        None
+    };
+    let audit_db_path = if next_argument.as_deref() == Some("--audit-db") {
+        let path = arguments.next().ok_or(PlanScanError::MissingAuditDbPath)?;
         next_argument = arguments.next();
         Some(path)
     } else {
@@ -399,10 +460,37 @@ fn parse_plan_scan_args(
     } else {
         None
     };
+    let calibration_db_path = if next_argument.as_deref() == Some("--calibration-db") {
+        let path = arguments
+            .next()
+            .ok_or(PlanScanError::MissingCalibrationDbPath)?;
+        next_argument = arguments.next();
+        Some(path)
+    } else {
+        None
+    };
     let findings_log_path = if next_argument.as_deref() == Some("--findings-log") {
         let path = arguments
             .next()
             .ok_or(PlanScanError::MissingFindingsLogPath)?;
+        next_argument = arguments.next();
+        Some(path)
+    } else {
+        None
+    };
+    let findings_db_path = if next_argument.as_deref() == Some("--findings-db") {
+        let path = arguments
+            .next()
+            .ok_or(PlanScanError::MissingFindingsDbPath)?;
+        next_argument = arguments.next();
+        Some(path)
+    } else {
+        None
+    };
+    let reasoning_log_db_path = if next_argument.as_deref() == Some("--reasoning-log-db") {
+        let path = arguments
+            .next()
+            .ok_or(PlanScanError::MissingReasoningLogDbPath)?;
         next_argument = arguments.next();
         Some(path)
     } else {
@@ -426,12 +514,72 @@ fn parse_plan_scan_args(
     Ok(PlanScanArgs {
         config_path,
         audit_log_path,
+        audit_db_path,
         cognitive_review,
         memory_path,
+        calibration_db_path,
         findings_log_path,
+        findings_db_path,
+        reasoning_log_db_path,
         network_mode,
         tool_arguments,
     })
+}
+
+/// Loads the accumulated calibration history from `--calibration-db`
+/// (empty if the flag was not given, or the database doesn't exist yet)
+/// so this run's hypothesis-confidence correction
+/// (`CognitiveEngine::with_calibration`) has real cross-engagement
+/// evidence instead of starting empty each time. See
+/// [`security_agent::calibration_db`] for why this closes a real gap:
+/// `assess_calibration` computes fresh evidence every run, but nothing
+/// previously carried it forward.
+fn load_calibration_history(
+    calibration_db_path: Option<&str>,
+) -> Result<security_agent::CalibrationTracker, PlanScanError> {
+    calibration_db_path.map_or_else(
+        || Ok(security_agent::CalibrationTracker::new()),
+        |path| {
+            security_agent::calibration_db::load_calibration(Path::new(path))
+                .map_err(|error| PlanScanError::CalibrationDbLoad(error.to_string()))
+        },
+    )
+}
+
+/// Appends this run's fresh calibration evidence and reasoning-log
+/// archive, when `cognitive_output` is `Some` and the corresponding `-db`
+/// flag was given; a no-op otherwise.
+///
+/// `deliberation.calibration` is always this run's *fresh*
+/// `assess_calibration` evidence only -- it starts from an empty tracker,
+/// never from the accumulated history [`load_calibration_history`] loads
+/// -- so appending it here grows the history without ever
+/// double-counting it.
+fn persist_cognitive_artifacts(
+    cognitive_output: Option<&CognitiveReview>,
+    calibration_db_path: Option<&str>,
+    reasoning_log_db_path: Option<&str>,
+) -> Result<(), PlanScanError> {
+    let Some((_, deliberation, _)) = cognitive_output else {
+        return Ok(());
+    };
+    if let Some(path) = calibration_db_path {
+        security_agent::calibration_db::append_calibration_records(
+            Path::new(path),
+            deliberation.calibration.records(),
+        )
+        .map_err(|error| PlanScanError::CalibrationDbWrite(error.to_string()))?;
+    }
+    if let Some(path) = reasoning_log_db_path {
+        security_agent::reasoning_log_db::append_run(
+            Path::new(path),
+            current_epoch_seconds(),
+            &deliberation.reasoning_chain,
+            &deliberation.metacognition,
+        )
+        .map_err(|error| PlanScanError::ReasoningLogDbWrite(error.to_string()))?;
+    }
+    Ok(())
 }
 
 fn plan_scan(
@@ -440,9 +588,13 @@ fn plan_scan(
     let PlanScanArgs {
         config_path,
         audit_log_path,
+        audit_db_path,
         cognitive_review,
         memory_path,
+        calibration_db_path,
         findings_log_path,
+        findings_db_path,
+        reasoning_log_db_path,
         network_mode,
         tool_arguments,
     } = parse_plan_scan_args(arguments)?;
@@ -469,6 +621,13 @@ fn plan_scan(
         security_agent::append_audit_records(Path::new(&path), coordinator.audit_ledger.records())
             .map_err(|error| PlanScanError::AuditLogWrite(error.to_string()))?;
     }
+    if let Some(path) = audit_db_path {
+        security_agent::audit_db::append_audit_records(
+            Path::new(&path),
+            coordinator.audit_ledger.records(),
+        )
+        .map_err(|error| PlanScanError::AuditDbWrite(error.to_string()))?;
+    }
 
     // When `--memory <path>` is given, load the append-only findings ledger
     // (empty if it does not exist yet) so cognition is informed by history
@@ -489,15 +648,29 @@ fn plan_scan(
         None => Vec::new(),
     };
 
+    // When `--calibration-db <path>` is given, load the accumulated
+    // (predicted_percent, occurred) history from every prior run so this
+    // run's hypothesis-confidence correction has real cross-engagement
+    // evidence instead of starting empty each time. See
+    // [`load_calibration_history`].
+    let calibration = load_calibration_history(calibration_db_path.as_deref())?;
+
     let cognitive_output = cognitive_review.then(|| {
         let mut memory = CognitiveMemory::new();
         memory.record_findings(&prior_findings);
         let assessment = assess_plan_cognitively(&plan, &targets_for_review, &memory);
-        let engine = CognitiveEngine::new(memory, security_agent::AdversaryModel::default());
+        let engine = CognitiveEngine::new(memory, security_agent::AdversaryModel::default())
+            .with_calibration(calibration);
         let deliberation = engine.deliberate(&plan, &targets_for_review, &prior_findings);
         let anomalies = scan_prior_findings(&prior_findings);
         (assessment, deliberation, anomalies)
     });
+
+    persist_cognitive_artifacts(
+        cognitive_output.as_ref(),
+        calibration_db_path.as_deref(),
+        reasoning_log_db_path.as_deref(),
+    )?;
 
     if let Some(tool_arguments) = &tool_arguments {
         print_intensity_advisories(tool_arguments, declared_ceiling);
@@ -527,13 +700,18 @@ fn plan_scan(
         })
         .unwrap_or_default();
 
-    // Only touch the findings log when --execute actually ran (`outcomes`
-    // is `Some`); otherwise --findings-log is a true no-op, matching its
-    // documented behavior, rather than creating an empty log file.
+    // Only touch the findings log/database when --execute actually ran
+    // (`outcomes` is `Some`); otherwise --findings-log/--findings-db are
+    // true no-ops, matching their documented behavior, rather than
+    // creating an empty log file or database.
     if outcomes.is_some() {
         if let Some(path) = findings_log_path {
             security_agent::append_findings(Path::new(&path), &findings)
                 .map_err(|error| PlanScanError::FindingsLogWrite(error.to_string()))?;
+        }
+        if let Some(path) = findings_db_path {
+            security_agent::findings_db::append_findings(Path::new(&path), &findings)
+                .map_err(|error| PlanScanError::FindingsDbWrite(error.to_string()))?;
         }
     }
 
@@ -541,12 +719,14 @@ fn plan_scan(
 }
 
 /// CLI entry point for `--plan-scan <config-file> [--audit-log <path>]
-/// [--cognitive-review] [--memory <path>] [--findings-log <path>]
-/// [--execute <args>...]`;
-/// prints the resulting [`security_agent::ExecutionPlan`], the
-/// [`CognitiveAssessment`] when `--cognitive-review` was given, and —
-/// when `--execute` was given — each task's tool execution outcomes plus
-/// a findings summary ingested from their output.
+/// [--audit-db <path>] [--cognitive-review] [--memory <path>]
+/// [--calibration-db <path>] [--findings-log <path>] [--findings-db <path>]
+/// [--reasoning-log-db <path>] [--execute <args>...]`; prints the
+/// resulting [`security_agent::ExecutionPlan`], the [`CognitiveAssessment`]
+/// when `--cognitive-review` was given, and — when `--execute` was given —
+/// each task's tool execution outcomes plus a findings summary ingested
+/// from their output. See [`parse_plan_scan_args`] for what each `-db`
+/// flag does differently from its JSON Lines counterpart.
 fn plan_scan_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
     match plan_scan(arguments) {
         Ok((plan, cognitive_output, outcomes, findings)) => {
@@ -2016,6 +2196,243 @@ criticality=3
         let findings = security_agent::load_findings(&log_path).expect("load findings log");
         fs::remove_file(&log_path).expect("remove temp findings log");
         assert!(findings.is_empty());
+    }
+
+    fn write_temp_config(name: &str, engagement_id: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "security-agent-main-plan-scan-{name}-config-{}.txt",
+            std::process::id()
+        ));
+        fs::write(
+            &path,
+            format!(
+                "\
+engagement_id={engagement_id}
+authorized_by=jane.doe
+authorized_by_role=SecurityAdmin
+time_window_start=0
+time_window_end=99999999999
+in_scope_targets=api-staging
+allowed_techniques=PassiveRecon,ConfigurationAudit,ApiSecurity
+max_intensity=Standard
+high_impact_approved=false
+penetrative_testing_approved=true
+
+[target]
+id=api-staging
+target_type=Api
+criticality=3
+"
+            ),
+        )
+        .expect("write temp config");
+        path
+    }
+
+    #[test]
+    fn plan_scan_writes_audit_db_when_flag_is_given() {
+        let config_path = write_temp_config("audit-db", "eng-cli-audit-db");
+        let db_path = std::env::temp_dir().join(format!(
+            "security-agent-main-plan-scan-audit-db-{}.sadb",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&db_path);
+
+        let mut arguments = vec![
+            config_path.to_string_lossy().into_owned(),
+            "--audit-db".to_string(),
+            db_path.to_string_lossy().into_owned(),
+        ]
+        .into_iter();
+        let result = plan_scan(&mut arguments);
+        fs::remove_file(&config_path).expect("remove temp config");
+
+        result.expect("valid config should authorize, plan, and log");
+
+        let records =
+            security_agent::audit_db::load_audit_records(&db_path).expect("load audit db");
+        fs::remove_file(&db_path).expect("remove temp audit db");
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].action, "plan_authorized_scan");
+    }
+
+    #[test]
+    fn plan_scan_reports_missing_audit_db_path() {
+        let mut arguments = vec!["config.txt".to_string(), "--audit-db".to_string()].into_iter();
+        assert!(matches!(
+            plan_scan(&mut arguments),
+            Err(PlanScanError::MissingAuditDbPath)
+        ));
+    }
+
+    #[test]
+    fn plan_scan_writes_findings_db_when_flag_is_given() {
+        let config_path = write_temp_config("findings-db", "eng-cli-findings-db");
+        let db_path = std::env::temp_dir().join(format!(
+            "security-agent-main-plan-scan-findings-db-{}.sadb",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&db_path);
+
+        let mut arguments = vec![
+            config_path.to_string_lossy().into_owned(),
+            "--findings-db".to_string(),
+            db_path.to_string_lossy().into_owned(),
+            "--execute".to_string(),
+        ]
+        .into_iter();
+        let result = plan_scan(&mut arguments);
+        fs::remove_file(&config_path).expect("remove temp config");
+
+        result.expect("valid config should authorize, plan, execute, and log findings");
+
+        // Database is created and loadable even though --execute had no
+        // arguments to ingest findings from.
+        assert!(db_path.exists());
+        let findings = security_agent::findings_db::load_findings(&db_path)
+            .expect("load findings from database");
+        fs::remove_file(&db_path).expect("remove temp findings db");
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn plan_scan_findings_db_is_a_noop_without_execute() {
+        let config_path = write_temp_config("findings-db-noop", "eng-cli-findings-db-noop");
+        let db_path = std::env::temp_dir().join(format!(
+            "security-agent-main-plan-scan-findings-db-noop-{}.sadb",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&db_path);
+
+        let mut arguments = vec![
+            config_path.to_string_lossy().into_owned(),
+            "--findings-db".to_string(),
+            db_path.to_string_lossy().into_owned(),
+        ]
+        .into_iter();
+        let result = plan_scan(&mut arguments);
+        fs::remove_file(&config_path).expect("remove temp config");
+
+        result.expect("valid config should authorize and plan");
+        assert!(
+            !db_path.exists(),
+            "--findings-db without --execute must not create the database"
+        );
+    }
+
+    #[test]
+    fn plan_scan_reports_missing_findings_db_path() {
+        let mut arguments = vec!["config.txt".to_string(), "--findings-db".to_string()].into_iter();
+        assert!(matches!(
+            plan_scan(&mut arguments),
+            Err(PlanScanError::MissingFindingsDbPath)
+        ));
+    }
+
+    #[test]
+    fn plan_scan_calibration_db_accumulates_across_separate_runs() {
+        let db_path = std::env::temp_dir().join(format!(
+            "security-agent-main-plan-scan-calibration-db-{}.sadb",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&db_path);
+
+        for engagement in ["eng-cli-calibration-1", "eng-cli-calibration-2"] {
+            let config_path = write_temp_config("calibration-db", engagement);
+            let mut arguments = vec![
+                config_path.to_string_lossy().into_owned(),
+                "--cognitive-review".to_string(),
+                "--calibration-db".to_string(),
+                db_path.to_string_lossy().into_owned(),
+            ]
+            .into_iter();
+            let result = plan_scan(&mut arguments);
+            fs::remove_file(&config_path).expect("remove temp config");
+            result.expect("valid config should authorize, plan, and review");
+        }
+
+        // One target reviewed per run: two runs should leave two
+        // accumulated calibration records, not two independent, disjoint
+        // single-record histories.
+        let tracker =
+            security_agent::calibration_db::load_calibration(&db_path).expect("load calibration");
+        fs::remove_file(&db_path).expect("remove temp calibration db");
+        assert_eq!(tracker.len(), 2);
+    }
+
+    #[test]
+    fn plan_scan_reports_missing_calibration_db_path() {
+        let mut arguments =
+            vec!["config.txt".to_string(), "--calibration-db".to_string()].into_iter();
+        assert!(matches!(
+            plan_scan(&mut arguments),
+            Err(PlanScanError::MissingCalibrationDbPath)
+        ));
+    }
+
+    #[test]
+    fn plan_scan_writes_reasoning_log_db_when_cognitive_review_is_given() {
+        let config_path = write_temp_config("reasoning-log-db", "eng-cli-reasoning-log-db");
+        let db_path = std::env::temp_dir().join(format!(
+            "security-agent-main-plan-scan-reasoning-log-db-{}.sadb",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&db_path);
+
+        let mut arguments = vec![
+            config_path.to_string_lossy().into_owned(),
+            "--cognitive-review".to_string(),
+            "--reasoning-log-db".to_string(),
+            db_path.to_string_lossy().into_owned(),
+        ]
+        .into_iter();
+        let result = plan_scan(&mut arguments);
+        fs::remove_file(&config_path).expect("remove temp config");
+
+        result.expect("valid config should authorize, plan, and review");
+
+        let runs =
+            security_agent::reasoning_log_db::load_runs(&db_path).expect("load reasoning log");
+        fs::remove_file(&db_path).expect("remove temp reasoning log db");
+
+        assert_eq!(runs.len(), 1);
+        assert!(!runs[0].reasoning_chain.thoughts().is_empty());
+    }
+
+    #[test]
+    fn plan_scan_reasoning_log_db_is_a_noop_without_cognitive_review() {
+        let config_path = write_temp_config("reasoning-log-noop", "eng-cli-reasoning-log-noop");
+        let db_path = std::env::temp_dir().join(format!(
+            "security-agent-main-plan-scan-reasoning-log-noop-{}.sadb",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&db_path);
+
+        let mut arguments = vec![
+            config_path.to_string_lossy().into_owned(),
+            "--reasoning-log-db".to_string(),
+            db_path.to_string_lossy().into_owned(),
+        ]
+        .into_iter();
+        let result = plan_scan(&mut arguments);
+        fs::remove_file(&config_path).expect("remove temp config");
+
+        result.expect("valid config should authorize and plan");
+        assert!(
+            !db_path.exists(),
+            "--reasoning-log-db without --cognitive-review must not create the database"
+        );
+    }
+
+    #[test]
+    fn plan_scan_reports_missing_reasoning_log_db_path() {
+        let mut arguments =
+            vec!["config.txt".to_string(), "--reasoning-log-db".to_string()].into_iter();
+        assert!(matches!(
+            plan_scan(&mut arguments),
+            Err(PlanScanError::MissingReasoningLogDbPath)
+        ));
     }
 
     #[test]

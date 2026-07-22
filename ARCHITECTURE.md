@@ -65,6 +65,7 @@ Release packaging:                  scripts/deploy.sh (make deploy)
 | Authz | `src/policy.rs` | Least-privilege authorization engine | `PolicyEngine`, `AuthorizationOutcome` |
 | Authz | `src/governance.rs` | Append-only audit ledger + role/action filtering | `AuditLedger`, `Role` |
 | Authz | `src/audit_log.rs` | On-disk persistence for the audit ledger | `append_audit_records`, `load_audit_records` |
+| Authz | `src/audit_db.rs` | Same role as `audit_log.rs`, backed by `.sadb` (see Infra) instead of JSON Lines | `append_audit_records`, `load_audit_records` |
 | Authz | `src/integrity.rs` | Offline tool-integrity verification vs. manifest | `verify`, `IntegrityStatus` |
 | Authz | `src/intensity_guard.rs` | Non-blocking intensity advisories | `advise` |
 | Authz | `src/network_policy.rs` | Offline-by-default / online-opt-in egress governance | `NetworkMode` |
@@ -78,17 +79,21 @@ Release packaging:                  scripts/deploy.sh (make deploy)
 | Exec | `src/tagged_run.rs` | Tagged test-run metadata for audit correlation | `TaggedTestRun` |
 | Findings | `src/ingest.rs` | Real tool output → scored `Finding`s | `ingest` |
 | Findings | `src/findings_log.rs` | Append-only on-disk findings log (single format) | `append_findings`, `load_findings` |
+| Findings | `src/findings_db.rs` | Same role as `findings_log.rs`, backed by `.sadb` (see Infra) instead of JSON Lines | `append_findings`, `load_findings` |
 | Findings | `src/memory_store.rs` | Folds the findings log into cognitive memory | `load_memory` |
 | Findings | `src/compat.rs` | Integration-adapter contracts + wire envelope | `JsonLineAdapter` |
 | Cognition | `src/cognition.rs` | Task prioritization, hypotheses, plan critique | `assess`, `generate_hypotheses` |
 | Cognition | `src/cognitive_engine.rs` | Chained reasoning, Bayesian beliefs, adversary model, metacognition | `CognitiveEngine`, `CognitiveDeliberation` |
 | Cognition | `src/calibration.rs` | Confidence-calibration tracking (Brier, ECE, reliability bins) | `CalibrationTracker` |
+| Cognition | `src/calibration_db.rs` | Persists calibration records across runs so `CognitiveEngine::with_calibration` has real cross-engagement evidence, not an empty tracker | `append_calibration_records`, `load_calibration` |
+| Cognition | `src/reasoning_log_db.rs` | Write-only archive of each `--cognitive-review` run's full reasoning chain + metacognitive verdict | `append_run`, `load_runs` |
 | Cognition | `src/belief_propagation.rs` | Noisy-OR compromise-risk propagation | `PropagationGraph` |
 | Cognition | `src/advanced.rs` | Attack-path graph builder + retest scheduler | `AttackPathGraph`, `propose_retest_schedule` |
 | Neural LM | `src/language_model.rs` | **In-house vector-quantized temporal-frequency neural LM** | `NeuralLanguageModel`, `LanguageModel` |
 | Neural LM | `src/anomaly.rs` | LM perplexity as an out-of-domain anomaly lens | `scan_findings` |
 | Neural LM | `src/nlu.rs` | Grounded plain-English intent router (`--ask`) | `interpret`, `Intent` |
 | Infra | `src/json.rs` | In-house JSON parser/writer (keeps the crate crate-free) | — |
+| Infra | `src/sadb.rs` (+ `src/sadb/`) | Zero-dependency embedded append-only store: pager, slot-directory heap pages, an immutable-image catalog, and a checksummed-footer transaction boundary. Not `SQLite`-compatible by design — see the module docs for why. | `Database`, `Transaction` |
 
 ## Data flow (a planned scan)
 
