@@ -55,7 +55,12 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-clippy-
 
       - name: cargo clippy
-        run: cargo clippy --all-targets -- -D warnings
+        # Quality bar: standard lints plus clippy::pedantic and
+        # clippy::nursery, all denied. The cognitive layer is written to this
+        # bar; if a future stable toolchain introduces a new pedantic/nursery
+        # lint, resolve it (or scope an #[allow] with justification) rather
+        # than lowering the gate.
+        run: cargo clippy --all-targets -- -D warnings -W clippy::pedantic -W clippy::nursery
 
   # ── Tests ───────────────────────────────────────────────────────────────────
   test:

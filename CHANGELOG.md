@@ -10,6 +10,18 @@ conventions. Releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## [Unreleased]
 
 ### Added
+- **`src/calibration.rs`** — confidence-calibration tracking for the
+  cognitive layer. `CalibrationTracker` accumulates predicted-vs-realized
+  outcomes and computes the Brier score, reliability bins, expected
+  calibration error, an over/under-confidence tendency, and a histogram
+  recalibration. `CognitiveEngine` scores its *prior* (type-based)
+  predictions non-circularly against the findings recorded in memory and
+  reports the result in the deliberation.
+- **`src/belief_propagation.rs`** — noisy-OR compromise-risk propagation
+  across a directed attack graph, so a node's risk reflects the weaknesses
+  of everything that can reach it (lateral movement). The deliberation now
+  shows per-asset `P(compromise)`, and a finding-free asset adjacent to a
+  compromised one surfaces as at-risk.
 - **`--about` command** (alias `--version`) — surfaces the package version,
   `MISSION_STATEMENT`, and the four `ROADMAP_PHASES`, which were exported
   but shown by no command.
