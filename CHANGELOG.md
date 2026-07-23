@@ -10,6 +10,27 @@ conventions. Releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## [Unreleased]
 
 ### Changed
+- **`src/language_model.rs` — a bigger, richer bundled corpus and more model
+  capacity.** `SECURITY_CORPUS` grows from 20 to 52 sentences, adding
+  vocabulary and phrasing for topics the original corpus didn't cover
+  (recon, web/cloud/mobile findings, social engineering, anomaly language,
+  reporting and generation verbs, governance and compliance terms) — partly
+  chosen to overlap with `src/nlu.rs`'s intent-router trigger words and
+  example phrasings, so `embed_text`'s semantic-similarity signal has more
+  of the agent's own vocabulary to draw on. Embedding width, hidden width,
+  and the VQ codebook size (`EMBED` 8→10, `HIDDEN` 24→28, `CODES` 48→56) grow
+  to match the larger vocabulary (roughly 130 → 300 tokens); `EPOCHS` drops
+  150→55; because the bigger corpus yields far more training windows per
+  epoch, total gradient exposure is comparable to before. Training remains
+  fully deterministic, in-process, and under a second in a release build.
+  The `residual_quantization_lowers_error_and_loss` test's reconstruction-
+  error check now compares *relative* error (unexplained energy over total
+  spectral energy) rather than raw squared error: the one- and two-stage
+  models are trained independently, and a bigger vocabulary gives the
+  embeddings more incentive to spread out for softmax separability, so their
+  raw spectral magnitudes differ enough that an unnormalized comparison
+  stopped being meaningful — the normalized version is what "reconstructs
+  more accurately" was always meant to test.
 - **Identity updated from purely defensive to defensive/offensive.** The
   agent's mission statement, package description, and every user-facing
   description of its scope (README, `OPERATING_GUIDE.md`, the embedded

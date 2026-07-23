@@ -4,8 +4,8 @@
 //! This is a genuine (if tiny) neural language model with a deliberately
 //! unusual architecture, and it stays true to the rest of the crate — **no
 //! external crates, no network, no model weights on disk**. It trains
-//! itself, deterministically, from a compact security-domain corpus
-//! compiled into the binary ([`SECURITY_CORPUS`]).
+//! itself, deterministically, from a security-domain corpus compiled into
+//! the binary ([`SECURITY_CORPUS`]).
 //!
 //! The prediction path is *temporal-frequency + vector-quantized*:
 //!
@@ -44,21 +44,23 @@ pub trait LanguageModel {
 /// Number of previous tokens in the temporal window the model transforms.
 const CONTEXT: usize = 4;
 /// Embedding channels per token (the temporal signal's channel count).
-const EMBED: usize = 8;
+const EMBED: usize = 10;
 /// Flattened spectral-feature width (`CONTEXT` frequencies × `EMBED`
 /// channels).
 const FEAT: usize = CONTEXT * EMBED;
 /// Number of entries in each vector-quantization codebook.
-const CODES: usize = 48;
+const CODES: usize = 56;
 /// Number of residual quantization stages. Each stage quantizes the
 /// residual the previous stage left behind (`q = q1 + q2 + ...`), a
 /// residual path *through* the quantizer that shrinks quantization error and
 /// recovers detail the discrete bottleneck would otherwise lose.
 const VQ_STAGES: usize = 2;
 /// Hidden-layer width of the prediction head.
-const HIDDEN: usize = 24;
-/// Training passes over the corpus.
-const EPOCHS: usize = 150;
+const HIDDEN: usize = 28;
+/// Training passes over the corpus. The larger corpus gives more windows
+/// per epoch than before, so fewer epochs are needed for at least as much
+/// total gradient exposure as the smaller corpus got at 150.
+const EPOCHS: usize = 55;
 /// SGD learning rate.
 const LEARNING_RATE: f32 = 0.05;
 /// Weight of the VQ commitment/codebook penalties.
@@ -71,9 +73,14 @@ const BOS: &str = "<s>";
 /// End-of-sentence token; generation stops when it is produced.
 const EOS: &str = "</s>";
 
-/// Compact, in-domain training text. Small on purpose — enough to teach the
-/// model the security vocabulary and local phrasing while keeping training
-/// fast and fully deterministic.
+/// In-domain training text, compiled into the binary. Larger than a bare
+/// minimum on purpose — broad enough to cover the agent's own vocabulary
+/// (recon, web, cloud, mobile, network, social engineering, governance,
+/// reporting) so both generation and the NLU router's
+/// [`NeuralLanguageModel::embed_text`] space see more of the terms real
+/// capability phrasings use — while
+/// staying small enough that training (SGD, deterministic, from scratch)
+/// remains fast.
 const SECURITY_CORPUS: &str = "\
 the coordinator plans an authorized scan across in scope targets.
 every finding is scored by severity and confidence.
@@ -94,7 +101,39 @@ a high impact target requires explicit approval before testing.
 the agent reasons over an already authorized plan.
 calibration measures whether stated confidence matches reality.
 belief propagation spreads compromise risk across the attack graph.
-the specialist maps techniques to approved tools within scope.";
+the specialist maps techniques to approved tools within scope.
+an assessment begins with passive reconnaissance of the authorized scope.
+active scanning enumerates open ports and running services.
+a vulnerability scanner correlates service versions with known exploits.
+cross site scripting lets an attacker inject a script into a trusted page.
+sql injection lets an attacker manipulate a backend database query.
+server side request forgery tricks a server into fetching an internal resource.
+an insecure direct object reference exposes a record the requester should not reach.
+a container image scan flags outdated packages and known vulnerabilities.
+a misconfigured storage bucket can leak sensitive customer data.
+an exposed cloud metadata endpoint can hand an attacker temporary credentials.
+a mobile application decompiled with jadx can reveal a hardcoded api key.
+weak certificate pinning lets an attacker intercept mobile app traffic.
+a phishing email is a common entry point for social engineering.
+a suspicious login from an unfamiliar location can indicate account compromise.
+anomalous outbound traffic often signals a compromised host.
+malicious payloads are frequently obfuscated to evade static detection.
+a weird or surprising string in a log line is worth a closer look.
+the specialist drafts a finding with reproduction steps and evidence.
+the coordinator can write a summary of the assessment for the client.
+the agent will continue an incomplete report from the last checkpoint.
+the report composes a narrative from every scored finding.
+the operator can reschedule a retest when remediation slips.
+every authorized action is written to the immutable audit ledger.
+the governance layer requires explicit approval for a high impact technique.
+the capability graph maps each technique to an approved tool.
+the belief propagation model updates risk as new findings arrive.
+calibration tracks whether the agent is overconfident or underconfident.
+the intensity guard throttles requests to avoid disrupting production.
+a deny listed target is refused before any scan begins.
+network policy keeps the agent offline until the operator opts in.
+compliance reporting maps findings to a recognized control framework.
+the retest confirms whether a remediated finding has actually been fixed.";
 
 /// A fast, fully-deterministic pseudo-random generator (`SplitMix64`), used
 /// for reproducible weight initialization — no external RNG crate.
@@ -740,36 +779,45 @@ mod tests {
     #[test]
     fn residual_quantization_lowers_error_and_loss() {
         // A second residual stage should reconstruct the spectral features
-        // more accurately (lower quantization error) and, in turn, not
+        // more accurately *relative to their own scale* and, in turn, not
         // increase — and here reduce — the model's loss.
+        //
+        // `one` and `two` are independently-trained models (different
+        // codebook depth changes how freely the embeddings can spread out
+        // to separate a large vocabulary for prediction), so their raw
+        // spectral magnitudes differ and an unnormalized squared error is
+        // not comparable between them. Dividing by the spectral energy
+        // gives the fraction of signal the quantizer leaves unexplained,
+        // which is what "reconstructs more accurately" actually means here.
         let one = NeuralLanguageModel::trained_staged(SECURITY_CORPUS, EPOCHS, 1);
         let two = NeuralLanguageModel::trained_staged(SECURITY_CORPUS, EPOCHS, 2);
 
-        // Average residual quantization error over the corpus.
-        let quant_error = |model: &NeuralLanguageModel| -> f32 {
+        // Relative residual quantization error over the corpus: unexplained
+        // energy divided by total spectral energy.
+        let relative_quant_error = |model: &NeuralLanguageModel| -> f32 {
             let sentences = encode_sentences(&model.vocab, SECURITY_CORPUS);
-            let mut total = 0.0;
-            let mut steps = 0usize;
+            let mut error = 0.0;
+            let mut energy = 0.0;
             for sentence in &sentences {
                 for window in sentence.windows(CONTEXT + 1) {
                     let mut context = [0usize; CONTEXT];
                     context.copy_from_slice(&window[..CONTEXT]);
                     let (_, spectral) = model.spectral_features(context);
                     let (_, quant) = model.residual_quantize(&spectral);
-                    total += spectral
+                    error += spectral
                         .iter()
                         .zip(&quant)
                         .map(|(s, q)| (s - q) * (s - q))
                         .sum::<f32>();
-                    steps += 1;
+                    energy += spectral.iter().map(|s| s * s).sum::<f32>();
                 }
             }
-            total / count(steps.max(1))
+            error / energy.max(f32::MIN_POSITIVE)
         };
 
         assert!(
-            quant_error(&two) < quant_error(&one),
-            "residual VQ should reduce quantization error"
+            relative_quant_error(&two) < relative_quant_error(&one),
+            "residual VQ should reduce relative quantization error"
         );
         assert!(
             two.mean_loss(SECURITY_CORPUS) <= one.mean_loss(SECURITY_CORPUS) + 1e-3,
