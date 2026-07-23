@@ -37,11 +37,27 @@
 //!    the prompt so the same prompt still always produces the same
 //!    continuation.
 //!
-//! Everything — the DCT, the codebook nearest-neighbor search, the forward
-//! and backward passes, and a deterministic `SplitMix64` RNG — is
-//! hand-rolled, so the whole model ships inside the offline binary like
-//! every other capability here. Being tiny, its text is modest; like the
-//! cognitive layer, it is advisory and never affects authorization.
+//! Training itself is two-phase. [`NeuralLanguageModel::bundled`] first runs
+//! ordinary SGD (cross-entropy loss, backpropagated by hand end to end),
+//! then hands the self-attention projections to
+//! [`NeuralLanguageModel::lm_refine_attention`] — a hand-rolled
+//! **Levenberg-Marquardt** pass. LM needs a genuine nonlinear
+//! least-squares residual to operate on, which cross-entropy isn't, but
+//! the model already has one sitting right there: the residual VQ
+//! reconstruction error `‖spectral − quant‖²` from step 4. Fitting the
+//! attention projections against *that* with a proper Gauss-Newton/trust-
+//! region step (adaptive damping, a gain ratio gating each step) gives the
+//! model's most content-sensitive layer a second-order polish that SGD's
+//! fixed-step gradient descent can't match — without paying to run LM over
+//! the whole (thousands-of-parameters) network, which the dense `JᵀJ`
+//! it needs to form and invert would make computationally infeasible.
+//!
+//! Everything — the DCT, the codebook nearest-neighbor search, the
+//! self-attention and Levenberg-Marquardt forward/backward passes, and a
+//! deterministic `SplitMix64` RNG — is hand-rolled, so the whole model
+//! ships inside the offline binary like every other capability here.
+//! Being tiny, its text is modest; like the cognitive layer, it is
+//! advisory and never affects authorization.
 
 /// Anything that can continue a prompt and score how surprising text is.
 /// Implemented by [`NeuralLanguageModel`]; kept as a trait so a larger
@@ -96,6 +112,24 @@ const TEMPERATURE: f32 = 0.7;
 /// each decoding step; the long low-probability tail is discarded before
 /// sampling so generation stays on-topic while still varying.
 const TOP_K: usize = 8;
+
+/// Learned parameters the Levenberg-Marquardt refinement pass (see
+/// [`NeuralLanguageModel::lm_refine_attention`]) optimizes: the three
+/// `EMBED * EMBED` self-attention projections, concatenated into one
+/// parameter vector. Kept out of SGD's reach — LM is layered on top,
+/// applied only to this small, well-posed sum-of-squares sub-problem.
+const LM_PARAMS: usize = 3 * EMBED * EMBED;
+/// Levenberg-Marquardt refinement iterations run on the attention
+/// projections after SGD training completes.
+const LM_ITERATIONS: usize = 3;
+/// Initial LM damping scale: `mu0 = LM_TAU * max(diag(JtJ))`, the standard
+/// Marquardt initialization heuristic.
+const LM_TAU: f32 = 1e-3;
+/// Only every `LM_WINDOW_STRIDE`th training window is used to build the LM
+/// normal equations. Forming `JtJ` costs `O(LM_PARAMS^2)` per residual
+/// component per window, so subsampling keeps each refinement pass fast
+/// while still covering the corpus broadly.
+const LM_WINDOW_STRIDE: usize = 12;
 
 /// Sentence-boundary token (also used as left padding for the first tokens).
 const BOS: &str = "<s>";
@@ -370,17 +404,25 @@ impl Default for NeuralLanguageModel {
 }
 
 impl NeuralLanguageModel {
-    /// Builds and trains the default model on the bundled security corpus.
+    /// Builds and trains the default model on the bundled security corpus,
+    /// then polishes its self-attention projections with a Levenberg-
+    /// Marquardt refinement pass (see [`Self::lm_refine_attention`]).
     /// Deterministic: the same binary always yields the same model.
     ///
     /// Training is memoized in a process-wide [`std::sync::OnceLock`] and
     /// subsequent calls return a clone, so repeated use (tests, multiple CLI
-    /// paths, `Default`) trains only once.
+    /// paths, `Default`) trains only once. [`Self::trained_on`] and
+    /// [`Self::trained_staged`] deliberately skip the LM pass, so tests
+    /// comparing epoch counts stay pure-SGD baselines.
     #[must_use]
     pub fn bundled() -> Self {
         static CACHED: std::sync::OnceLock<NeuralLanguageModel> = std::sync::OnceLock::new();
         CACHED
-            .get_or_init(|| Self::trained_on(SECURITY_CORPUS, EPOCHS))
+            .get_or_init(|| {
+                let mut model = Self::trained_on(SECURITY_CORPUS, EPOCHS);
+                model.lm_refine_attention(SECURITY_CORPUS);
+                model
+            })
             .clone()
     }
 
@@ -831,6 +873,245 @@ impl NeuralLanguageModel {
         }
         context
     }
+
+    /// Flattens the three attention projection matrices into one
+    /// [`LM_PARAMS`]-length parameter vector, in `wq, wk, wv` order.
+    fn attn_params(&self) -> Vec<f32> {
+        let mut params = Vec::with_capacity(LM_PARAMS);
+        params.extend_from_slice(&self.attn_wq);
+        params.extend_from_slice(&self.attn_wk);
+        params.extend_from_slice(&self.attn_wv);
+        params
+    }
+
+    /// Writes a flattened [`LM_PARAMS`]-length parameter vector (as
+    /// produced by [`Self::attn_params`]) back into the three attention
+    /// projection matrices.
+    fn set_attn_params(&mut self, params: &[f32]) {
+        let n = EMBED * EMBED;
+        self.attn_wq.copy_from_slice(&params[..n]);
+        self.attn_wk.copy_from_slice(&params[n..2 * n]);
+        self.attn_wv.copy_from_slice(&params[2 * n..]);
+    }
+
+    /// A deterministic, strided sample of `corpus`'s training windows
+    /// (every [`LM_WINDOW_STRIDE`]th one), used as the residual set for
+    /// Levenberg-Marquardt refinement.
+    fn lm_sample_windows(&self, corpus: &str) -> Vec<[usize; CONTEXT]> {
+        let sentences = encode_sentences(&self.vocab, corpus);
+        sentences
+            .iter()
+            .flat_map(|sentence| sentence.windows(CONTEXT + 1))
+            .step_by(LM_WINDOW_STRIDE)
+            .map(|window| {
+                let mut context = [0usize; CONTEXT];
+                context.copy_from_slice(&window[..CONTEXT]);
+                context
+            })
+            .collect()
+    }
+
+    /// Sum of squared residuals `||spectral - quant||^2` over `windows` —
+    /// the Levenberg-Marquardt objective `F(w)` — without building the
+    /// Jacobian. Used to cheaply evaluate a trial step.
+    fn lm_sum_squared_residual(&self, windows: &[[usize; CONTEXT]]) -> f32 {
+        let mut sse = 0.0_f32;
+        for &context in windows {
+            let embeds = self.window_embeds(context);
+            let attn = self.self_attend(&embeds);
+            let mut combined = embeds;
+            for (c, a) in combined.iter_mut().zip(&attn.attended) {
+                *c += a;
+            }
+            let spectral = self.dct_transform(&combined);
+            let (_, quant) = self.residual_quantize(&spectral);
+            sse += spectral
+                .iter()
+                .zip(&quant)
+                .map(|(s, q)| (s - q) * (s - q))
+                .sum::<f32>();
+        }
+        sse
+    }
+
+    /// Builds the Gauss-Newton normal-equation accumulators for the
+    /// nonlinear least-squares problem this Levenberg-Marquardt pass
+    /// solves: minimize `sum_over_windows ||spectral(attn) - quant||^2`
+    /// over the attention projection parameters, treating each window's
+    /// `quant` (its VQ codebook reconstruction) as a fixed local target —
+    /// consistent with the straight-through treatment the rest of training
+    /// already gives the discrete VQ bottleneck.
+    ///
+    /// Row `f` of the (never fully materialized) Jacobian, for residual
+    /// component `f` of a window, is obtained by backpropagating a one-hot
+    /// seed at `spectral[f]` through the (linear) DCT and then through
+    /// [`attend_backward`] — the same machinery [`Self::forward`]'s
+    /// training step uses, reused here as a vector-Jacobian-product
+    /// primitive instead of a scalar-loss gradient.
+    ///
+    /// Returns `(JtJ, Jtr, sse)`: `JtJ` is `LM_PARAMS * LM_PARAMS`
+    /// (row-major), `Jtr` is length `LM_PARAMS`, `sse` is the total sum of
+    /// squared residuals (`F(w)`).
+    #[allow(clippy::needless_range_loop, clippy::suboptimal_flops)]
+    fn lm_normal_equations(&self, windows: &[[usize; CONTEXT]]) -> (Vec<f32>, Vec<f32>, f32) {
+        let mut jtj = vec![0.0_f32; LM_PARAMS * LM_PARAMS];
+        let mut jtr = vec![0.0_f32; LM_PARAMS];
+        let mut sse = 0.0_f32;
+
+        for &context in windows {
+            let embeds = self.window_embeds(context);
+            let attn = self.self_attend(&embeds);
+            let mut combined = embeds.clone();
+            for (c, a) in combined.iter_mut().zip(&attn.attended) {
+                *c += a;
+            }
+            let spectral = self.dct_transform(&combined);
+            let (_, quant) = self.residual_quantize(&spectral);
+
+            let mut residual = [0.0_f32; FEAT];
+            for f in 0..FEAT {
+                residual[f] = spectral[f] - quant[f];
+                sse += residual[f] * residual[f];
+            }
+
+            for f in 0..FEAT {
+                // One-hot seed at spectral[f], backpropagated through the
+                // linear DCT to get the matching seed on `combined`.
+                let mut dspectral = [0.0_f32; FEAT];
+                dspectral[f] = 1.0;
+                let mut dcombined = [0.0_f32; CONTEXT * EMBED];
+                for n in 0..CONTEXT {
+                    for d in 0..EMBED {
+                        let mut sum = 0.0;
+                        for k in 0..CONTEXT {
+                            sum += self.dct[k * CONTEXT + n] * dspectral[k * EMBED + d];
+                        }
+                        dcombined[n * EMBED + d] = sum;
+                    }
+                }
+
+                let mut dwq = [0.0_f32; EMBED * EMBED];
+                let mut dwk = [0.0_f32; EMBED * EMBED];
+                let mut dwv = [0.0_f32; EMBED * EMBED];
+                attend_backward(
+                    &embeds,
+                    &attn,
+                    &dcombined,
+                    &mut dwq,
+                    &mut dwk,
+                    &mut dwv,
+                    &self.attn_wq,
+                    &self.attn_wk,
+                    &self.attn_wv,
+                );
+
+                let mut row = [0.0_f32; LM_PARAMS];
+                let n = EMBED * EMBED;
+                row[..n].copy_from_slice(&dwq);
+                row[n..2 * n].copy_from_slice(&dwk);
+                row[2 * n..].copy_from_slice(&dwv);
+
+                let r = residual[f];
+                for a in 0..LM_PARAMS {
+                    jtr[a] += row[a] * r;
+                    for b in a..LM_PARAMS {
+                        jtj[a * LM_PARAMS + b] += row[a] * row[b];
+                    }
+                }
+            }
+        }
+
+        // JtJ is symmetric; only the upper triangle was accumulated above.
+        for a in 0..LM_PARAMS {
+            for b in 0..a {
+                jtj[a * LM_PARAMS + b] = jtj[b * LM_PARAMS + a];
+            }
+        }
+
+        (jtj, jtr, sse)
+    }
+
+    /// Refines the self-attention projections (`attn_wq`, `attn_wk`,
+    /// `attn_wv`) with a hand-rolled Levenberg-Marquardt pass, minimizing
+    /// the residual VQ reconstruction error `||spectral - quant||^2` over a
+    /// sample of `corpus`'s training windows — a genuine nonlinear
+    /// least-squares problem, unlike the cross-entropy prediction loss SGD
+    /// trains against.
+    ///
+    /// Standard trust-region LM: each iteration solves the damped normal
+    /// equations `h = -(JtJ + mu*I)^-1 * Jtr` for a trial step, accepts it
+    /// only if the *actual* error reduction tracks the *quadratic model's
+    /// predicted* reduction closely enough (the gain ratio `q`), and
+    /// shrinks the damping `mu` on a good step or grows it on a bad one —
+    /// so it behaves like Gauss-Newton (fast) near a good fit and like
+    /// gradient descent (safe) when the local quadratic model is
+    /// untrustworthy. Because a step is only ever kept when it actually
+    /// reduced the sum of squared residuals, this method can only leave
+    /// `sse` the same or lower than where it started, never higher.
+    #[allow(clippy::needless_range_loop, clippy::suboptimal_flops)]
+    pub fn lm_refine_attention(&mut self, corpus: &str) {
+        let windows = self.lm_sample_windows(corpus);
+        if windows.is_empty() {
+            return;
+        }
+
+        let mut mu: Option<f32> = None;
+        let mut v = 2.0_f32;
+
+        for _ in 0..LM_ITERATIONS {
+            let (jtj, jtr, sse) = self.lm_normal_equations(&windows);
+            let damping = *mu.get_or_insert_with(|| {
+                LM_TAU
+                    * (0..LM_PARAMS)
+                        .map(|i| jtj[i * LM_PARAMS + i])
+                        .fold(f32::MIN_POSITIVE, f32::max)
+            });
+
+            let Some(h) = solve_damped(&jtj, &jtr, damping, LM_PARAMS) else {
+                // Numerically singular: treat like a failed step.
+                mu = Some(damping * v);
+                v *= 2.0;
+                continue;
+            };
+            let h: Vec<f32> = h.iter().map(|value| -value).collect();
+
+            // L(0) - L(h), from the quadratic model of Definition 2: the
+            // predicted error reduction for this step.
+            let mut jtj_h = vec![0.0_f32; LM_PARAMS];
+            for a in 0..LM_PARAMS {
+                let mut sum = 0.0;
+                for b in 0..LM_PARAMS {
+                    sum += jtj[a * LM_PARAMS + b] * h[b];
+                }
+                jtj_h[a] = sum;
+            }
+            let h_dot_jtr: f32 = h.iter().zip(&jtr).map(|(hi, gi)| hi * gi).sum();
+            let h_jtj_h: f32 = h.iter().zip(&jtj_h).map(|(hi, ji)| hi * ji).sum();
+            let predicted = -(h_dot_jtr + 0.5 * h_jtj_h);
+
+            let params = self.attn_params();
+            let trial: Vec<f32> = params.iter().zip(&h).map(|(p, hi)| p + hi).collect();
+            let mut trial_model = self.clone();
+            trial_model.set_attn_params(&trial);
+            let trial_sse = trial_model.lm_sum_squared_residual(&windows);
+
+            let actual = sse - trial_sse;
+            let q = if predicted.abs() > f32::MIN_POSITIVE {
+                actual / predicted
+            } else {
+                0.0
+            };
+
+            if q > 0.0 {
+                self.set_attn_params(&trial);
+                mu = Some(damping * (1.0_f32 / 3.0).max(1.0 - (2.0 * q - 1.0).powi(3)));
+                v = 2.0;
+            } else {
+                mu = Some(damping * v);
+                v *= 2.0;
+            }
+        }
+    }
 }
 
 impl LanguageModel for NeuralLanguageModel {
@@ -997,6 +1278,64 @@ fn attend_backward(
         }
     }
     dembeds
+}
+
+/// Solves `(A + mu*I) x = b` for `x` via Gauss-Jordan elimination with
+/// partial pivoting, where `A` is `n * n` (row-major, symmetric — as `JtJ`
+/// always is) and `b` has length `n`. Returns `None` if the system is
+/// numerically singular (a pivot too close to zero after the best
+/// available row swap), in which case the caller should treat the step as
+/// failed rather than trust a garbage solution.
+#[allow(clippy::needless_range_loop)]
+fn solve_damped(a: &[f32], b: &[f32], mu: f32, n: usize) -> Option<Vec<f32>> {
+    // Augmented [A + mu*I | b] matrix, row-major, n rows by (n + 1) columns.
+    let mut aug = vec![0.0_f32; n * (n + 1)];
+    for i in 0..n {
+        for j in 0..n {
+            aug[i * (n + 1) + j] = a[i * n + j];
+        }
+        aug[i * (n + 1) + i] += mu;
+        aug[i * (n + 1) + n] = b[i];
+    }
+
+    for col in 0..n {
+        let mut pivot_row = col;
+        let mut pivot_val = aug[col * (n + 1) + col].abs();
+        for row in (col + 1)..n {
+            let val = aug[row * (n + 1) + col].abs();
+            if val > pivot_val {
+                pivot_val = val;
+                pivot_row = row;
+            }
+        }
+        if pivot_val < 1e-10 {
+            return None;
+        }
+        if pivot_row != col {
+            for k in 0..=n {
+                aug.swap(col * (n + 1) + k, pivot_row * (n + 1) + k);
+            }
+        }
+
+        let pivot = aug[col * (n + 1) + col];
+        for k in 0..=n {
+            aug[col * (n + 1) + k] /= pivot;
+        }
+        for row in 0..n {
+            if row == col {
+                continue;
+            }
+            let factor = aug[row * (n + 1) + col];
+            if factor == 0.0 {
+                continue;
+            }
+            for k in 0..=n {
+                aug[row * (n + 1) + k] -= factor * aug[col * (n + 1) + k];
+            }
+        }
+    }
+
+    Some((0..n).map(|i| aug[i * (n + 1) + n]).collect())
 }
 
 /// Initializes `len` weights uniformly in `[-scale, scale)`.
@@ -1339,6 +1678,110 @@ mod tests {
             minus_embeds[idx] -= EPS;
             let numeric = (loss(&model, &plus_embeds) - loss(&model, &minus_embeds)) / (2.0 * EPS);
             assert_close(numeric, dembeds[idx], "embeds");
+        }
+    }
+
+    #[test]
+    fn solve_damped_matches_a_known_system() {
+        // 3x3 SPD system with mu = 0 (an exact, undamped solve): A x = b,
+        // A = [[4,1,1],[1,3,1],[1,1,2]], chosen so x = [1, 2, -1] exactly.
+        let a = [4.0_f32, 1.0, 1.0, 1.0, 3.0, 1.0, 1.0, 1.0, 2.0];
+        let x_expected = [1.0_f32, 2.0, -1.0];
+        let mut b = [0.0_f32; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                b[i] += a[i * 3 + j] * x_expected[j];
+            }
+        }
+        let x = solve_damped(&a, &b, 0.0, 3).expect("well-posed system should solve");
+        for (got, want) in x.iter().zip(&x_expected) {
+            assert!((got - want).abs() < 1e-3, "got {x:?}, want {x_expected:?}");
+        }
+    }
+
+    #[test]
+    fn solve_damped_reports_a_singular_system() {
+        // A rank-deficient 2x2 (second row is a multiple of the first),
+        // undamped: no unique solution.
+        let a = [1.0_f32, 2.0, 2.0, 4.0];
+        let b = [1.0_f32, 2.0];
+        assert!(solve_damped(&a, &b, 0.0, 2).is_none());
+    }
+
+    #[test]
+    fn lm_normal_equations_jtr_matches_finite_differences() {
+        // Jtr = J^T r is the gradient of 0.5 * sse w.r.t. the attention
+        // parameters; check it against central finite differences on
+        // lm_sum_squared_residual, the strongest available check that the
+        // one-hot-seeded DCT/attend_backward reuse inside
+        // lm_normal_equations actually builds a correct Jacobian, not just
+        // one that compiles and happens to make lm_refine_attention behave
+        // reasonably.
+        const EPS: f32 = 1e-3;
+        const TOL: f32 = 5e-1;
+
+        let model = NeuralLanguageModel::trained_on(SECURITY_CORPUS, 5);
+        let windows = model.lm_sample_windows(SECURITY_CORPUS);
+        let windows = &windows[..windows.len().min(3)];
+
+        let (_, jtr, _) = model.lm_normal_equations(windows);
+        let params = model.attn_params();
+
+        for &idx in &[0usize, EMBED * EMBED, 2 * EMBED * EMBED + 3, LM_PARAMS - 1] {
+            let mut plus = model.clone();
+            let mut plus_params = params.clone();
+            plus_params[idx] += EPS;
+            plus.set_attn_params(&plus_params);
+
+            let mut minus = model.clone();
+            let mut minus_params = params.clone();
+            minus_params[idx] -= EPS;
+            minus.set_attn_params(&minus_params);
+
+            let sse_plus = plus.lm_sum_squared_residual(windows);
+            let sse_minus = minus.lm_sum_squared_residual(windows);
+            let numeric = 0.5 * (sse_plus - sse_minus) / (2.0 * EPS);
+            assert!(
+                (numeric - jtr[idx]).abs() < TOL,
+                "param {idx}: numeric={numeric:.4} jtr={:.4}",
+                jtr[idx]
+            );
+        }
+    }
+
+    #[test]
+    fn lm_refine_attention_never_increases_reconstruction_error() {
+        let mut model = NeuralLanguageModel::trained_on(SECURITY_CORPUS, 5);
+        let windows = model.lm_sample_windows(SECURITY_CORPUS);
+        let before = model.lm_sum_squared_residual(&windows);
+
+        model.lm_refine_attention(SECURITY_CORPUS);
+
+        let after = model.lm_sum_squared_residual(&windows);
+        assert!(
+            after <= before + 1e-3,
+            "LM refinement should never leave reconstruction error higher: before={before:.4} after={after:.4}"
+        );
+        assert!(
+            after < before,
+            "expected at least one accepted LM step to improve on a lightly-trained model: before={before:.4} after={after:.4}"
+        );
+    }
+
+    #[test]
+    fn lm_refine_attention_keeps_weights_finite() {
+        let mut model = NeuralLanguageModel::trained_on(SECURITY_CORPUS, 5);
+        model.lm_refine_attention(SECURITY_CORPUS);
+        for value in model
+            .attn_wq
+            .iter()
+            .chain(&model.attn_wk)
+            .chain(&model.attn_wv)
+        {
+            assert!(
+                value.is_finite(),
+                "attention weight went non-finite: {value}"
+            );
         }
     }
 
