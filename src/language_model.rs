@@ -614,9 +614,16 @@ impl NeuralLanguageModel {
 
     /// Draws the next token id for `context` by temperature/top-`k`
     /// sampling: [`TEMPERATURE`]-sharpen the predicted distribution, keep
-    /// only its [`TOP_K`] most probable tokens, renormalize, then draw from
-    /// `rng`. Falls back to the single most probable token if `probs` is
-    /// somehow empty.
+    /// only its [`TOP_K`] most probable tokens, then draw one proportionally
+    /// to those (unnormalized) weights by scaling `rng`'s `[0, 1)` draw by
+    /// their sum — equivalent to renormalizing them to probabilities first.
+    /// Candidates are ranked by weight with token id as an explicit
+    /// tie-breaker (`f32::total_cmp`, not `partial_cmp`), so ties and any
+    /// stray `NaN` can't leave the ordering — and so the sampled token —
+    /// dependent on sort stability. If floating-point rounding leaves a
+    /// sliver of the draw unconsumed after the loop, or `probs` is somehow
+    /// empty, this falls back to the top-ranked candidate (or token id `0`
+    /// if there were none at all).
     fn sample_next(&self, context: [usize; CONTEXT], rng: &mut Rng) -> usize {
         let pass = self.forward(context);
 
@@ -626,7 +633,7 @@ impl NeuralLanguageModel {
             .enumerate()
             .map(|(id, &p)| (id, p.max(f32::MIN_POSITIVE).powf(1.0 / TEMPERATURE)))
             .collect();
-        candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        candidates.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         candidates.truncate(TOP_K.min(candidates.len()));
 
         let total: f32 = candidates.iter().map(|&(_, weight)| weight).sum();
@@ -901,14 +908,20 @@ mod tests {
     }
 
     #[test]
-    fn generate_draws_different_continuations_for_different_prompts() {
-        // The sampling RNG is seeded from the prompt, so different prompts
-        // should (almost certainly) land on different draws rather than
-        // both collapsing onto the same greedy path.
+    fn generate_is_deterministic_across_several_distinct_prompts() {
+        // A guaranteed invariant (unlike asserting distinct prompts produce
+        // distinct output, which isn't guaranteed — e.g. two prompts could
+        // both hit EOS immediately): the prompt-seeded sampling RNG must
+        // make every one of these prompts individually reproducible.
         let model = NeuralLanguageModel::bundled();
-        let a = model.generate("the coordinator plans an", 12);
-        let b = model.generate("a phishing email is", 12);
-        assert_ne!(a, b);
+        for prompt in [
+            "the coordinator plans an",
+            "a phishing email is",
+            "calibration measures",
+            "a container image scan",
+        ] {
+            assert_eq!(model.generate(prompt, 12), model.generate(prompt, 12));
+        }
     }
 
     #[test]
