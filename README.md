@@ -175,10 +175,13 @@ The `MobileAndroid` specialist uses a dedicated tool set for APK/DEX analysis an
 | `src/engagement_config.rs` | Zero-dependency parser for `--plan-scan` engagement config files |
 | `src/execution.rs` | Bounded real execution of `StaticLocalAnalysis` cataloged tools, plus `execute_plan` |
 | `src/audit_log.rs` | Append-only on-disk persistence for the audit ledger |
+| `src/audit_db.rs` | Same role as `audit_log.rs`, backed by the zero-dependency `.sadb` embedded database instead of JSON Lines |
 | `src/findings.rs` | Unified finding model and normalized risk scorer |
 | `src/ingest.rs` | Turns real tool output (semgrep, SARIF, JSONL) into scored `Finding`s |
 | `src/findings_log.rs` | Append-only on-disk findings log — the single findings format, reused by cognition |
+| `src/findings_db.rs` | Same role as `findings_log.rs`, backed by `.sadb` instead of JSON Lines |
 | `src/json.rs` | In-house JSON parser/writer (keeps the crate free of external runtime crates) |
+| `src/sadb.rs` (+ `src/sadb/`) | Zero-dependency embedded append-only database: pager, heap pages, an immutable-image catalog, and a checksummed-footer transaction boundary with crash recovery. Not SQLite-compatible by design — see the module docs for why |
 | `src/governance.rs` | Append-only audit ledger with role/action filtering |
 | `src/intensity_guard.rs` | Non-blocking intensity advisories for network-tool execution |
 | `src/integrity.rs` | Offline tool-integrity verification against a bundled manifest |
@@ -186,6 +189,8 @@ The `MobileAndroid` specialist uses a dedicated tool set for APK/DEX analysis an
 | `src/cognition.rs` | Advisory reasoning layer: risk-yield task prioritization, per-target-type hypothesis generation, and reflective plan critique |
 | `src/cognitive_engine.rs` | Advanced cognitive architecture: chained reasoning, Bayesian belief revision, adversary theory-of-mind, attention allocation, metacognition, calibration, and compromise propagation |
 | `src/calibration.rs` | Confidence-calibration tracking: Brier score, reliability bins, expected calibration error, over/under-confidence tendency, and histogram recalibration |
+| `src/calibration_db.rs` | Persists calibration records across runs (via `.sadb`) so `CognitiveEngine::with_calibration` has real cross-engagement evidence instead of an empty tracker every run |
+| `src/reasoning_log_db.rs` | Write-only `.sadb` archive of each `--cognitive-review` run's full reasoning chain and metacognitive verdict, for after-the-fact review |
 | `src/belief_propagation.rs` | Noisy-OR compromise-risk propagation across the attack graph (lateral movement) |
 | `src/language_model.rs` | Small from-scratch **self-attentive, vector-quantized temporal-frequency** neural language model (embed → self-attention → DCT → residual VQ codebooks → softmax), SGD-trained then Levenberg-Marquardt-refined on a bundled security corpus; text generation and perplexity scoring |
 | `src/builtin_tools.rs` | Offline built-in substitutes (autopsy, volatility) plus the in-house SHA-256; real local-file analysis, no network |
@@ -631,7 +636,10 @@ by the library's tests, and prints the resulting scan plan:
 ./target/release/security-agent --plan-scan engagement.txt --cognitive-review
 ./target/release/security-agent --plan-scan engagement.txt --execute <args-passed-to-each-tool>
 ./target/release/security-agent --plan-scan engagement.txt --findings-log findings.jsonl --execute <args>
+./target/release/security-agent --plan-scan engagement.txt \
+  --cognitive-review --calibration-db calibration.sadb --reasoning-log-db reasoning.sadb
 ./target/release/security-agent --schedule-retest findings.jsonl
+./target/release/security-agent --view-reasoning-log-db reasoning.sadb
 ```
 
 - With no extra flags, `--plan-scan` only plans: it prints the
@@ -665,9 +673,23 @@ by the library's tests, and prints the resulting scan plan:
   `StaticLocalAnalysis`-classified tool in the plan via
   `execute_plan`, passing `<args>` to each invocation, and prints each
   outcome (success with exit code/duration, or the specific failure).
+- `--audit-db <path>`, `--findings-db <path>` are drop-in siblings of
+  `--audit-log`/`--findings-log`, backed by the zero-dependency `.sadb`
+  embedded database (see [Persisting to `.sadb`](#persisting-to-sadb-a-zero-dependency-embedded-database)
+  below) instead of JSON Lines.
+- `--calibration-db <path>` (only takes effect with `--cognitive-review`)
+  loads the accumulated confidence-calibration history from every prior
+  run before this run's hypothesis correction, then appends this run's
+  fresh evidence back — closing the loop `CognitiveEngine::with_calibration`
+  exists for but that nothing previously carried forward.
+- `--reasoning-log-db <path>` (only takes effect with `--cognitive-review`)
+  archives this run's full Cognitive Deliberation train of thought and
+  metacognitive verdict, for later review with `--view-reasoning-log-db`.
 - Flags may be combined, in this order: `--audit-log <path>`, then
-  `--cognitive-review`, then `--memory <log>`, then `--findings-log <path>`,
-  then `--execute <args>...`.
+  `--audit-db <path>`, then `--cognitive-review`, then `--memory <log>`,
+  then `--calibration-db <path>`, then `--findings-log <path>`, then
+  `--findings-db <path>`, then `--reasoning-log-db <path>`, then
+  `--execute <args>...`.
 
 ### Persisting cognitive memory across engagements
 
@@ -694,3 +716,57 @@ format conversion:
 The log is human-readable (one `finding_record` per line) and only ever
 grows — each engagement's findings accumulate on top of earlier ones, and
 cognition is always re-derived by folding the full log.
+
+### Persisting to `.sadb`: a zero-dependency embedded database
+
+Every JSON Lines store above (`--audit-log`, `--findings-log`, `--memory`)
+has a `.sadb`-backed sibling: `--audit-db`, `--findings-db`,
+`--calibration-db`, `--reasoning-log-db`. `.sadb` is a purpose-built,
+append-only embedded database (`src/sadb.rs`) — a pager, slot-directory
+heap pages, an immutable-image catalog, and a checksummed-footer
+transaction boundary with crash recovery — written from scratch to keep
+the crate's zero-external-runtime-dependency guarantee. **It is
+deliberately not SQLite-compatible**: real SQLite's mutable B-tree file
+format and trigger/view machinery don't fit either that guarantee or what
+this tool actually needs. A `.sadb` file can only be read with this
+agent's own `--view-*-db` commands (see below) — not `sqlite3`, not a
+generic DB browser.
+
+Two of the four stores exist purely as alternative storage for data the
+JSON Lines flags already persist (`--audit-db`, `--findings-db`). The
+other two close real gaps that had no JSON Lines equivalent at all:
+
+- **`--calibration-db <path>`** carries `CognitiveEngine`'s confidence
+  calibration forward across engagements. Without it, `--cognitive-review`
+  silently recomputes calibration from scratch on every single run —
+  `with_calibration` exists specifically to prevent that, but nothing
+  wired it to persistent storage until this flag did.
+- **`--reasoning-log-db <path>`** archives every `--cognitive-review`
+  run's full train of thought and metacognitive verdict — an immutable,
+  after-the-fact audit trail of *why* the agent concluded what it did,
+  independent of how the reasoning code itself may change later.
+
+```bash
+# Engagement 1: review and archive the reasoning, accumulating calibration.
+./target/release/security-agent --plan-scan engagement.txt \
+  --cognitive-review --calibration-db calibration.sadb --reasoning-log-db reasoning.sadb
+
+# Engagement 2: calibration correction now has real cross-engagement
+# evidence behind it, and this run's deliberation is archived too.
+./target/release/security-agent --plan-scan engagement.txt \
+  --cognitive-review --calibration-db calibration.sadb --reasoning-log-db reasoning.sadb
+
+# Read any of the four stores back through the CLI:
+./target/release/security-agent --view-audit-db audit.sadb
+./target/release/security-agent --view-findings-db findings.sadb
+./target/release/security-agent --view-calibration-db calibration.sadb
+./target/release/security-agent --view-reasoning-log-db reasoning.sadb
+```
+
+`--view-calibration-db` prints the full calibration report (Brier score,
+mean calibration error, over/under-confidence tendency, and a
+reliability-bin breakdown) that `src/calibration.rs` has always been able
+to compute but that, until this command existed, no CLI path ever
+surfaced. Opening a `.sadb` path that doesn't exist yet creates an empty
+database rather than erroring — the same open-or-create ergonomics as the
+JSON Lines flags, just for a real page store instead of a text file.
