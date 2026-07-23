@@ -29,6 +29,7 @@ pub mod mission;
 pub mod model;
 pub mod network_policy;
 pub mod nlu;
+pub mod orchestrator;
 pub mod pcap;
 pub mod policy;
 pub mod reasoning_log_db;
@@ -94,11 +95,12 @@ pub use model::{
 };
 pub use network_policy::NetworkMode;
 pub use nlu::{Intent, Interpretation, interpret};
+pub use orchestrator::{OrchestrationSchedule, OrchestrationStep, ToolOrchestrator};
 pub use pcap::{CaptureTimestamp, ProtocolCounts, WiresharkReport, run_wireshark};
 pub use policy::{AuthorizationError, AuthorizationOutcome, PolicyEngine};
 pub use registry::{
     CapabilityRegistry, ExecutionClass, SpecialistCapability, ToolDefinition, ToolchainPack,
-    ToolchainPackRegistry, UseCase,
+    ToolchainPackRegistry, UseCase, classify_execution,
 };
 pub use roadmap::{ROADMAP_PHASES, RoadmapPhase};
 pub use tagged_run::{TaggedTestRun, TestEnvironment, TestRunReport};

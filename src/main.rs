@@ -741,6 +741,12 @@ fn plan_scan_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
     match plan_scan(arguments) {
         Ok((plan, cognitive_output, outcomes, findings)) => {
             print!("{plan}");
+            // The orchestrated schedule shows the deterministic,
+            // least-invasive-first order execution will follow (and that
+            // `--execute` actually runs), deduplicated per (target, tool).
+            let schedule = security_agent::ToolOrchestrator::new().schedule(&plan);
+            println!();
+            print!("{schedule}");
             if let Some((assessment, deliberation, anomalies)) = cognitive_output {
                 println!();
                 print!("{assessment}");

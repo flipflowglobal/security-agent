@@ -10,6 +10,28 @@ conventions. Releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## [Unreleased]
 
 ### Added
+- **`src/orchestrator.rs` — a tool orchestrator that turns an
+  `ExecutionPlan` into an ordered, deduplicated `OrchestrationSchedule`.**
+  The coordinator's plan says *what is authorized* but not *what order to
+  run in*, and its per-target tasks can name the same tool for the same
+  target more than once (a target matched by two specialists, overlapping
+  toolchain packs). `ToolOrchestrator::schedule` closes that gap with two
+  guarantees: it orders steps **least-invasive first** — static local
+  analysis before active network before active exploitation, via
+  `registry::classify_execution` (now `pub`, the same name-based classifier
+  the catalog stamps every `ToolDefinition` with) — so read-only work can
+  surface a blocker before any traffic reaches a live target and
+  exploitation is always last; and it schedules each `(target, tool)` pair
+  **exactly once**, keeping its first appearance. Ordering is a stable sort,
+  so ties within a class keep plan order and a schedule is fully
+  deterministic. This is an ordering/dedup layer, not a permission one — the
+  `NetworkMode` egress gate in `src/execution.rs` still decides whether an
+  active step may run at all. `execute_plan` now runs the schedule instead
+  of iterating raw tasks, so real execution follows the safe order and never
+  double-runs a tool against a target; `--plan-scan` prints the resulting
+  `Execution Schedule` alongside the plan. Static-local steps never carry a
+  network address (they operate on files, not targets), mirroring the
+  argument-injection rule execution already applied.
 - **`src/language_model.rs` — a hand-rolled Levenberg-Marquardt refinement
   pass (`lm_refine_attention`) for the self-attention projections.**
   Full-network LM isn't feasible here — it needs a dense `JᵀJ` over every

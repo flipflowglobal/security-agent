@@ -429,12 +429,19 @@ pub struct ToolDefinition {
 }
 
 /// Best-effort classification of every cataloged tool's execution surface.
+///
 /// This drives which tools Phase-4-style real execution wiring may invoke
 /// directly (`StaticLocalAnalysis`) versus which require additional,
 /// not-yet-built live-target/rate-limit gating (`ActiveNetwork`,
 /// `ActiveExploitation`). Unrecognized names fall back to the strictest
 /// class rather than being silently treated as safe.
-fn classify_execution(name: &str) -> ExecutionClass {
+///
+/// This is the single source of truth for a tool's class: the catalog
+/// stamps each [`ToolDefinition`] with it here, and
+/// [`crate::orchestrator`] reuses it to order execution least-invasive
+/// first from a plan's tool names alone (no `PATH` resolution required).
+#[must_use]
+pub fn classify_execution(name: &str) -> ExecutionClass {
     use ExecutionClass::{ActiveExploitation, ActiveNetwork, StaticLocalAnalysis};
     match name {
         "autopsy" | "volatility" | "binwalk" | "bulk_extractor" | "foremost" | "hashdeep"
