@@ -84,7 +84,8 @@ impl EngagementContext {
 
     /// Records an open service, deduplicated on `(host, port, protocol)`.
     /// Returns `true` when this was a new service.
-    pub fn record_service(&mut self, service: Service) -> bool {
+    pub fn record_service(&mut self, mut service: Service) -> bool {
+        service.protocol.make_ascii_lowercase();
         let is_duplicate = self.services.iter().any(|s| {
             s.host == service.host && s.port == service.port && s.protocol == service.protocol
         });
@@ -167,6 +168,25 @@ mod tests {
         assert!(ctx.record_service(svc.clone()));
         assert!(!ctx.record_service(svc));
         assert_eq!(ctx.services().len(), 1);
+    }
+
+    #[test]
+    fn canonicalizes_protocol_before_service_deduplication() {
+        let mut ctx = EngagementContext::new();
+        assert!(ctx.record_service(Service {
+            host: "10.0.0.1".to_string(),
+            port: 53,
+            protocol: "UDP".to_string(),
+            service: Some("domain".to_string()),
+        }));
+        assert!(!ctx.record_service(Service {
+            host: "10.0.0.1".to_string(),
+            port: 53,
+            protocol: "udp".to_string(),
+            service: Some("dns".to_string()),
+        }));
+        assert_eq!(ctx.services().len(), 1);
+        assert_eq!(ctx.services()[0].protocol, "udp");
     }
 
     #[test]
