@@ -339,6 +339,10 @@ prediction path is:
    keeping the discrete bottleneck.
 4. **Predict** the next token from the quantized code through a tanh hidden
    layer and a softmax over the vocabulary.
+5. **Sample**: decoding draws from that distribution with temperature and
+   top-`k` filtering (rather than always taking the most probable token),
+   seeded deterministically from the prompt so the same prompt still always
+   produces the same continuation.
 
 The DCT, residual codebook search, and forward/backward passes are all
 hand-rolled: **no external crates, no network, no weights on disk**. The
@@ -348,7 +352,7 @@ its text is modest; it learns the domain vocabulary and local phrasing
 rather than long-range coherence.
 
 ```bash
-# Greedy continuation of a prompt (deterministic).
+# Continuation of a prompt (temperature/top-k sampling, deterministic per prompt).
 ./target/release/security-agent --llm-generate the coordinator plans an
 
 # Perplexity: how surprising text is to the model (lower = more in-domain).
