@@ -353,11 +353,10 @@ prediction path is:
 
 The self-attention layer, DCT, residual codebook search, and forward/backward
 passes are all hand-rolled: **no external crates, no network, no weights on
-disk**. The
-model trains itself at startup (well under a second) and ships inside the
-offline binary. Being tiny — and quantized through a discrete bottleneck —
-its text is modest; it learns the domain vocabulary and local phrasing
-rather than long-range coherence.
+disk**. The model trains itself at startup (well under a second) and ships
+inside the offline binary. Being tiny — and quantized through a discrete
+bottleneck — its text is modest; it learns the domain vocabulary and local
+phrasing rather than long-range coherence.
 
 ```bash
 # Continuation of a prompt (temperature/top-k sampling, deterministic per prompt).

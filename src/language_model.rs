@@ -710,7 +710,7 @@ impl NeuralLanguageModel {
         // Backprop the spectral gradient through the (linear) DCT to the
         // combined (embed + attention) representation:
         // dCombined[n][d] = sum_k dct[k][n] * dSpectral[k][d].
-        let mut dcombined = vec![0.0_f32; CONTEXT * EMBED];
+        let mut dcombined = [0.0_f32; CONTEXT * EMBED];
         for n in 0..CONTEXT {
             for d in 0..EMBED {
                 let mut sum = 0.0;
@@ -724,9 +724,9 @@ impl NeuralLanguageModel {
         // combined = embeds + attended, so the residual sends dCombined
         // straight through to both branches: directly to the token
         // embeddings below, and back through self-attention here.
-        let mut dwq = vec![0.0_f32; EMBED * EMBED];
-        let mut dwk = vec![0.0_f32; EMBED * EMBED];
-        let mut dwv = vec![0.0_f32; EMBED * EMBED];
+        let mut dwq = [0.0_f32; EMBED * EMBED];
+        let mut dwk = [0.0_f32; EMBED * EMBED];
+        let mut dwv = [0.0_f32; EMBED * EMBED];
         let dembeds_from_attn = attend_backward(
             &pass.embeds,
             &pass.attn,
@@ -924,7 +924,7 @@ fn attend_backward(
     wq: &[f32],
     wk: &[f32],
     wv: &[f32],
-) -> Vec<f32> {
+) -> [f32; CONTEXT * EMBED] {
     let scale = 1.0 / count(EMBED).sqrt();
 
     // dV[j] = sum_i weights[i][j] * dAttended[i]
@@ -996,7 +996,7 @@ fn attend_backward(
             }
         }
     }
-    dembeds.to_vec()
+    dembeds
 }
 
 /// Initializes `len` weights uniformly in `[-scale, scale)`.
@@ -1233,17 +1233,24 @@ mod tests {
     }
 
     #[test]
-    fn self_attend_learns_a_non_uniform_distribution() {
-        // A trained model's attention shouldn't stay at its "no information
-        // yet" starting point of attending equally to every position.
-        let model = NeuralLanguageModel::bundled();
-        let embeds = model.window_embeds(model.seed_context("the coordinator plans an"));
-        let attn = model.self_attend(&embeds);
-        let uniform = 1.0 / count(CONTEXT);
-        let non_uniform = attn.weights.iter().any(|&w| (w - uniform).abs() > 0.05);
+    fn training_updates_the_attention_projection_weights() {
+        // attn_wq/wk/wv start from the same random (not uniform) init
+        // regardless of training, so comparing a trained model's attention
+        // *output* to a uniform distribution wouldn't prove training moved
+        // anything — it could hold from the random init alone. Compare the
+        // projection weights themselves before and after training instead:
+        // if the backward pass wires up correctly, gradient descent must
+        // move them from their zero-epoch starting point.
+        let untrained = NeuralLanguageModel::trained_on(SECURITY_CORPUS, 0);
+        let trained = NeuralLanguageModel::trained_on(SECURITY_CORPUS, EPOCHS);
+        let moved = |before: &[f32], after: &[f32]| {
+            before.iter().zip(after).any(|(b, a)| (b - a).abs() > 1e-4)
+        };
         assert!(
-            non_uniform,
-            "expected learned attention weights to move away from uniform {uniform}"
+            moved(&untrained.attn_wq, &trained.attn_wq)
+                && moved(&untrained.attn_wk, &trained.attn_wk)
+                && moved(&untrained.attn_wv, &trained.attn_wv),
+            "training should move every attention projection away from its random initialization"
         );
     }
 
@@ -1277,9 +1284,9 @@ mod tests {
         };
 
         let attn = model.self_attend(&embeds);
-        let mut dwq = vec![0.0_f32; EMBED * EMBED];
-        let mut dwk = vec![0.0_f32; EMBED * EMBED];
-        let mut dwv = vec![0.0_f32; EMBED * EMBED];
+        let mut dwq = [0.0_f32; EMBED * EMBED];
+        let mut dwk = [0.0_f32; EMBED * EMBED];
+        let mut dwv = [0.0_f32; EMBED * EMBED];
         let dembeds = attend_backward(
             &embeds,
             &attn,

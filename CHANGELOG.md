@@ -25,14 +25,15 @@ conventions. Releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.h
   caller holds `&mut self`) are both fully hand-derived — no autodiff, no
   external crates — adding three new learned `EMBED × EMBED` projection
   matrices. `attend_backward`'s gradients are checked against central finite
-  differences in a new test
-  (`attend_backward_matches_finite_differences`), the strongest available
-  correctness signal for backprop math this hand-rolled; two more tests
-  confirm each attention row is a valid softmax and that a trained model's
-  weights move away from the untrained uniform starting point. All existing
-  invariant tests (loss reduction, residual-VQ error, perplexity ordering)
-  continued to hold with attention added, with no hyperparameter retuning
-  needed.
+  differences in a new test (`attend_backward_matches_finite_differences`) —
+  the strongest available correctness signal for hand-rolled backprop math
+  like this; two more tests confirm each attention row is a valid softmax
+  and that training actually moves the projection weights away from their
+  random initialization (rather than asserting non-uniformity against the
+  initial state, which the random — not uniform — init could already
+  satisfy on its own). All existing invariant tests (loss reduction,
+  residual-VQ error, perplexity ordering) continued to hold with attention
+  added, with no hyperparameter retuning needed.
 
 ### Changed
 - **`src/language_model.rs` — temperature/top-`k` sampling in `generate()`,
