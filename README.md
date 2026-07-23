@@ -322,8 +322,8 @@ capability (see [Plain-English instructions](#plain-english-instructions--ask)).
 
 `src/language_model.rs` is a small, from-scratch **neural** language model
 with a vector-quantized, temporal-frequency architecture, trained
-deterministically on a compact security-domain corpus compiled into the
-binary. The prediction path is:
+deterministically on a security-domain corpus compiled into the binary. The
+prediction path is:
 
 1. **Embed** the recent window of tokens into learned vectors — a short
    multi-channel time signal.
@@ -342,10 +342,10 @@ binary. The prediction path is:
 
 The DCT, residual codebook search, and forward/backward passes are all
 hand-rolled: **no external crates, no network, no weights on disk**. The
-model trains itself at startup (~0.5 s) and ships inside the offline binary.
-Being tiny — and quantized through a discrete bottleneck — its text is
-modest; it learns the domain vocabulary and local phrasing rather than
-long-range coherence.
+model trains itself at startup (well under a second) and ships inside the
+offline binary. Being tiny — and quantized through a discrete bottleneck —
+its text is modest; it learns the domain vocabulary and local phrasing
+rather than long-range coherence.
 
 ```bash
 # Greedy continuation of a prompt (deterministic).
