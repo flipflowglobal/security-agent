@@ -187,7 +187,7 @@ const SPECS: &[IntentSpec] = &[
     },
     IntentSpec {
         intent: Intent::ViewCalibrationDb,
-        triggers: &["calibration"],
+        triggers: &["calibration database", "calibration db", "calibration"],
         examples: &[
             "show the calibration database",
             "how calibrated are you",

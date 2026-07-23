@@ -719,18 +719,16 @@ cognition is always re-derived by folding the full log.
 
 ### Persisting to `.sadb`: a zero-dependency embedded database
 
-Every JSON Lines store above (`--audit-log`, `--findings-log`, `--memory`)
-has a `.sadb`-backed sibling: `--audit-db`, `--findings-db`,
-`--calibration-db`, `--reasoning-log-db`. `.sadb` is a purpose-built,
-append-only embedded database (`src/sadb.rs`) — a pager, slot-directory
-heap pages, an immutable-image catalog, and a checksummed-footer
-transaction boundary with crash recovery — written from scratch to keep
-the crate's zero-external-runtime-dependency guarantee. **It is
-deliberately not SQLite-compatible**: real SQLite's mutable B-tree file
-format and trigger/view machinery don't fit either that guarantee or what
-this tool actually needs. A `.sadb` file can only be read with this
-agent's own `--view-*-db` commands (see below) — not `sqlite3`, not a
-generic DB browser.
+`.sadb` is a purpose-built, append-only embedded database (`src/sadb.rs`)
+— a pager, slot-directory heap pages, an immutable-image catalog, and a
+checksummed-footer transaction boundary with crash recovery — written
+from scratch to keep the crate's zero-external-runtime-dependency
+guarantee. **It is deliberately not SQLite-compatible**: real SQLite's
+mutable B-tree file format and trigger/view machinery don't fit either
+that guarantee or what this tool actually needs. A `.sadb` file can only
+be read with this agent's own `--view-*-db` commands (see below) — not
+`sqlite3`, not a generic DB browser. Four flags use it: `--audit-db`,
+`--findings-db`, `--calibration-db`, `--reasoning-log-db`.
 
 Two of the four stores exist purely as alternative storage for data the
 JSON Lines flags already persist (`--audit-db`, `--findings-db`). The
