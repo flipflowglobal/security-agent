@@ -901,10 +901,11 @@ fn record_findings_command(arguments: &mut impl Iterator<Item = String>) -> Exit
 ///
 /// The model (`security_agent::language_model`) is a tiny, from-scratch
 /// neural language model trained deterministically on a bundled
-/// security-domain corpus — no network, no weights on disk. Decoding is
-/// greedy, so the same prompt always yields the same continuation. Text is
-/// modest given the model's size; this exists to make the offline
-/// language-model capability usable and inspectable.
+/// security-domain corpus — no network, no weights on disk. Decoding
+/// samples with temperature and top-k filtering, seeded from the prompt, so
+/// the same prompt always yields the same continuation. Text is modest
+/// given the model's size; this exists to make the offline language-model
+/// capability usable and inspectable.
 fn llm_generate_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
     use security_agent::LanguageModel;
     let prompt = arguments.collect::<Vec<String>>().join(" ");

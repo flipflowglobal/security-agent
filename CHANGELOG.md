@@ -10,6 +10,20 @@ conventions. Releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## [Unreleased]
 
 ### Changed
+- **`src/language_model.rs` — temperature/top-`k` sampling in `generate()`,
+  replacing pure greedy argmax decoding.** Each decoding step now
+  temperature-sharpens the predicted distribution (`TEMPERATURE = 0.7`),
+  keeps only its `TOP_K = 8` most probable tokens, renormalizes, and draws
+  from a per-call `Rng` — so generation no longer always takes the single
+  most probable next token, which was prone to short repetition loops.
+  Determinism is preserved without needing caller-supplied entropy: the
+  sampling `Rng` is seeded by hashing the prompt (a hand-rolled FNV-1a,
+  `hash_prompt`), so the same prompt always draws the same sequence of
+  samples and yields the same continuation, while different prompts land on
+  different (still reproducible) draws. `LanguageModel::generate`'s trait
+  doc no longer promises "greedy decoding"; `--llm-generate`'s and
+  `ask_generate`'s doc comments, and the README's built-in-language-model
+  section, are updated to match.
 - **`src/language_model.rs` — a bigger, richer bundled corpus and more model
   capacity.** `SECURITY_CORPUS` grows from 20 to 52 sentences, adding
   vocabulary and phrasing for topics the original corpus didn't cover

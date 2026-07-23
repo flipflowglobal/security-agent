@@ -21,6 +21,11 @@
 //!    commitment penalty), collapsing them to the nearest discrete code.
 //! 4. **Predict** the next token from that quantized code through a tanh
 //!    hidden layer and a softmax over the vocabulary.
+//! 5. **Sample**: [`generate`](NeuralLanguageModel::generate) draws from
+//!    that distribution with temperature and top-`k` filtering rather than
+//!    always taking the most probable token, seeded deterministically from
+//!    the prompt so the same prompt still always produces the same
+//!    continuation.
 //!
 //! Everything — the DCT, the codebook nearest-neighbor search, the forward
 //! and backward passes, and a deterministic `SplitMix64` RNG — is
@@ -32,8 +37,12 @@
 /// Implemented by [`NeuralLanguageModel`]; kept as a trait so a larger
 /// backend can be substituted without touching callers.
 pub trait LanguageModel {
-    /// Continues `prompt` for up to `max_tokens` tokens (deterministic,
-    /// greedy decoding).
+    /// Continues `prompt` for up to `max_tokens` tokens. Decoding samples
+    /// with temperature and top-`k` filtering rather than always taking the
+    /// most probable token, which avoids the short repetition loops greedy
+    /// decoding falls into; it stays fully deterministic because the
+    /// sampling RNG is seeded from `prompt`, so the same prompt always
+    /// produces the same continuation.
     fn generate(&self, prompt: &str, max_tokens: usize) -> String;
 
     /// The model's perplexity on `text` — its average per-token surprise.
@@ -67,6 +76,16 @@ const LEARNING_RATE: f32 = 0.05;
 const COMMITMENT: f32 = 0.25;
 /// Deterministic seed for weight initialization.
 const SEED: u64 = 0x5EC0_0DED_1234_5678;
+/// Decoding temperature for [`generate`](NeuralLanguageModel::generate).
+/// Applied as `probs.powf(1 / TEMPERATURE)` before top-`k` filtering and
+/// renormalization — equivalent to dividing logits by `TEMPERATURE` before
+/// softmax. Below 1, it sharpens the distribution toward the mode (closer
+/// to greedy); above 1, it flattens it.
+const TEMPERATURE: f32 = 0.7;
+/// Only the `TOP_K` most probable next tokens are eligible to be sampled at
+/// each decoding step; the long low-probability tail is discarded before
+/// sampling so generation stays on-topic while still varying.
+const TOP_K: usize = 8;
 
 /// Sentence-boundary token (also used as left padding for the first tokens).
 const BOS: &str = "<s>";
@@ -154,15 +173,33 @@ impl Rng {
         z ^ (z >> 31)
     }
 
-    /// A uniform sample in `[-scale, scale)`.
-    fn symmetric(&mut self, scale: f32) -> f32 {
+    /// A uniform sample in `[0, 1)`.
+    fn unit(&mut self) -> f32 {
         // Top 24 bits are an integer in [0, 2^24), exactly representable in
         // f32; dividing by 2^24 gives a unit value in [0, 1).
         const TWO_POW_24: f32 = 16_777_216.0;
         #[allow(clippy::cast_precision_loss)]
-        let unit = (self.next_u64() >> 40) as f32 / TWO_POW_24;
-        (unit * 2.0 - 1.0) * scale
+        let value = (self.next_u64() >> 40) as f32 / TWO_POW_24;
+        value
     }
+
+    /// A uniform sample in `[-scale, scale)`.
+    fn symmetric(&mut self, scale: f32) -> f32 {
+        self.unit().mul_add(2.0, -1.0) * scale
+    }
+}
+
+/// A cheap, fully-deterministic string hash (FNV-1a), used to seed
+/// [`generate`](NeuralLanguageModel::generate)'s per-call sampling RNG from
+/// the prompt: the same prompt always draws the same sequence of samples,
+/// while different prompts land on different (still reproducible) draws.
+fn hash_prompt(prompt: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for &byte in prompt.as_bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01B3);
+    }
+    hash
 }
 
 /// `usize` -> `f32` for counts small enough to be exact here.
@@ -575,14 +612,32 @@ impl NeuralLanguageModel {
         }
     }
 
-    /// The most probable next token id for `context`.
-    fn argmax_next(&self, context: [usize; CONTEXT]) -> usize {
+    /// Draws the next token id for `context` by temperature/top-`k`
+    /// sampling: [`TEMPERATURE`]-sharpen the predicted distribution, keep
+    /// only its [`TOP_K`] most probable tokens, renormalize, then draw from
+    /// `rng`. Falls back to the single most probable token if `probs` is
+    /// somehow empty.
+    fn sample_next(&self, context: [usize; CONTEXT], rng: &mut Rng) -> usize {
         let pass = self.forward(context);
-        pass.probs
+
+        let mut candidates: Vec<(usize, f32)> = pass
+            .probs
             .iter()
             .enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
-            .map_or(0, |(index, _)| index)
+            .map(|(id, &p)| (id, p.max(f32::MIN_POSITIVE).powf(1.0 / TEMPERATURE)))
+            .collect();
+        candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        candidates.truncate(TOP_K.min(candidates.len()));
+
+        let total: f32 = candidates.iter().map(|&(_, weight)| weight).sum();
+        let mut draw = rng.unit() * total;
+        for &(id, weight) in &candidates {
+            if draw < weight {
+                return id;
+            }
+            draw -= weight;
+        }
+        candidates.first().map_or(0, |&(id, _)| id)
     }
 
     /// Encodes `prompt` into an initial context of the last [`CONTEXT`]
@@ -612,9 +667,13 @@ impl LanguageModel for NeuralLanguageModel {
         let eos = self.vocab.id(EOS).unwrap_or(1);
         let mut context = self.seed_context(prompt);
         let mut produced = Vec::new();
+        // Seeded from the prompt so the same prompt always draws the same
+        // sequence of samples, while different prompts land on different
+        // (still reproducible) draws.
+        let mut rng = Rng::new(SEED ^ hash_prompt(prompt));
 
         for _ in 0..max_tokens {
-            let next = self.argmax_next(context);
+            let next = self.sample_next(context, &mut rng);
             if next == eos {
                 break;
             }
@@ -830,7 +889,7 @@ mod tests {
         let model = NeuralLanguageModel::bundled();
         let first = model.generate("the coordinator plans an", 8);
         let second = model.generate("the coordinator plans an", 8);
-        assert_eq!(first, second, "greedy decoding must be deterministic");
+        assert_eq!(first, second, "sampling must be deterministic per prompt");
 
         let vocab = Vocabulary::from_corpus(SECURITY_CORPUS);
         for token in first.split_whitespace() {
@@ -838,6 +897,50 @@ mod tests {
                 vocab.id(token).is_some(),
                 "generated token '{token}' must be in the vocabulary"
             );
+        }
+    }
+
+    #[test]
+    fn generate_draws_different_continuations_for_different_prompts() {
+        // The sampling RNG is seeded from the prompt, so different prompts
+        // should (almost certainly) land on different draws rather than
+        // both collapsing onto the same greedy path.
+        let model = NeuralLanguageModel::bundled();
+        let a = model.generate("the coordinator plans an", 12);
+        let b = model.generate("a phishing email is", 12);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn sample_next_can_diverge_from_the_greedy_pick() {
+        let model = NeuralLanguageModel::bundled();
+        let context = model.seed_context("the coordinator plans an");
+        let pass = model.forward(context);
+        let greedy = pass
+            .probs
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map_or(0, |(id, _)| id);
+
+        let diverged = (0..64u64).any(|seed| {
+            let mut rng = Rng::new(seed);
+            model.sample_next(context, &mut rng) != greedy
+        });
+        assert!(
+            diverged,
+            "temperature/top-k sampling should sometimes pick a token other than the greedy one"
+        );
+    }
+
+    #[test]
+    fn sample_next_never_leaves_the_vocabulary() {
+        let model = NeuralLanguageModel::bundled();
+        let context = model.seed_context("a container image scan");
+        let mut rng = Rng::new(SEED);
+        for _ in 0..200 {
+            let id = model.sample_next(context, &mut rng);
+            assert!(id < model.vocab.len());
         }
     }
 
@@ -884,5 +987,17 @@ mod tests {
         for _ in 0..1000 {
             assert!((-0.3..0.3).contains(&rng.symmetric(0.3)));
         }
+    }
+
+    #[test]
+    fn hash_prompt_is_deterministic_and_distinguishes_prompts() {
+        assert_eq!(
+            hash_prompt("the coordinator plans an"),
+            hash_prompt("the coordinator plans an")
+        );
+        assert_ne!(
+            hash_prompt("the coordinator plans an"),
+            hash_prompt("a phishing email is")
+        );
     }
 }
