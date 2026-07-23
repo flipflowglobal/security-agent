@@ -1679,7 +1679,8 @@ fn password_strength_command(arguments: &mut impl Iterator<Item = String>) -> Ex
         eprintln!("unexpected argument: {extra}");
         return ExitCode::from(2);
     }
-    let analysis = security_agent::offensive::credential_attack::analyze_password_strength(&password);
+    let analysis =
+        security_agent::offensive::credential_attack::analyze_password_strength(&password);
     println!("{analysis}");
     ExitCode::SUCCESS
 }
@@ -1820,10 +1821,7 @@ fn gen_decoys_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode 
         eprintln!("usage: --gen-decoys <real-ip> [count]");
         return ExitCode::from(2);
     };
-    let count: usize = arguments
-        .next()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(5);
+    let count: usize = arguments.next().and_then(|s| s.parse().ok()).unwrap_or(5);
     let decoys = security_agent::offensive::evasion::generate_decoys(&real_ip, count);
     println!("{decoys}");
     ExitCode::SUCCESS
@@ -1831,9 +1829,7 @@ fn gen_decoys_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode 
 
 /// `--analyze-handshake <eapol-hex...>` — analyze EAPOL frames for WPA handshake completeness.
 fn analyze_handshake_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
-    let frames: Vec<Vec<u8>> = arguments
-        .map(|hex_str| hex_to_bytes(&hex_str))
-        .collect();
+    let frames: Vec<Vec<u8>> = arguments.map(|hex_str| hex_to_bytes(&hex_str)).collect();
     if frames.is_empty() {
         eprintln!("usage: --analyze-handshake <eapol-hex-frame1> [frame2] ...");
         eprintln!("pass raw EAPOL frames as hex strings");
@@ -1848,7 +1844,10 @@ fn hex_to_bytes(hex: &str) -> Vec<u8> {
     let hex = hex.trim().trim_start_matches("0x");
     (0..hex.len())
         .step_by(2)
-        .filter_map(|i| hex.get(i..i + 2).and_then(|h| u8::from_str_radix(h, 16).ok()))
+        .filter_map(|i| {
+            hex.get(i..i + 2)
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+        })
         .collect()
 }
 
@@ -1886,7 +1885,11 @@ fn audit_wifi_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode 
         eprintln!("unexpected argument: {extra}");
         return ExitCode::from(2);
     }
-    let audit = security_agent::offensive::wireless::audit_wireless_security(&essid, &security, &encryption);
+    let audit = security_agent::offensive::wireless::audit_wireless_security(
+        &essid,
+        &security,
+        &encryption,
+    );
     println!("{audit}");
     ExitCode::SUCCESS
 }

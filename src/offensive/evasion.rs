@@ -20,7 +20,11 @@ impl fmt::Display for ObfuscationResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "Obfuscation: {}", self.technique)?;
         writeln!(f, "Effectiveness: {}", self.effectiveness)?;
-        writeln!(f, "Size change: {} → {} bytes", self.original_length, self.obfuscated_length)?;
+        writeln!(
+            f,
+            "Size change: {} → {} bytes",
+            self.original_length, self.obfuscated_length
+        )?;
         writeln!(f, "Notes: {}", self.notes)?;
         writeln!(f)?;
         writeln!(f, "Result:")?;
@@ -84,7 +88,11 @@ fn powershell_concat_obfuscate(cmd: &str) -> ObfuscationResult {
         })
         .collect::<String>();
 
-    let final_obfuscated = if obfuscated == cmd { &fallback } else { &obfuscated };
+    let final_obfuscated = if obfuscated == cmd {
+        &fallback
+    } else {
+        &obfuscated
+    };
 
     ObfuscationResult {
         technique: "String concatenation".to_string(),
@@ -111,13 +119,16 @@ fn powershell_charcode_obfuscate(cmd: &str) -> ObfuscationResult {
         original_length: cmd.len(),
         obfuscated_length: cmd.len() * 4, // ~4x expansion
         effectiveness: "Medium-High".to_string(),
-        notes: "Highly effective against basic signature matching; runtime detection may catch".to_string(),
+        notes: "Highly effective against basic signature matching; runtime detection may catch"
+            .to_string(),
     }
 }
 
 fn powershell_reverse_obfuscate(cmd: &str) -> ObfuscationResult {
     let reversed: String = cmd.chars().rev().collect();
-    let obfuscated = format!("'{reversed}' -replace '(.|$)','' -replace '(.{{2}})','$$1' | ForEach-Object {{ [char]([int]$_ -bxor 0) }} | ForEach-Object {{ [string]$_ }} | Out-String | . {{ $_.Trim() }}");
+    let obfuscated = format!(
+        "'{reversed}' -replace '(.|$)','' -replace '(.{{2}})','$$1' | ForEach-Object {{ [char]([int]$_ -bxor 0) }} | ForEach-Object {{ [string]$_ }} | Out-String | . {{ $_.Trim() }}"
+    );
 
     ObfuscationResult {
         technique: "String reversal with self-decode".to_string(),
@@ -132,7 +143,9 @@ fn powershell_reverse_obfuscate(cmd: &str) -> ObfuscationResult {
 
 fn powershell_base64_obfuscate(cmd: &str) -> ObfuscationResult {
     let encoded = base64_encode_simple(cmd);
-    let obfuscated = format!("[System.Text.Encoding]::Unicode.GetString([System.Convert]::FromBase64String(\"{encoded}\")) | . {{ $_ }}");
+    let obfuscated = format!(
+        "[System.Text.Encoding]::Unicode.GetString([System.Convert]::FromBase64String(\"{encoded}\")) | . {{ $_ }}"
+    );
 
     ObfuscationResult {
         technique: "Base64 encoded command".to_string(),
@@ -167,7 +180,8 @@ fn powershell_tick_obfuscate(cmd: &str) -> ObfuscationResult {
         original_length: cmd.len(),
         obfuscated_length: len,
         effectiveness: "Low-Medium".to_string(),
-        notes: "Simple but effective against naive pattern matching; modern AV ignores ticks".to_string(),
+        notes: "Simple but effective against naive pattern matching; modern AV ignores ticks"
+            .to_string(),
     }
 }
 
@@ -378,7 +392,11 @@ mod tests {
     fn test_powershell_obfuscation_techniques() {
         let results = obfuscate_powershell("Get-Process");
         assert!(results.len() >= 5);
-        assert!(results.iter().any(|r| r.technique.contains("concatenation")));
+        assert!(
+            results
+                .iter()
+                .any(|r| r.technique.contains("concatenation"))
+        );
     }
 
     #[test]
@@ -391,10 +409,14 @@ mod tests {
 
     #[test]
     fn test_ip_checksum() {
-        let header = vec![0x45, 0x00, 0x00, 0x28, 0x00, 0x01, 0x00, 0x00, 0x40, 0x06, 0x00, 0x00, 0xc0, 0xa8, 0x01, 0x01, 0xc0, 0xa8, 0x01, 0x02];
+        let header = vec![
+            0x45, 0x00, 0x00, 0x28, 0x00, 0x01, 0x00, 0x00, 0x40, 0x06, 0x00, 0x00, 0xc0, 0xa8,
+            0x01, 0x01, 0xc0, 0xa8, 0x01, 0x02,
+        ];
         let checksum = calculate_ip_checksum(&header);
         // Just verify it produces a result
-        assert!(checksum != 0 || true); // checksum could be any value
+        // checksum could be any non-zero value; just verify it computes
+        assert_ne!(checksum, 0);
     }
 
     #[test]
