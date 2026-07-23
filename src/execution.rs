@@ -304,9 +304,14 @@ pub fn execute_plan(
 /// for tools that are not [`ExecutionClass::StaticLocalAnalysis`] — static-local
 /// tools (semgrep, jadx, ...) operate on local files, not network addresses.
 /// This is prepend-only: it never removes or reorders the caller's own
-/// `arguments`. The orchestrator already withholds the address from
-/// static-local steps, so this stays correct even for a step whose scheduled
-/// class and the resolved tool's class disagree.
+/// `arguments`. Note the two class checks come from different places — the
+/// orchestrator decides whether the step carries an address from the *name*
+/// (`registry::classify_execution`), while `is_network_tool` here reads the
+/// *resolved catalog tool's* class. The catalog stamps every
+/// [`crate::registry::ToolDefinition`] with that same `classify_execution`,
+/// so the two always agree in practice and injection is consistent. They can
+/// only diverge for a hand-built [`LocalTool`] whose class was set to
+/// something other than its name implies (as some unit tests do).
 fn effective_arguments(
     network_address: Option<&str>,
     tool: &LocalTool,
