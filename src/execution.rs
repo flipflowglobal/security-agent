@@ -23,11 +23,12 @@
 //! installed third-party binaries are ever spawned; this crate never
 //! reimplements a tool's offensive behavior itself.
 
-use crate::coordinator::{ExecutionPlan, ScanTask};
+use crate::coordinator::ExecutionPlan;
 use crate::integrity::IntegrityStatus;
 use crate::local_assets::LocalAgentAssets;
 use crate::local_assets::LocalTool;
 use crate::network_policy::NetworkMode;
+use crate::orchestrator::ToolOrchestrator;
 use crate::registry::ExecutionClass;
 use std::fmt;
 use std::io::Read;
@@ -248,17 +249,25 @@ impl fmt::Display for TaskExecutionOutcome {
     }
 }
 
-/// Attempts to run every approved tool for every task in `plan`, passing
-/// the same `arguments` to each invocation.
+/// Attempts to run the tools a `plan` approved, passing the same `arguments`
+/// to each invocation.
+///
+/// The plan is first turned into an ordered, deduplicated schedule by
+/// [`ToolOrchestrator`], so execution runs *least-invasive first* (static
+/// local analysis before active network before active exploitation) and a
+/// `(target, tool)` pair never runs twice. See [`crate::orchestrator`] for
+/// the ordering contract.
 ///
 /// This only actually executes tools the coordinator approved for a task
 /// (`ScanTask::approved_tools`, which is already filtered to what's locally
-/// installed) — it never expands scope beyond what was planned. Live tools
-/// attempted under [`NetworkMode::Offline`] are still reported (so the caller
-/// sees why, via [`ToolExecutionError::RequiresOnlineMode`] in the outcome)
-/// rather than silently skipped.
+/// installed) — it never expands scope beyond what was planned. A scheduled
+/// tool that is not resolvable in `assets` is skipped (no spurious outcome).
+/// Live tools attempted under [`NetworkMode::Offline`] are still reported (so
+/// the caller sees why, via [`ToolExecutionError::RequiresOnlineMode`] in the
+/// outcome) rather than silently skipped.
 ///
-/// When a task carries a [`ScanTask::network_address`] and the tool is not
+/// When a scheduled step carries a network address (from
+/// [`crate::coordinator::ScanTask::network_address`]) and the tool is not
 /// [`ExecutionClass::StaticLocalAnalysis`] (i.e. it is a network tool like
 /// nmap/masscan), the address is prepended as the tool's first argument —
 /// see [`effective_arguments`] — keeping the authorization boundary (the
@@ -272,36 +281,42 @@ pub fn execute_plan(
     arguments: &[String],
     mode: NetworkMode,
 ) -> Vec<TaskExecutionOutcome> {
+    let schedule = ToolOrchestrator::new().schedule(plan);
     let mut outcomes = Vec::new();
-    for task in &plan.tasks {
-        for tool_name in &task.approved_tools {
-            let Some(tool) = assets.tool(tool_name) else {
-                continue;
-            };
-            let effective_arguments = effective_arguments(task, tool, arguments);
-            outcomes.push(TaskExecutionOutcome {
-                target_id: task.target_id.clone(),
-                tool: tool_name.clone(),
-                result: run_external_tool_with_default_timeout(tool, &effective_arguments, mode),
-            });
-        }
+    for step in &schedule {
+        let Some(tool) = assets.tool(&step.tool) else {
+            continue;
+        };
+        let effective_arguments =
+            effective_arguments(step.network_address.as_deref(), tool, arguments);
+        outcomes.push(TaskExecutionOutcome {
+            target_id: step.target_id.clone(),
+            tool: step.tool.clone(),
+            result: run_external_tool_with_default_timeout(tool, &effective_arguments, mode),
+        });
     }
     outcomes
 }
 
-/// Builds the argument list actually passed to `tool` for `task`.
+/// Builds the argument list actually passed to `tool` for a scheduled step.
 ///
-/// Prepends `task.network_address` (when present) as the first argument,
-/// but only for tools that are not [`ExecutionClass::StaticLocalAnalysis`]
-/// — static-local tools (semgrep, jadx, ...) operate on local files, not
-/// network addresses. This is prepend-only: it never removes or reorders
-/// the caller's own `arguments`.
-fn effective_arguments(task: &ScanTask, tool: &LocalTool, arguments: &[String]) -> Vec<String> {
+/// Prepends `network_address` (when present) as the first argument, but only
+/// for tools that are not [`ExecutionClass::StaticLocalAnalysis`] — static-local
+/// tools (semgrep, jadx, ...) operate on local files, not network addresses.
+/// This is prepend-only: it never removes or reorders the caller's own
+/// `arguments`. The orchestrator already withholds the address from
+/// static-local steps, so this stays correct even for a step whose scheduled
+/// class and the resolved tool's class disagree.
+fn effective_arguments(
+    network_address: Option<&str>,
+    tool: &LocalTool,
+    arguments: &[String],
+) -> Vec<String> {
     let is_network_tool = tool.definition.execution_class != ExecutionClass::StaticLocalAnalysis;
-    match (is_network_tool, &task.network_address) {
+    match (is_network_tool, network_address) {
         (true, Some(address)) => {
             let mut effective = Vec::with_capacity(arguments.len() + 1);
-            effective.push(address.clone());
+            effective.push(address.to_string());
             effective.extend_from_slice(arguments);
             effective
         }
@@ -721,5 +736,60 @@ mod tests {
             result: Err(ToolExecutionError::NotInstalled("tool-b".to_string())),
         };
         assert!(failure.to_string().contains("error:"));
+    }
+
+    fn task_with_tools(target_id: &str, tools: &[&str]) -> crate::coordinator::ScanTask {
+        minimal_task(target_id, tools.iter().map(ToString::to_string).collect())
+    }
+
+    #[test]
+    fn execute_plan_runs_a_duplicate_target_tool_pair_only_once() {
+        // The same tool is approved for the same target by two tasks; the
+        // orchestrator collapses that to a single scheduled invocation, so
+        // execution never spawns the tool twice against one target.
+        let assets = assets_with(vec![tool_named(
+            "sqlmap",
+            "/nonexistent/sqlmap",
+            ExecutionClass::ActiveExploitation,
+        )]);
+        let plan = minimal_plan(vec![
+            task_with_tools("target-a", &["sqlmap"]),
+            task_with_tools("target-a", &["sqlmap"]),
+        ]);
+
+        let outcomes = execute_plan(&plan, &assets, &[], NetworkMode::Online);
+
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].tool, "sqlmap");
+    }
+
+    #[test]
+    fn execute_plan_runs_least_invasive_tools_first() {
+        // Tasks declare exploitation before recon before static; execution
+        // must follow the orchestrated static -> network -> exploitation
+        // order regardless of declaration order.
+        let assets = assets_with(vec![
+            tool_named(
+                "sqlmap",
+                "/nonexistent/sqlmap",
+                ExecutionClass::ActiveExploitation,
+            ),
+            tool_named("nmap", "/nonexistent/nmap", ExecutionClass::ActiveNetwork),
+            tool_named(
+                "semgrep",
+                "/nonexistent/semgrep",
+                ExecutionClass::StaticLocalAnalysis,
+            ),
+        ]);
+        let plan = minimal_plan(vec![
+            task_with_tools("target-a", &["sqlmap"]),
+            task_with_tools("target-a", &["nmap"]),
+            task_with_tools("target-a", &["semgrep"]),
+        ]);
+
+        let outcomes = execute_plan(&plan, &assets, &[], NetworkMode::Online);
+
+        let order: Vec<&str> = outcomes.iter().map(|o| o.tool.as_str()).collect();
+        assert_eq!(order, vec!["semgrep", "nmap", "sqlmap"]);
     }
 }

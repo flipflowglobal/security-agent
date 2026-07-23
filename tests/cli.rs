@@ -227,6 +227,8 @@ criticality=3
     let text = stdout(&output);
     assert!(text.contains("Execution Plan"));
     assert!(text.contains("eng-it-ok"));
+    // The orchestrated, least-invasive-first schedule is surfaced too.
+    assert!(text.contains("Execution Schedule"));
 }
 
 #[test]

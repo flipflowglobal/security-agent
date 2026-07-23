@@ -172,8 +172,9 @@ The `MobileAndroid` specialist uses a dedicated tool set for APK/DEX analysis an
 | `src/policy.rs` | Authorization and least-privilege policy engine |
 | `src/workflow.rs` | Ordered workflow stage model |
 | `src/coordinator.rs` | Orchestration, scoped task planning, audit integration |
+| `src/orchestrator.rs` | Turns a plan into an ordered, deduplicated execution schedule (least-invasive first: static → active network → exploitation) |
 | `src/engagement_config.rs` | Zero-dependency parser for `--plan-scan` engagement config files |
-| `src/execution.rs` | Bounded real execution of `StaticLocalAnalysis` cataloged tools, plus `execute_plan` |
+| `src/execution.rs` | Bounded real execution of `StaticLocalAnalysis` cataloged tools, run in the orchestrator's scheduled order via `execute_plan` |
 | `src/audit_log.rs` | Append-only on-disk persistence for the audit ledger |
 | `src/audit_db.rs` | Same role as `audit_log.rs`, backed by the zero-dependency `.sadb` embedded database instead of JSON Lines |
 | `src/findings.rs` | Unified finding model and normalized risk scorer |

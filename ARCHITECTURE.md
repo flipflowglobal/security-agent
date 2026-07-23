@@ -26,8 +26,9 @@ layer it belongs to.
 │  Findings pipeline         ingest.rs · findings.rs · findings_log.rs ·│
 │                            memory_store.rs · compat.rs                 │
 ├─────────────────────────────────────────────────────────────────────┤
-│  Orchestration & execution coordinator.rs · execution.rs ·            │
-│                            engagement_config.rs · tagged_run.rs        │
+│  Orchestration & execution coordinator.rs · orchestrator.rs ·         │
+│                            execution.rs · engagement_config.rs ·       │
+│                            tagged_run.rs                               │
 ├─────────────────────────────────────────────────────────────────────┤
 │  Local tools (offline)     builtin_tools.rs · local_analyzers.rs ·    │
 │                            pcap.rs · local_assets.rs                   │
@@ -74,7 +75,8 @@ Release packaging:                  scripts/deploy.sh (make deploy)
 | Tools | `src/pcap.rs` | Offline Wireshark substitute (classic PCAP parser) | `run_wireshark` |
 | Tools | `src/local_assets.rs` | Compiled-in skill/tool catalog + PATH resolution | `LocalAgentAssets` |
 | Exec | `src/coordinator.rs` | Scoped task planning, audit integration | `Coordinator`, `ExecutionPlan` |
-| Exec | `src/execution.rs` | Real external-tool execution, gated by `NetworkMode` | `run_external_tool`, `execute_plan` |
+| Exec | `src/orchestrator.rs` | Orders a plan into a deduplicated, least-invasive-first execution schedule | `ToolOrchestrator`, `OrchestrationSchedule` |
+| Exec | `src/execution.rs` | Real external-tool execution in scheduled order, gated by `NetworkMode` | `run_external_tool`, `execute_plan` |
 | Exec | `src/engagement_config.rs` | Zero-dependency engagement-config parser | `load_engagement_config` |
 | Exec | `src/tagged_run.rs` | Tagged test-run metadata for audit correlation | `TaggedTestRun` |
 | Findings | `src/ingest.rs` | Real tool output → scored `Finding`s | `ingest` |
@@ -106,7 +108,11 @@ Coordinator.plan_authorized_scan  ── PolicyEngine.authorize (policy.rs)
         │                              │
         │                              └──▶ AuditLedger (governance.rs) ─▶ audit_log.rs
         ▼
-ExecutionPlan ──▶ execute_plan (execution.rs)
+ExecutionPlan ──▶ ToolOrchestrator.schedule (orchestrator.rs)
+                    │   order: static → active network → exploitation
+                    │   dedup: one run per (target, tool)
+                    ▼
+             OrchestrationSchedule ──▶ execute_plan (execution.rs)
                     │   gate: NetworkMode (network_policy.rs)
                     │   offline → StaticLocalAnalysis only
                     │   online  → + ActiveNetwork / ActiveExploitation (real binaries)
