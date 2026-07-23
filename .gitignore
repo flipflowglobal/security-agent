@@ -28,6 +28,9 @@ vault/
 ehthumbs.db
 Thumbs.db
 
+# Agent tooling scratch space (e.g. isolated subagent worktrees)
+.claude/
+
 # Editor and IDE files
 .idea/
 .vscode/
