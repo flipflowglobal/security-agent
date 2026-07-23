@@ -1087,15 +1087,23 @@ impl NeuralLanguageModel {
             }
             let h_dot_jtr: f32 = h.iter().zip(&jtr).map(|(hi, gi)| hi * gi).sum();
             let h_jtj_h: f32 = h.iter().zip(&jtj_h).map(|(hi, ji)| hi * ji).sum();
+            // jtr = J^T r is the gradient of 0.5*sse (not raw sse), and jtj
+            // is the matching Gauss-Newton approximation to its Hessian, so
+            // this predicted reduction is in 0.5*sse units too — `actual`
+            // below must match, or the gain ratio q is systematically
+            // wrong by a factor of ~2.
             let predicted = -(h_dot_jtr + 0.5 * h_jtj_h);
 
+            // Swap the trial params into self to score them (cheaper than
+            // cloning the whole model — vocab, embed table, codebooks —
+            // just to evaluate three small attention matrices), restoring
+            // the originals below if the step is rejected.
             let params = self.attn_params();
             let trial: Vec<f32> = params.iter().zip(&h).map(|(p, hi)| p + hi).collect();
-            let mut trial_model = self.clone();
-            trial_model.set_attn_params(&trial);
-            let trial_sse = trial_model.lm_sum_squared_residual(&windows);
+            self.set_attn_params(&trial);
+            let trial_sse = self.lm_sum_squared_residual(&windows);
 
-            let actual = sse - trial_sse;
+            let actual = 0.5 * (sse - trial_sse);
             let q = if predicted.abs() > f32::MIN_POSITIVE {
                 actual / predicted
             } else {
@@ -1103,10 +1111,11 @@ impl NeuralLanguageModel {
             };
 
             if q > 0.0 {
-                self.set_attn_params(&trial);
+                // Trial params are already in place; keep them.
                 mu = Some(damping * (1.0_f32 / 3.0).max(1.0 - (2.0 * q - 1.0).powi(3)));
                 v = 2.0;
             } else {
+                self.set_attn_params(&params);
                 mu = Some(damping * v);
                 v *= 2.0;
             }
