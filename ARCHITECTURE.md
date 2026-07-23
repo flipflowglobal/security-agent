@@ -89,7 +89,7 @@ Release packaging:                  scripts/deploy.sh (make deploy)
 | Cognition | `src/reasoning_log_db.rs` | Write-only archive of each `--cognitive-review` run's full reasoning chain + metacognitive verdict | `append_run`, `load_runs` |
 | Cognition | `src/belief_propagation.rs` | Noisy-OR compromise-risk propagation | `PropagationGraph` |
 | Cognition | `src/advanced.rs` | Attack-path graph builder + retest scheduler | `AttackPathGraph`, `propose_retest_schedule` |
-| Neural LM | `src/language_model.rs` | **In-house vector-quantized temporal-frequency neural LM** | `NeuralLanguageModel`, `LanguageModel` |
+| Neural LM | `src/language_model.rs` | **In-house self-attentive, vector-quantized temporal-frequency neural LM** | `NeuralLanguageModel`, `LanguageModel` |
 | Neural LM | `src/anomaly.rs` | LM perplexity as an out-of-domain anomaly lens | `scan_findings` |
 | Neural LM | `src/nlu.rs` | Grounded plain-English intent router (`--ask`) | `interpret`, `Intent` |
 | Infra | `src/json.rs` | In-house JSON parser/writer (keeps the crate crate-free) | — |
@@ -130,10 +130,11 @@ same read-only commands above.
 The neural LM is fully wired; it is reachable from three surfaces and shares
 one bundled, memoized instance:
 
-- **Definition:** `src/language_model.rs` — `NeuralLanguageModel` (embed → DCT
-  → residual vector quantization → tanh hidden → softmax), the `LanguageModel`
-  trait (`generate`, `perplexity`, `embed_text`), trained deterministically at
-  startup on a bundled corpus. Memoized via `bundled()`.
+- **Definition:** `src/language_model.rs` — `NeuralLanguageModel` (embed →
+  single-head self-attention → DCT → residual vector quantization → tanh
+  hidden → softmax), the `LanguageModel` trait (`generate`, `perplexity`,
+  `embed_text`), trained deterministically at startup on a bundled corpus.
+  Memoized via `bundled()`.
 - **CLI:** `--llm-generate` and `--llm-perplexity` (`src/main.rs`).
 - **Cognitive layer:** `src/anomaly.rs` scores finding text with the model's
   perplexity during `--cognitive-review --memory`.

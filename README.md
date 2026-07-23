@@ -187,7 +187,7 @@ The `MobileAndroid` specialist uses a dedicated tool set for APK/DEX analysis an
 | `src/cognitive_engine.rs` | Advanced cognitive architecture: chained reasoning, Bayesian belief revision, adversary theory-of-mind, attention allocation, metacognition, calibration, and compromise propagation |
 | `src/calibration.rs` | Confidence-calibration tracking: Brier score, reliability bins, expected calibration error, over/under-confidence tendency, and histogram recalibration |
 | `src/belief_propagation.rs` | Noisy-OR compromise-risk propagation across the attack graph (lateral movement) |
-| `src/language_model.rs` | Small from-scratch **vector-quantized temporal-frequency** neural language model (embed → DCT → residual VQ codebooks → softmax), self-trained on a bundled security corpus; text generation and perplexity scoring |
+| `src/language_model.rs` | Small from-scratch **self-attentive, vector-quantized temporal-frequency** neural language model (embed → self-attention → DCT → residual VQ codebooks → softmax), self-trained on a bundled security corpus; text generation and perplexity scoring |
 | `src/builtin_tools.rs` | Offline built-in substitutes (autopsy, volatility) plus the in-house SHA-256; real local-file analysis, no network |
 | `src/local_analyzers.rs` | Offline forensic substitutes — binwalk (signature/entropy), foremost (carving), bulk_extractor (IOC features), hashdeep (recursive multi-hash + dedup) |
 | `src/network_policy.rs` | `NetworkMode` egress governance: offline by default, live network/active tools only under the explicit per-invocation `--allow-network` opt-in |
@@ -327,25 +327,33 @@ prediction path is:
 
 1. **Embed** the recent window of tokens into learned vectors — a short
    multi-channel time signal.
-2. **Temporal → frequency**: a Discrete Cosine Transform (DCT-II) along the
-   time axis, so the model reasons about *how* the context changes across
-   the window (its spectral content).
-3. **Residually vector-quantize** the spectral features against a *stack* of
+2. **Self-attend**: a single-head scaled dot-product attention layer lets
+   every position in the window mix in every other position's value vector,
+   weighted by a learned, content-dependent query/key match (no causal
+   mask — every position is already-known context for the token being
+   predicted *after* the window). The attended output is added residually
+   to the raw embeddings, so *what* each position ends up representing can
+   depend on what's actually in the window, not just where it sits.
+3. **Temporal → frequency**: a Discrete Cosine Transform (DCT-II) along the
+   time axis of the attended representation, so the model reasons about
+   *how* the context changes across the window (its spectral content).
+4. **Residually vector-quantize** the spectral features against a *stack* of
    learned codebooks (VQ-VAE style: nearest-code lookup, straight-through
    estimator, commitment penalty). Each stage quantizes what the previous
    stage could not represent — the final code is the sum of the per-stage
    codes (`q = q1 + q2`), a **residual path around the quantizer** that
    halves the reconstruction error a single codebook leaves behind while
    keeping the discrete bottleneck.
-4. **Predict** the next token from the quantized code through a tanh hidden
+5. **Predict** the next token from the quantized code through a tanh hidden
    layer and a softmax over the vocabulary.
-5. **Sample**: decoding draws from that distribution with temperature and
+6. **Sample**: decoding draws from that distribution with temperature and
    top-`k` filtering (rather than always taking the most probable token),
    seeded deterministically from the prompt so the same prompt still always
    produces the same continuation.
 
-The DCT, residual codebook search, and forward/backward passes are all
-hand-rolled: **no external crates, no network, no weights on disk**. The
+The self-attention layer, DCT, residual codebook search, and forward/backward
+passes are all hand-rolled: **no external crates, no network, no weights on
+disk**. The
 model trains itself at startup (well under a second) and ships inside the
 offline binary. Being tiny — and quantized through a discrete bottleneck —
 its text is modest; it learns the domain vocabulary and local phrasing

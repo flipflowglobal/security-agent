@@ -7,21 +7,31 @@
 //! itself, deterministically, from a security-domain corpus compiled into
 //! the binary ([`SECURITY_CORPUS`]).
 //!
-//! The prediction path is *temporal-frequency + vector-quantized*:
+//! The prediction path is *self-attentive + temporal-frequency +
+//! vector-quantized*:
 //!
 //! 1. **Embed** the recent window of [`CONTEXT`] tokens into learned
 //!    vectors, giving a short multi-channel *time signal*
 //!    (`CONTEXT` steps × [`EMBED`] channels).
-//! 2. **Temporal → frequency**: apply a Discrete Cosine Transform (DCT-II)
-//!    along the time axis of each channel, so the model reasons about *how*
-//!    the context changes across the window (its spectral content) rather
-//!    than the raw sequence.
-//! 3. **Vector-quantize** the flattened spectral features against a learned
+//! 2. **Self-attend**: a single-head scaled dot-product attention layer
+//!    lets every position in the window mix in every other position's
+//!    value vector, weighted by a learned, *content-dependent* query/key
+//!    match — unlike the fixed DCT below, what each position ends up
+//!    representing depends on what is actually in the window, not just
+//!    where. There's no causal mask: every position in `CONTEXT` is already
+//!    known context for the token being predicted *after* the window, so
+//!    positions may freely attend to each other. The attended output is
+//!    added residually to the raw embeddings.
+//! 3. **Temporal → frequency**: apply a Discrete Cosine Transform (DCT-II)
+//!    along the time axis of each (now attention-mixed) channel, so the
+//!    model reasons about *how* the context changes across the window (its
+//!    spectral content) rather than the raw sequence.
+//! 4. **Vector-quantize** the flattened spectral features against a learned
 //!    codebook (VQ-VAE style, with a straight-through estimator and a
 //!    commitment penalty), collapsing them to the nearest discrete code.
-//! 4. **Predict** the next token from that quantized code through a tanh
+//! 5. **Predict** the next token from that quantized code through a tanh
 //!    hidden layer and a softmax over the vocabulary.
-//! 5. **Sample**: [`generate`](NeuralLanguageModel::generate) draws from
+//! 6. **Sample**: [`generate`](NeuralLanguageModel::generate) draws from
 //!    that distribution with temperature and top-`k` filtering rather than
 //!    always taking the most probable token, seeded deterministically from
 //!    the prompt so the same prompt still always produces the same
@@ -296,9 +306,32 @@ fn encode_sentences(vocab: &Vocabulary, text: &str) -> Vec<Vec<usize>> {
         .collect()
 }
 
+/// Intermediates from [`NeuralLanguageModel::self_attend`]'s forward pass,
+/// retained so the backward pass can reuse them without recomputing.
+struct Attention {
+    /// Per-position query vectors, `CONTEXT * EMBED`.
+    q: Vec<f32>,
+    /// Per-position key vectors, `CONTEXT * EMBED`.
+    k: Vec<f32>,
+    /// Per-position value vectors, `CONTEXT * EMBED`.
+    v: Vec<f32>,
+    /// Row-`i` softmax attention weights, `CONTEXT * CONTEXT`:
+    /// `weights[i * CONTEXT + j]` is how much position `i` attends to `j`.
+    weights: Vec<f32>,
+    /// Per-position attended output (the weighted mix of `v`), `CONTEXT *
+    /// EMBED` — added residually to the raw embeddings before the DCT.
+    attended: Vec<f32>,
+}
+
 /// Intermediates from a forward pass, retained so the backward pass can
 /// reuse them.
 struct Forward {
+    /// Raw per-position token embeddings before attention, `CONTEXT *
+    /// EMBED` — needed to backprop into both the attention projections and
+    /// the token embedding table.
+    embeds: Vec<f32>,
+    /// The self-attention layer's forward intermediates.
+    attn: Attention,
     /// Flattened DCT spectral features, length `FEAT`.
     spectral: Vec<f32>,
     /// Chosen codebook index at each residual stage.
@@ -313,12 +346,16 @@ struct Forward {
 }
 
 /// A vector-quantized, temporal-frequency neural language model with
-/// residual (multi-stage) quantization.
+/// single-head self-attention over its context window and residual
+/// (multi-stage) quantization.
 #[derive(Debug, Clone)]
 pub struct NeuralLanguageModel {
     vocab: Vocabulary,
     dct: Vec<f32>,            // CONTEXT * CONTEXT
     embed: Vec<f32>,          // vocab_len * EMBED
+    attn_wq: Vec<f32>,        // EMBED * EMBED
+    attn_wk: Vec<f32>,        // EMBED * EMBED
+    attn_wv: Vec<f32>,        // EMBED * EMBED
     codebooks: Vec<Vec<f32>>, // stages × (CODES * FEAT)
     w1: Vec<f32>,             // HIDDEN * FEAT
     b1: Vec<f32>,             // HIDDEN
@@ -369,6 +406,9 @@ impl NeuralLanguageModel {
         let mut model = Self {
             dct: dct_matrix(),
             embed: init(vocab_len * EMBED, 0.3, &mut rng),
+            attn_wq: init(EMBED * EMBED, 0.3, &mut rng),
+            attn_wk: init(EMBED * EMBED, 0.3, &mut rng),
+            attn_wv: init(EMBED * EMBED, 0.3, &mut rng),
             codebooks,
             w1: init(HIDDEN * FEAT, 0.3, &mut rng),
             b1: vec![0.0; HIDDEN],
@@ -417,31 +457,122 @@ impl NeuralLanguageModel {
         sum
     }
 
-    /// Embeds the temporal window, then applies the DCT along the time axis
-    /// of each channel to produce the flattened spectral features.
-    // Flat-indexed spectral/matrix math reads more clearly as range loops
-    // with `sum += a * b` than as iterator/`mul_add` rewrites.
-    #[allow(clippy::needless_range_loop, clippy::suboptimal_flops)]
-    fn spectral_features(&self, context: [usize; CONTEXT]) -> (Vec<f32>, Vec<f32>) {
+    /// Looks up the raw per-position token embeddings for `context`,
+    /// `CONTEXT * EMBED`, before self-attention mixes them.
+    fn window_embeds(&self, context: [usize; CONTEXT]) -> Vec<f32> {
         let mut embeds = vec![0.0_f32; CONTEXT * EMBED];
         for (step, &token) in context.iter().enumerate() {
             let base = token * EMBED;
             embeds[step * EMBED..(step + 1) * EMBED]
                 .copy_from_slice(&self.embed[base..base + EMBED]);
         }
+        embeds
+    }
 
-        // spectral[k*EMBED + d] = sum_n dct[k][n] * embeds[n][d]
+    /// Single-head scaled dot-product self-attention over the `CONTEXT`
+    /// window: each position's query is matched against every position's
+    /// key (itself included — there's no causal mask, since every position
+    /// here is already-known context for the token being predicted *after*
+    /// the window), and the resulting softmax weights mix the value
+    /// vectors. Unlike the fixed DCT downstream, this weighting is learned
+    /// and *input-dependent*: which earlier positions matter most can
+    /// change with what's actually in the window.
+    #[allow(clippy::needless_range_loop, clippy::suboptimal_flops)]
+    fn self_attend(&self, embeds: &[f32]) -> Attention {
+        let mut q = vec![0.0_f32; CONTEXT * EMBED];
+        let mut k = vec![0.0_f32; CONTEXT * EMBED];
+        let mut v = vec![0.0_f32; CONTEXT * EMBED];
+        for n in 0..CONTEXT {
+            for out in 0..EMBED {
+                let mut sq = 0.0;
+                let mut sk = 0.0;
+                let mut sv = 0.0;
+                for inp in 0..EMBED {
+                    let e = embeds[n * EMBED + inp];
+                    sq += e * self.attn_wq[inp * EMBED + out];
+                    sk += e * self.attn_wk[inp * EMBED + out];
+                    sv += e * self.attn_wv[inp * EMBED + out];
+                }
+                q[n * EMBED + out] = sq;
+                k[n * EMBED + out] = sk;
+                v[n * EMBED + out] = sv;
+            }
+        }
+
+        // Scaled dot-product scores, softmax-normalized per query row.
+        let scale = 1.0 / count(EMBED).sqrt();
+        let mut weights = vec![0.0_f32; CONTEXT * CONTEXT];
+        for i in 0..CONTEXT {
+            let mut scores = [0.0_f32; CONTEXT];
+            for j in 0..CONTEXT {
+                let mut dot = 0.0;
+                for d in 0..EMBED {
+                    dot += q[i * EMBED + d] * k[j * EMBED + d];
+                }
+                scores[j] = dot * scale;
+            }
+            softmax(&mut scores);
+            weights[i * CONTEXT..(i + 1) * CONTEXT].copy_from_slice(&scores);
+        }
+
+        let mut attended = vec![0.0_f32; CONTEXT * EMBED];
+        for i in 0..CONTEXT {
+            for d in 0..EMBED {
+                let mut sum = 0.0;
+                for j in 0..CONTEXT {
+                    sum += weights[i * CONTEXT + j] * v[j * EMBED + d];
+                }
+                attended[i * EMBED + d] = sum;
+            }
+        }
+
+        Attention {
+            q,
+            k,
+            v,
+            weights,
+            attended,
+        }
+    }
+
+    /// Applies the DCT along the time axis of each channel of `combined`
+    /// (the attention-mixed embeddings) to produce the flattened spectral
+    /// features.
+    // Flat-indexed spectral/matrix math reads more clearly as range loops
+    // with `sum += a * b` than as iterator/`mul_add` rewrites.
+    #[allow(clippy::needless_range_loop, clippy::suboptimal_flops)]
+    fn dct_transform(&self, combined: &[f32]) -> Vec<f32> {
+        // spectral[k*EMBED + d] = sum_n dct[k][n] * combined[n][d]
         let mut spectral = vec![0.0_f32; FEAT];
         for k in 0..CONTEXT {
             for d in 0..EMBED {
                 let mut sum = 0.0;
                 for n in 0..CONTEXT {
-                    sum += self.dct[k * CONTEXT + n] * embeds[n * EMBED + d];
+                    sum += self.dct[k * CONTEXT + n] * combined[n * EMBED + d];
                 }
                 spectral[k * EMBED + d] = sum;
             }
         }
-        (embeds, spectral)
+        spectral
+    }
+
+    /// Embeds the temporal window, self-attends over it, and applies the
+    /// DCT to the resulting (embed + attention) representation, producing
+    /// the flattened spectral features. A convenience for callers that only
+    /// need the final representation and the spectral features (tests
+    /// comparing quantization quality); [`Self::forward`] calls the
+    /// lower-level steps directly since training also needs the attention
+    /// intermediates for backprop.
+    #[cfg(test)]
+    fn spectral_features(&self, context: [usize; CONTEXT]) -> (Vec<f32>, Vec<f32>) {
+        let embeds = self.window_embeds(context);
+        let attn = self.self_attend(&embeds);
+        let mut combined = embeds;
+        for (c, a) in combined.iter_mut().zip(&attn.attended) {
+            *c += a;
+        }
+        let spectral = self.dct_transform(&combined);
+        (combined, spectral)
     }
 
     /// Residual (multi-stage) quantization of `spectral`: each stage picks
@@ -467,7 +598,13 @@ impl NeuralLanguageModel {
     /// Full forward pass for `context`.
     #[allow(clippy::needless_range_loop, clippy::suboptimal_flops)]
     fn forward(&self, context: [usize; CONTEXT]) -> Forward {
-        let (_embeds, spectral) = self.spectral_features(context);
+        let embeds = self.window_embeds(context);
+        let attn = self.self_attend(&embeds);
+        let mut combined = embeds.clone();
+        for (c, a) in combined.iter_mut().zip(&attn.attended) {
+            *c += a;
+        }
+        let spectral = self.dct_transform(&combined);
         let (codes, quant) = self.residual_quantize(&spectral);
 
         let mut hidden = vec![0.0_f32; HIDDEN];
@@ -491,6 +628,8 @@ impl NeuralLanguageModel {
         softmax(&mut logits);
 
         Forward {
+            embeds,
+            attn,
             spectral,
             codes,
             quant,
@@ -569,21 +708,47 @@ impl NeuralLanguageModel {
         }
 
         // Backprop the spectral gradient through the (linear) DCT to the
-        // embeddings: dEmbed[n][d] = sum_k dct[k][n] * dSpectral[k][d].
-        let mut dembeds = [0.0_f32; CONTEXT * EMBED];
+        // combined (embed + attention) representation:
+        // dCombined[n][d] = sum_k dct[k][n] * dSpectral[k][d].
+        let mut dcombined = vec![0.0_f32; CONTEXT * EMBED];
         for n in 0..CONTEXT {
             for d in 0..EMBED {
                 let mut sum = 0.0;
                 for k in 0..CONTEXT {
                     sum += self.dct[k * CONTEXT + n] * dspectral[k * EMBED + d];
                 }
-                dembeds[n * EMBED + d] = sum;
+                dcombined[n * EMBED + d] = sum;
             }
         }
+
+        // combined = embeds + attended, so the residual sends dCombined
+        // straight through to both branches: directly to the token
+        // embeddings below, and back through self-attention here.
+        let mut dwq = vec![0.0_f32; EMBED * EMBED];
+        let mut dwk = vec![0.0_f32; EMBED * EMBED];
+        let mut dwv = vec![0.0_f32; EMBED * EMBED];
+        let dembeds_from_attn = attend_backward(
+            &pass.embeds,
+            &pass.attn,
+            &dcombined,
+            &mut dwq,
+            &mut dwk,
+            &mut dwv,
+            &self.attn_wq,
+            &self.attn_wk,
+            &self.attn_wv,
+        );
+        for i in 0..EMBED * EMBED {
+            self.attn_wq[i] -= LEARNING_RATE * dwq[i];
+            self.attn_wk[i] -= LEARNING_RATE * dwk[i];
+            self.attn_wv[i] -= LEARNING_RATE * dwv[i];
+        }
+
         for (step, &token) in context.iter().enumerate() {
             let base = token * EMBED;
             for d in 0..EMBED {
-                self.embed[base + d] -= LEARNING_RATE * dembeds[step * EMBED + d];
+                let dembed = dcombined[step * EMBED + d] + dembeds_from_attn[step * EMBED + d];
+                self.embed[base + d] -= LEARNING_RATE * dembed;
             }
         }
     }
@@ -735,6 +900,103 @@ fn nearest_code(codebook: &[f32], query: &[f32]) -> usize {
         }
     }
     best
+}
+
+/// Backprop through [`NeuralLanguageModel::self_attend`]. Given `dattended`
+/// (the loss gradient w.r.t. `attn.attended`), accumulates the query/key/
+/// value projection-weight gradients into `dwq`/`dwk`/`dwv` (each `EMBED *
+/// EMBED`, added in place so a caller can zero them once and reuse the same
+/// buffers) and returns the gradient w.r.t. `embeds` flowing back through
+/// the attention branch. A free function (not a method) so it can borrow
+/// `wq`/`wk`/`wv` immutably while the caller still holds `&mut self`.
+#[allow(
+    clippy::needless_range_loop,
+    clippy::suboptimal_flops,
+    clippy::too_many_arguments
+)]
+fn attend_backward(
+    embeds: &[f32],
+    attn: &Attention,
+    dattended: &[f32],
+    dwq: &mut [f32],
+    dwk: &mut [f32],
+    dwv: &mut [f32],
+    wq: &[f32],
+    wk: &[f32],
+    wv: &[f32],
+) -> Vec<f32> {
+    let scale = 1.0 / count(EMBED).sqrt();
+
+    // dV[j] = sum_i weights[i][j] * dAttended[i]
+    let mut dv = [0.0_f32; CONTEXT * EMBED];
+    for i in 0..CONTEXT {
+        for j in 0..CONTEXT {
+            let w = attn.weights[i * CONTEXT + j];
+            for d in 0..EMBED {
+                dv[j * EMBED + d] += w * dattended[i * EMBED + d];
+            }
+        }
+    }
+
+    // dWeights[i][j] = dAttended[i] . V[j]
+    let mut dweights = [0.0_f32; CONTEXT * CONTEXT];
+    for i in 0..CONTEXT {
+        for j in 0..CONTEXT {
+            let mut dot = 0.0;
+            for d in 0..EMBED {
+                dot += dattended[i * EMBED + d] * attn.v[j * EMBED + d];
+            }
+            dweights[i * CONTEXT + j] = dot;
+        }
+    }
+
+    // Backprop each row's softmax: dScores[i][j] = w_ij * (dWeights_ij -
+    // sum_k w_ik * dWeights_ik).
+    let mut dscores = [0.0_f32; CONTEXT * CONTEXT];
+    for i in 0..CONTEXT {
+        let mut dot = 0.0;
+        for j in 0..CONTEXT {
+            dot += attn.weights[i * CONTEXT + j] * dweights[i * CONTEXT + j];
+        }
+        for j in 0..CONTEXT {
+            let w = attn.weights[i * CONTEXT + j];
+            dscores[i * CONTEXT + j] = w * (dweights[i * CONTEXT + j] - dot);
+        }
+    }
+
+    // scores[i][j] = (Q[i] . K[j]) * scale
+    let mut dq = [0.0_f32; CONTEXT * EMBED];
+    let mut dk = [0.0_f32; CONTEXT * EMBED];
+    for i in 0..CONTEXT {
+        for j in 0..CONTEXT {
+            let ds = dscores[i * CONTEXT + j] * scale;
+            for d in 0..EMBED {
+                dq[i * EMBED + d] += ds * attn.k[j * EMBED + d];
+                dk[j * EMBED + d] += ds * attn.q[i * EMBED + d];
+            }
+        }
+    }
+
+    // Q/K/V[n] = embeds[n] . W{q,k,v}: accumulate the projection-weight
+    // gradients and propagate back to embeds.
+    let mut dembeds = [0.0_f32; CONTEXT * EMBED];
+    for n in 0..CONTEXT {
+        for out in 0..EMBED {
+            let grad_q = dq[n * EMBED + out];
+            let grad_k = dk[n * EMBED + out];
+            let grad_v = dv[n * EMBED + out];
+            for inp in 0..EMBED {
+                let e = embeds[n * EMBED + inp];
+                dwq[inp * EMBED + out] += e * grad_q;
+                dwk[inp * EMBED + out] += e * grad_k;
+                dwv[inp * EMBED + out] += e * grad_v;
+                dembeds[n * EMBED + inp] += grad_q * wq[inp * EMBED + out]
+                    + grad_k * wk[inp * EMBED + out]
+                    + grad_v * wv[inp * EMBED + out];
+            }
+        }
+    }
+    dembeds.to_vec()
 }
 
 /// Initializes `len` weights uniformly in `[-scale, scale)`.
@@ -954,6 +1216,122 @@ mod tests {
         for _ in 0..200 {
             let id = model.sample_next(context, &mut rng);
             assert!(id < model.vocab.len());
+        }
+    }
+
+    #[test]
+    fn self_attend_weights_are_a_softmax_per_query_row() {
+        let model = NeuralLanguageModel::bundled();
+        let embeds = model.window_embeds(model.seed_context("the coordinator plans an"));
+        let attn = model.self_attend(&embeds);
+        for i in 0..CONTEXT {
+            let row = &attn.weights[i * CONTEXT..(i + 1) * CONTEXT];
+            let sum: f32 = row.iter().sum();
+            assert!((sum - 1.0).abs() < 1e-5, "row {i} sums to {sum}, not 1");
+            assert!(row.iter().all(|&w| (0.0..=1.0).contains(&w)));
+        }
+    }
+
+    #[test]
+    fn self_attend_learns_a_non_uniform_distribution() {
+        // A trained model's attention shouldn't stay at its "no information
+        // yet" starting point of attending equally to every position.
+        let model = NeuralLanguageModel::bundled();
+        let embeds = model.window_embeds(model.seed_context("the coordinator plans an"));
+        let attn = model.self_attend(&embeds);
+        let uniform = 1.0 / count(CONTEXT);
+        let non_uniform = attn.weights.iter().any(|&w| (w - uniform).abs() > 0.05);
+        assert!(
+            non_uniform,
+            "expected learned attention weights to move away from uniform {uniform}"
+        );
+    }
+
+    /// Verifies [`attend_backward`]'s hand-derived gradients against
+    /// central finite differences on an arbitrary scalar loss
+    /// `dot(attended, dattended)` for a fixed random `dattended` — the
+    /// strongest available check that the backprop math (softmax Jacobian,
+    /// scaled dot-product, and the three projections) is actually correct,
+    /// not just that it compiles and the surrounding training loop happens
+    /// to converge.
+    #[test]
+    fn attend_backward_matches_finite_differences() {
+        const EPS: f32 = 1e-3;
+        const TOL: f32 = 5e-2;
+
+        let model = NeuralLanguageModel::trained_on(SECURITY_CORPUS, 5);
+        let embeds = model.window_embeds(model.seed_context("the coordinator plans an"));
+
+        let mut rng = Rng::new(0xABCD_EF01_2345_6789);
+        let dattended: Vec<f32> = (0..CONTEXT * EMBED).map(|_| rng.symmetric(1.0)).collect();
+
+        // L(embeds, wq, wk, wv) = dot(self_attend(embeds).attended, dattended).
+        let loss = |model: &NeuralLanguageModel, embeds: &[f32]| -> f32 {
+            model
+                .self_attend(embeds)
+                .attended
+                .iter()
+                .zip(&dattended)
+                .map(|(a, d)| a * d)
+                .sum()
+        };
+
+        let attn = model.self_attend(&embeds);
+        let mut dwq = vec![0.0_f32; EMBED * EMBED];
+        let mut dwk = vec![0.0_f32; EMBED * EMBED];
+        let mut dwv = vec![0.0_f32; EMBED * EMBED];
+        let dembeds = attend_backward(
+            &embeds,
+            &attn,
+            &dattended,
+            &mut dwq,
+            &mut dwk,
+            &mut dwv,
+            &model.attn_wq,
+            &model.attn_wk,
+            &model.attn_wv,
+        );
+
+        let assert_close = |numeric: f32, analytic: f32, label: &str| {
+            assert!(
+                (numeric - analytic).abs() < TOL,
+                "{label}: numeric={numeric:.5} analytic={analytic:.5}"
+            );
+        };
+
+        // Spot-check a handful of entries (first, middle, last) across each
+        // gradient path rather than every one, to keep the test fast while
+        // still exercising query, key, value, and the input branch.
+        for &idx in &[0usize, 3, EMBED * EMBED - 1] {
+            let mut plus = model.clone();
+            plus.attn_wq[idx] += EPS;
+            let mut minus = model.clone();
+            minus.attn_wq[idx] -= EPS;
+            let numeric = (loss(&plus, &embeds) - loss(&minus, &embeds)) / (2.0 * EPS);
+            assert_close(numeric, dwq[idx], "wq");
+
+            let mut plus = model.clone();
+            plus.attn_wk[idx] += EPS;
+            let mut minus = model.clone();
+            minus.attn_wk[idx] -= EPS;
+            let numeric = (loss(&plus, &embeds) - loss(&minus, &embeds)) / (2.0 * EPS);
+            assert_close(numeric, dwk[idx], "wk");
+
+            let mut plus = model.clone();
+            plus.attn_wv[idx] += EPS;
+            let mut minus = model.clone();
+            minus.attn_wv[idx] -= EPS;
+            let numeric = (loss(&plus, &embeds) - loss(&minus, &embeds)) / (2.0 * EPS);
+            assert_close(numeric, dwv[idx], "wv");
+        }
+
+        for &idx in &[0usize, EMBED, CONTEXT * EMBED - 1] {
+            let mut plus_embeds = embeds.clone();
+            plus_embeds[idx] += EPS;
+            let mut minus_embeds = embeds.clone();
+            minus_embeds[idx] -= EPS;
+            let numeric = (loss(&model, &plus_embeds) - loss(&model, &minus_embeds)) / (2.0 * EPS);
+            assert_close(numeric, dembeds[idx], "embeds");
         }
     }
 
