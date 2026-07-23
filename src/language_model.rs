@@ -1690,7 +1690,7 @@ mod tests {
         let mut b = [0.0_f32; 3];
         for i in 0..3 {
             for j in 0..3 {
-                b[i] += a[i * 3 + j] * x_expected[j];
+                b[i] = a[i * 3 + j].mul_add(x_expected[j], b[i]);
             }
         }
         let x = solve_damped(&a, &b, 0.0, 3).expect("well-posed system should solve");
