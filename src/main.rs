@@ -40,6 +40,19 @@ fn main() -> ExitCode {
         Some("--llm-perplexity") => llm_perplexity_command(&mut arguments),
         Some("--ask") => ask_command(&assets, &mut arguments),
         Some("--tui") => run_tui_command(&assets),
+        Some("--hash-id") => hash_id_command(&mut arguments),
+        Some("--password-strength") => password_strength_command(&mut arguments),
+        Some("--gen-wordlist") => gen_wordlist_command(&mut arguments),
+        Some("--gen-shell") => gen_shell_command(&mut arguments),
+        Some("--analyze-payload") => analyze_payload_command(&mut arguments),
+        Some("--obfuscate-ps") => obfuscate_ps_command(&mut arguments),
+        Some("--gen-decoys") => gen_decoys_command(&mut arguments),
+        Some("--analyze-handshake") => analyze_handshake_command(&mut arguments),
+        Some("--wps-pin") => wps_pin_command(&mut arguments),
+        Some("--audit-wifi") => audit_wifi_command(&mut arguments),
+        Some("--analyze-passwd") => analyze_passwd_command(&mut arguments),
+        Some("--analyze-sudoers") => analyze_sudoers_command(&mut arguments),
+        Some("--analyze-keys") => analyze_keys_command(&mut arguments),
         Some(command) => {
             eprintln!("unknown command: {command}");
             ExitCode::from(2)
@@ -1906,6 +1919,329 @@ fn write_or_print_report(name: &str, report: String, output: Option<String>) -> 
         print!("{report}");
         ExitCode::SUCCESS
     }
+}
+
+// ─── Offensive Toolkit CLI Commands ──────────────────────────────────────────
+
+/// `--hash-id <hash>` — identify hash type and suggest cracking tools.
+fn hash_id_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    let Some(hash) = arguments.next() else {
+        eprintln!("usage: --hash-id <hash>");
+        return ExitCode::from(2);
+    };
+    if let Some(extra) = arguments.next() {
+        eprintln!("unexpected argument: {extra}");
+        return ExitCode::from(2);
+    }
+    let analysis = security_agent::offensive::credential_attack::identify_hash(&hash);
+    println!("{analysis}");
+    ExitCode::SUCCESS
+}
+
+/// `--password-strength <password>` — analyze password entropy and crack resistance.
+fn password_strength_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    let Some(password) = arguments.next() else {
+        eprintln!("usage: --password-strength <password>");
+        return ExitCode::from(2);
+    };
+    if let Some(extra) = arguments.next() {
+        eprintln!("unexpected argument: {extra}");
+        return ExitCode::from(2);
+    }
+    let analysis = security_agent::offensive::credential_attack::analyze_password_strength(&password);
+    println!("{analysis}");
+    ExitCode::SUCCESS
+}
+
+/// `--gen-wordlist <target> [--company <name>] [--year <year>]` — generate targeted wordlist.
+fn gen_wordlist_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    let Some(target) = arguments.next() else {
+        eprintln!("usage: --gen-wordlist <target> [--company <name>] [--year <year>]");
+        return ExitCode::from(2);
+    };
+    let mut company = None;
+    let mut year = None;
+    let mut next = arguments.next();
+    while let Some(arg) = next.take() {
+        match arg.as_str() {
+            "--company" => {
+                company = arguments.next();
+                next = arguments.next();
+            }
+            "--year" => {
+                year = arguments.next();
+                next = arguments.next();
+            }
+            other => {
+                eprintln!("unexpected argument: {other}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let words = security_agent::offensive::credential_attack::generate_targeted_wordlist(
+        &target,
+        company.as_deref(),
+        year.as_deref(),
+        &[],
+    );
+    println!("Generated {} words for target: {target}", words.len());
+    for word in &words {
+        println!("{word}");
+    }
+    ExitCode::SUCCESS
+}
+
+/// `--gen-shell <type> <lhost> <lport>` — generate a reverse/bind shell payload.
+fn gen_shell_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    use security_agent::offensive::payload_gen::ShellType;
+
+    let Some(shell_type) = arguments.next() else {
+        eprintln!("usage: --gen-shell <type> <lhost> <lport>");
+        eprintln!("types: bash, netcat, python, perl, ruby, php, tcp");
+        return ExitCode::from(2);
+    };
+    let Some(lhost) = arguments.next() else {
+        eprintln!("missing lhost");
+        return ExitCode::from(2);
+    };
+    let Some(lport_str) = arguments.next() else {
+        eprintln!("missing lport");
+        return ExitCode::from(2);
+    };
+    if let Some(extra) = arguments.next() {
+        eprintln!("unexpected argument: {extra}");
+        return ExitCode::from(2);
+    }
+    let lport: u16 = match lport_str.parse() {
+        Ok(p) => p,
+        Err(_) => {
+            eprintln!("invalid lport: {lport_str}");
+            return ExitCode::from(2);
+        }
+    };
+
+    let st = match shell_type.as_str() {
+        "bash" => ShellType::ReverseBash,
+        "netcat" => ShellType::ReverseNetcat,
+        "python" => ShellType::ReversePython,
+        "perl" => ShellType::ReversePerl,
+        "ruby" => ShellType::ReverseRuby,
+        "php" => ShellType::ReversePhp,
+        "tcp" => ShellType::ReverseTcp,
+        other => {
+            eprintln!("unknown shell type: {other}");
+            eprintln!("valid types: bash, netcat, python, perl, ruby, php, tcp");
+            return ExitCode::from(2);
+        }
+    };
+
+    let payload = security_agent::offensive::payload_gen::generate_reverse_shell(st, &lhost, lport);
+    println!("{payload}");
+    ExitCode::SUCCESS
+}
+
+/// `--analyze-payload <payload>` — analyze a payload for shellcode patterns and detection risk.
+fn analyze_payload_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    let Some(payload) = arguments.next() else {
+        eprintln!("usage: --analyze-payload <payload>");
+        return ExitCode::from(2);
+    };
+    if let Some(extra) = arguments.next() {
+        eprintln!("unexpected argument: {extra}");
+        return ExitCode::from(2);
+    }
+    let analysis = security_agent::offensive::payload_gen::analyze_payload(&payload);
+    println!("{analysis}");
+
+    let suggestions = security_agent::offensive::payload_gen::suggest_evasion(&analysis);
+    if !suggestions.is_empty() {
+        println!("\nEvasion Suggestions");
+        println!("===================");
+        for s in &suggestions {
+            println!("{s}");
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// `--obfuscate-ps <command>` — apply PowerShell obfuscation techniques.
+fn obfuscate_ps_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    let Some(command) = arguments.next() else {
+        eprintln!("usage: --obfuscate-ps <command>");
+        return ExitCode::from(2);
+    };
+    if let Some(extra) = arguments.next() {
+        eprintln!("unexpected argument: {extra}");
+        return ExitCode::from(2);
+    }
+    let results = security_agent::offensive::evasion::obfuscate_powershell(&command);
+    println!("Applied {} obfuscation techniques:\n", results.len());
+    for r in &results {
+        println!("{r}");
+        println!();
+    }
+    ExitCode::SUCCESS
+}
+
+/// `--gen-decoys <real-ip> [count]` — generate decoy IPs for scan obfuscation.
+fn gen_decoys_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    let Some(real_ip) = arguments.next() else {
+        eprintln!("usage: --gen-decoys <real-ip> [count]");
+        return ExitCode::from(2);
+    };
+    let count: usize = arguments
+        .next()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5);
+    let decoys = security_agent::offensive::evasion::generate_decoys(&real_ip, count);
+    println!("{decoys}");
+    ExitCode::SUCCESS
+}
+
+/// `--analyze-handshake <eapol-hex...>` — analyze EAPOL frames for WPA handshake completeness.
+fn analyze_handshake_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    let frames: Vec<Vec<u8>> = arguments
+        .map(|hex_str| hex_to_bytes(&hex_str))
+        .collect();
+    if frames.is_empty() {
+        eprintln!("usage: --analyze-handshake <eapol-hex-frame1> [frame2] ...");
+        eprintln!("pass raw EAPOL frames as hex strings");
+        return ExitCode::from(2);
+    }
+    let info = security_agent::offensive::wireless::analyze_eapol_frames(&frames);
+    println!("{info}");
+    ExitCode::SUCCESS
+}
+
+fn hex_to_bytes(hex: &str) -> Vec<u8> {
+    let hex = hex.trim().trim_start_matches("0x");
+    (0..hex.len())
+        .step_by(2)
+        .filter_map(|i| hex.get(i..i + 2).and_then(|h| u8::from_str_radix(h, 16).ok()))
+        .collect()
+}
+
+/// `--wps-pin <pin>` — analyze a WPS PIN for default/vulnerable status.
+fn wps_pin_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    let Some(pin) = arguments.next() else {
+        eprintln!("usage: --wps-pin <pin>");
+        return ExitCode::from(2);
+    };
+    if let Some(extra) = arguments.next() {
+        eprintln!("unexpected argument: {extra}");
+        return ExitCode::from(2);
+    }
+    let info = security_agent::offensive::wireless::analyze_wps_pin(&pin);
+    println!("{info}");
+    ExitCode::SUCCESS
+}
+
+/// `--audit-wifi <essid> <security> <encryption>` — audit wireless network security.
+fn audit_wifi_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    let Some(essid) = arguments.next() else {
+        eprintln!("usage: --audit-wifi <essid> <security-protocol> <encryption>");
+        eprintln!("example: --audit-wifi MyNetwork wpa2 aes");
+        return ExitCode::from(2);
+    };
+    let Some(security) = arguments.next() else {
+        eprintln!("missing security protocol (open/wep/wpa/wpa2/wpa3)");
+        return ExitCode::from(2);
+    };
+    let Some(encryption) = arguments.next() else {
+        eprintln!("missing encryption type (none/wep/tkip/aes/ccmp)");
+        return ExitCode::from(2);
+    };
+    if let Some(extra) = arguments.next() {
+        eprintln!("unexpected argument: {extra}");
+        return ExitCode::from(2);
+    }
+    let audit = security_agent::offensive::wireless::audit_wireless_security(&essid, &security, &encryption);
+    println!("{audit}");
+    ExitCode::SUCCESS
+}
+
+/// `--analyze-passwd <content>` — analyze /etc/passwd for privilege escalation indicators.
+fn analyze_passwd_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    let Some(path_or_content) = arguments.next() else {
+        eprintln!("usage: --analyze-passwd <path-to-passwd-or-content>");
+        return ExitCode::from(2);
+    };
+    if let Some(extra) = arguments.next() {
+        eprintln!("unexpected argument: {extra}");
+        return ExitCode::from(2);
+    }
+    let content = if std::path::Path::new(&path_or_content).exists() {
+        fs::read_to_string(&path_or_content).unwrap_or_default()
+    } else {
+        path_or_content
+    };
+    let indicators = security_agent::offensive::post_exploit::analyze_passwd_file(&content);
+    if indicators.is_empty() {
+        println!("No privilege escalation indicators found.");
+    } else {
+        println!("Privilege Escalation Indicators ({})", indicators.len());
+        println!("=================================");
+        for ind in &indicators {
+            println!("{ind}");
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// `--analyze-sudoers <content>` — analyze sudoers for risky configurations.
+fn analyze_sudoers_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    let Some(path_or_content) = arguments.next() else {
+        eprintln!("usage: --analyze-sudoers <path-to-sudoers-or-content>");
+        return ExitCode::from(2);
+    };
+    if let Some(extra) = arguments.next() {
+        eprintln!("unexpected argument: {extra}");
+        return ExitCode::from(2);
+    }
+    let content = if std::path::Path::new(&path_or_content).exists() {
+        fs::read_to_string(&path_or_content).unwrap_or_default()
+    } else {
+        path_or_content
+    };
+    let indicators = security_agent::offensive::post_exploit::analyze_sudoers(&content);
+    if indicators.is_empty() {
+        println!("No risky sudoers configurations found.");
+    } else {
+        println!("Sudoers Issues ({})", indicators.len());
+        println!("===============");
+        for ind in &indicators {
+            println!("{ind}");
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// `--analyze-keys <content>` — analyze SSH authorized_keys for lateral movement indicators.
+fn analyze_keys_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    let Some(path_or_content) = arguments.next() else {
+        eprintln!("usage: --analyze-keys <path-to-authorized_keys-or-content>");
+        return ExitCode::from(2);
+    };
+    if let Some(extra) = arguments.next() {
+        eprintln!("unexpected argument: {extra}");
+        return ExitCode::from(2);
+    }
+    let content = if std::path::Path::new(&path_or_content).exists() {
+        fs::read_to_string(&path_or_content).unwrap_or_default()
+    } else {
+        path_or_content
+    };
+    let indicators = security_agent::offensive::post_exploit::analyze_authorized_keys(&content);
+    if indicators.is_empty() {
+        println!("No lateral movement indicators found.");
+    } else {
+        println!("Lateral Movement Indicators ({})", indicators.len());
+        println!("=============================");
+        for ind in &indicators {
+            println!("{ind}");
+        }
+    }
+    ExitCode::SUCCESS
 }
 
 #[cfg(test)]

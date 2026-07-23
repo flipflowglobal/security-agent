@@ -29,6 +29,7 @@ pub mod mission;
 pub mod model;
 pub mod network_policy;
 pub mod nlu;
+pub mod offensive;
 pub mod pcap;
 pub mod policy;
 pub mod reasoning_log_db;
@@ -94,6 +95,7 @@ pub use model::{
 };
 pub use network_policy::NetworkMode;
 pub use nlu::{Intent, Interpretation, interpret};
+pub use offensive::*;
 pub use pcap::{CaptureTimestamp, ProtocolCounts, WiresharkReport, run_wireshark};
 pub use policy::{AuthorizationError, AuthorizationOutcome, PolicyEngine};
 pub use registry::{
