@@ -429,6 +429,7 @@ pub struct ToolDefinition {
 }
 
 /// Best-effort classification of every cataloged tool's execution surface.
+///
 /// This drives which tools Phase-4-style real execution wiring may invoke
 /// directly (`StaticLocalAnalysis`) versus which require additional,
 /// not-yet-built live-target/rate-limit gating (`ActiveNetwork`,
