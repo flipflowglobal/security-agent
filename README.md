@@ -187,7 +187,7 @@ The `MobileAndroid` specialist uses a dedicated tool set for APK/DEX analysis an
 | `src/cognitive_engine.rs` | Advanced cognitive architecture: chained reasoning, Bayesian belief revision, adversary theory-of-mind, attention allocation, metacognition, calibration, and compromise propagation |
 | `src/calibration.rs` | Confidence-calibration tracking: Brier score, reliability bins, expected calibration error, over/under-confidence tendency, and histogram recalibration |
 | `src/belief_propagation.rs` | Noisy-OR compromise-risk propagation across the attack graph (lateral movement) |
-| `src/language_model.rs` | Small from-scratch **self-attentive, vector-quantized temporal-frequency** neural language model (embed → self-attention → DCT → residual VQ codebooks → softmax), self-trained on a bundled security corpus; text generation and perplexity scoring |
+| `src/language_model.rs` | Small from-scratch **self-attentive, vector-quantized temporal-frequency** neural language model (embed → self-attention → DCT → residual VQ codebooks → softmax), SGD-trained then Levenberg-Marquardt-refined on a bundled security corpus; text generation and perplexity scoring |
 | `src/builtin_tools.rs` | Offline built-in substitutes (autopsy, volatility) plus the in-house SHA-256; real local-file analysis, no network |
 | `src/local_analyzers.rs` | Offline forensic substitutes — binwalk (signature/entropy), foremost (carving), bulk_extractor (IOC features), hashdeep (recursive multi-hash + dedup) |
 | `src/network_policy.rs` | `NetworkMode` egress governance: offline by default, live network/active tools only under the explicit per-invocation `--allow-network` opt-in |
@@ -351,12 +351,22 @@ prediction path is:
    seeded deterministically from the prompt so the same prompt still always
    produces the same continuation.
 
-The self-attention layer, DCT, residual codebook search, and forward/backward
-passes are all hand-rolled: **no external crates, no network, no weights on
-disk**. The model trains itself at startup (well under a second) and ships
-inside the offline binary. Being tiny — and quantized through a discrete
-bottleneck — its text is modest; it learns the domain vocabulary and local
-phrasing rather than long-range coherence.
+Training is two-phase. SGD (backpropagated by hand, cross-entropy loss)
+trains the whole model first; a **Levenberg-Marquardt** pass then refines
+just the self-attention projections against a genuine nonlinear
+least-squares objective the model already has lying around — the residual
+VQ reconstruction error from step 4 — via a proper Gauss-Newton/trust-region
+step (adaptive damping, a gain ratio gating every step, all hand-derived).
+Running LM over the *whole* network isn't feasible here (the dense `JᵀJ`
+it needs would be thousands-by-thousands), so it's scoped to the one
+small, well-posed sub-problem where it pays for itself.
+
+The self-attention layer, DCT, residual codebook search, Levenberg-Marquardt
+solver, and forward/backward passes are all hand-rolled: **no external
+crates, no network, no weights on disk**. The model trains itself at startup
+(around a second) and ships inside the offline binary. Being tiny — and
+quantized through a discrete bottleneck — its text is modest; it learns the
+domain vocabulary and local phrasing rather than long-range coherence.
 
 ```bash
 # Continuation of a prompt (temperature/top-k sampling, deterministic per prompt).

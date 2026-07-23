@@ -10,6 +10,41 @@ conventions. Releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## [Unreleased]
 
 ### Added
+- **`src/language_model.rs` — a hand-rolled Levenberg-Marquardt refinement
+  pass (`lm_refine_attention`) for the self-attention projections.**
+  Full-network LM isn't feasible here — it needs a dense `JᵀJ` over every
+  trainable parameter (~18k of them), an 18k×18k matrix no hand-rolled code
+  is inverting every step — and LM also needs a genuine sum-of-squares
+  residual to operate on, which the softmax cross-entropy loss SGD trains
+  against isn't. The model already has one, though: the residual VQ
+  reconstruction error `‖spectral − quant‖²` from the DCT/VQ stage. After
+  SGD trains the whole model as before, `bundled()` now runs a second,
+  small phase that refines just the three `EMBED × EMBED` attention
+  projections (300 parameters — small enough for a real, hand-rolled dense
+  `JᵀJ` solve) against that objective, treating each window's VQ
+  reconstruction as a fixed local target (the same straight-through
+  treatment training already gives the discrete bottleneck elsewhere).
+  Each iteration forms the Gauss-Newton normal equations (row `f`'s
+  Jacobian comes from backpropagating a one-hot seed at `spectral[f]`
+  through the DCT and then through the existing `attend_backward`, reused
+  here as a vector-Jacobian-product primitive instead of a scalar-loss
+  gradient), solves the damped system `h = -(JᵀJ + μI)⁻¹Jᵀr` via a
+  hand-rolled Gauss-Jordan elimination, and only keeps the step if the
+  *actual* error reduction tracks the *quadratic model's predicted*
+  reduction closely enough (the gain ratio `q`) — shrinking the damping `μ`
+  on a good step, growing it on a bad one, the classic trust-region
+  heuristic. Because a step is only ever kept when it strictly reduced the
+  reconstruction error, the pass can only leave it the same or lower than
+  where it started, never higher — verified directly in
+  `lm_refine_attention_never_increases_reconstruction_error`. The Jacobian
+  construction itself is checked against central finite differences in
+  `lm_normal_equations_jtr_matches_finite_differences`, and the dense
+  solver against a known 3×3 system in `solve_damped_matches_a_known_system`.
+  `trained_on`/`trained_staged` deliberately skip this pass, so the
+  existing epoch-count comparison tests stay pure-SGD baselines; only
+  `bundled()` (real CLI/`--ask`/anomaly-lens usage) gets the refined model.
+  Startup cost rises from well under a second to about a second in a
+  release build.
 - **`src/language_model.rs` — a hand-rolled single-head self-attention layer
   over the `CONTEXT` window**, inserted between the embedding step and the
   DCT. Each position's query is matched (scaled dot-product) against every
