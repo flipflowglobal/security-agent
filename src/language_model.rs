@@ -76,8 +76,9 @@ const EOS: &str = "</s>";
 /// In-domain training text, compiled into the binary. Larger than a bare
 /// minimum on purpose — broad enough to cover the agent's own vocabulary
 /// (recon, web, cloud, mobile, network, social engineering, governance,
-/// reporting) so both generation and the NLU router's [`Self::embed_text`]
-/// space see more of the terms real capability phrasings use — while
+/// reporting) so both generation and the NLU router's
+/// [`NeuralLanguageModel::embed_text`] space see more of the terms real
+/// capability phrasings use — while
 /// staying small enough that training (SGD, deterministic, from scratch)
 /// remains fast.
 const SECURITY_CORPUS: &str = "\
