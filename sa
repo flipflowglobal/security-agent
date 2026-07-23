@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# sa — Security-Agent single entry point.
+# Run from anywhere: `sa --about`, `sa --tui`, `sa --list-tools`, etc.
+# If the release binary isn't built yet, builds it first.
+set -euo pipefail
+
+# Resolve symlinks to find the real repo directory.
+SCRIPT="${BASH_SOURCE[0]}"
+while [ -L "$SCRIPT" ]; do
+  DIR="$(cd "$(dirname "$SCRIPT")" && pwd)"
+  SCRIPT="$(readlink "$SCRIPT")"
+  [[ "$SCRIPT" != /* ]] && SCRIPT="$DIR/$SCRIPT"
+done
+REPO_DIR="$(cd "$(dirname "$SCRIPT")" && pwd)"
+BIN="$REPO_DIR/target/release/security-agent"
+
+# Auto-build if missing or source is newer than binary
+if [ ! -f "$BIN" ] || [ "$REPO_DIR/src/main.rs" -nt "$BIN" ]; then
+  echo "[sa] building release binary..."
+  cargo build --release --manifest-path "$REPO_DIR/Cargo.toml" 2>&1
+fi
+
+exec "$BIN" "$@"
