@@ -12,10 +12,14 @@
 //! - **Post-exploitation**: privilege escalation checks, lateral movement helpers
 //! - **Wireless**: WPA handshake analysis, WPS pin calculation, deauth frame crafting
 //! - **Evasion**: payload encoding, obfuscation, fragmentation
+//! - **Cloud security**: AWS/GCP/Azure misconfiguration detection
+//! - **Supply chain**: dependency manifest analysis, typosquatting, CI/CD auditing
+//! - **Listener**: TCP reverse shell listener for catching inbound shells
 
 pub mod cloud_security;
 pub mod credential_attack;
 pub mod evasion;
+pub mod listener;
 pub mod payload_gen;
 pub mod post_exploit;
 pub mod recon;
@@ -30,6 +34,9 @@ pub use cloud_security::{
 };
 pub use credential_attack::*;
 pub use evasion::*;
+pub use listener::{
+    ListenerConfig, ListenerError, ListenerEvent, ListenerSummary, ShutdownReason, start_listener,
+};
 pub use payload_gen::*;
 pub use post_exploit::*;
 pub use recon::*;

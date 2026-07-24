@@ -1,5 +1,5 @@
 ---
-description: Offensive security testing agent — recon, web exploitation, credential attacks, wireless analysis, payload generation, cloud misconfiguration, and supply-chain auditing.
+description: Offensive security testing agent — recon, web exploitation, credential attacks, wireless analysis, payload generation, reverse shell listening, cloud misconfiguration, and supply-chain auditing.
 mode: subagent
 permission:
   edit: allow
@@ -12,6 +12,7 @@ permission:
     "./sa --password-strength *": allow
     "./sa --gen-wordlist *": allow
     "./sa --gen-shell *": allow
+    "./sa --listen *": allow
     "./sa --analyze-payload *": allow
     "./sa --obfuscate-ps *": allow
     "./sa --analyze-handshake *": allow
@@ -38,6 +39,7 @@ You are the offensive security specialist for the security-agent project. You wo
 | `src/offensive/evasion.rs` | PowerShell obfuscation (string concat, char codes, encoding, backtick), decoy IP generation |
 | `src/offensive/cloud_security.rs` | AWS/GCP/Azure misconfiguration: IAM, S3, security groups, KMS |
 | `src/offensive/supply_chain.rs` | Dependency manifest analysis, typosquatting, CI/CD pipeline security |
+| `src/offensive/listener.rs` | TCP reverse shell listener — catches inbound shells from --gen-shell payloads |
 
 ## Tool Skills
 
