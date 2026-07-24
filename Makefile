@@ -3,7 +3,7 @@
 # All targets are thin wrappers around `cargo`; they do not hide errors.
 # Run `make help` to list available targets.
 
-.PHONY: all help fmt clippy test build check status clean android deploy
+.PHONY: all help fmt clippy test build check status clean android deploy electron electron-install electron-pack
 
 CARGO ?= cargo
 RELEASE_BIN := target/release/security-agent
@@ -67,7 +67,20 @@ android:
 deploy:
 	./scripts/deploy.sh $(DEPLOY_FLAGS)
 
+## electron-install: Install Electron app dependencies.
+electron-install:
+	cd electron && npm install
+
+## electron: Launch the Electron GUI (builds Rust binary first if needed).
+electron: build
+	cd electron && npm start
+
+## electron-pack: Package the Electron app for distribution.
+electron-pack: build
+	cd electron && npm run dist
+
 ## clean: Remove build artifacts.
 clean:
 	$(CARGO) clean
 	rm -rf dist
+	cd electron && rm -rf node_modules dist

