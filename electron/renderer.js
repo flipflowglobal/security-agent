@@ -670,6 +670,101 @@
         addToolbar(output);
     });
 
+    // ── List Tools ──────────────────────────────────────────────────────
+
+    $('#btn-list-tools').addEventListener('click', async function () {
+        var output = $('#output-list-tools');
+        setLoading(output);
+        var result = await window.api.runCommand(['--list-tools']);
+        if (!result.ok) {
+            setResult(output, result);
+            addToolbar(output);
+            return;
+        }
+        var lines = result.stdout.split('\n').filter(function (l) { return l.trim(); });
+        if (lines.length === 0) {
+            setEmpty(output, 'No tools found.');
+            return;
+        }
+        var table = document.createElement('div');
+        table.className = 'tools-table';
+        var header = document.createElement('div');
+        header.className = 'tools-row tools-header';
+        header.innerHTML = '<span class="tools-cell tools-name">Tool</span>' +
+            '<span class="tools-cell tools-type">Type</span>' +
+            '<span class="tools-cell tools-detail">Detail</span>';
+        table.appendChild(header);
+        lines.forEach(function (line) {
+            var parts = line.split('\t');
+            var row = document.createElement('div');
+            row.className = 'tools-row';
+            var name = parts[0] || '';
+            var type = parts[1] || '';
+            var detail = parts.slice(2).join('  ');
+            row.innerHTML = '<span class="tools-cell tools-name">' + name + '</span>' +
+                '<span class="tools-cell tools-type">' + type + '</span>' +
+                '<span class="tools-cell tools-detail">' + detail + '</span>';
+            table.appendChild(row);
+        });
+        output.innerHTML = '';
+        output.classList.remove('error');
+        output.appendChild(table);
+        addToolbar(output);
+    });
+
+    // ── Gen Decoys ──────────────────────────────────────────────────────
+
+    $('#btn-offensive-decoys').addEventListener('click', async function () {
+        var output = $('#output-offensive-decoys');
+        var realIp = $('#offensive-decoys-real-ip').value.trim();
+        if (!realIp) { setEmpty(output, 'Enter a real IP address.'); return; }
+        setLoading(output);
+        var args = ['--gen-decoys', realIp];
+        var count = $('#offensive-decoys-count').value.trim();
+        if (count) args.push(count);
+        var result = await window.api.runCommand(args);
+        setResult(output, result);
+        addToolbar(output);
+    });
+
+    // ── Analyze Handshake ───────────────────────────────────────────────
+
+    $('#btn-offensive-handshake').addEventListener('click', async function () {
+        var output = $('#output-offensive-handshake');
+        var framesRaw = $('#offensive-handshake-frames').value.trim();
+        if (!framesRaw) { setEmpty(output, 'Paste EAPOL hex frames.'); return; }
+        setLoading(output);
+        var frames = framesRaw.split(/\s+/).filter(function (f) { return f.length > 0; });
+        var args = ['--analyze-handshake'].concat(frames);
+        var result = await window.api.runCommand(args);
+        setResult(output, result);
+        addToolbar(output);
+    });
+
+    // ── WPS PIN ─────────────────────────────────────────────────────────
+
+    $('#btn-offensive-wps').addEventListener('click', async function () {
+        var output = $('#output-offensive-wps');
+        var pin = $('#offensive-wps-pin').value.trim();
+        if (!pin) { setEmpty(output, 'Enter a WPS PIN.'); return; }
+        setLoading(output);
+        var result = await window.api.runCommand(['--wps-pin', pin]);
+        setResult(output, result);
+        addToolbar(output);
+    });
+
+    // ── Analyze Keys ────────────────────────────────────────────────────
+
+    $('#btn-offensive-keys').addEventListener('click', async function () {
+        var output = $('#output-offensive-keys');
+        var input = $('#offensive-keys-input').value.trim();
+        if (!input) { setEmpty(output, 'Provide file content or path.'); return; }
+        setLoading(output);
+        var result = await window.api.runCommand(['--analyze-keys', input]);
+        setResult(output, result);
+        addToolbar(output);
+    });
+
     // ── Keyboard Shortcuts ────────────────────────────────────────────────
 
     document.addEventListener('keydown', function (e) {
