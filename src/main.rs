@@ -2046,12 +2046,9 @@ fn gen_shell_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
         eprintln!("unexpected argument: {extra}");
         return ExitCode::from(2);
     }
-    let lport: u16 = match lport_str.parse() {
-        Ok(p) => p,
-        Err(_) => {
-            eprintln!("invalid lport: {lport_str}");
-            return ExitCode::from(2);
-        }
+    let lport: u16 = if let Ok(p) = lport_str.parse() { p } else {
+        eprintln!("invalid lport: {lport_str}");
+        return ExitCode::from(2);
     };
 
     let st = match shell_type.as_str() {
@@ -2149,12 +2146,9 @@ fn listen_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
         eprintln!("requires --allow-network (opens a listening socket)");
         return ExitCode::from(2);
     };
-    let port: u16 = match port_str.parse() {
-        Ok(p) => p,
-        Err(_) => {
-            eprintln!("invalid port: {port_str}");
-            return ExitCode::from(2);
-        }
+    let port: u16 = if let Ok(p) = port_str.parse() { p } else {
+        eprintln!("invalid port: {port_str}");
+        return ExitCode::from(2);
     };
 
     let max_conn: Option<u32> = arguments.next().and_then(|s| s.parse().ok());
@@ -2305,7 +2299,7 @@ fn analyze_sudoers_command(arguments: &mut impl Iterator<Item = String>) -> Exit
     ExitCode::SUCCESS
 }
 
-/// `--analyze-keys <content>` — analyze SSH authorized_keys for lateral movement indicators.
+/// `--analyze-keys <content>` — analyze SSH `authorized_keys` for lateral movement indicators.
 fn analyze_keys_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
     let Some(path_or_content) = arguments.next() else {
         eprintln!("usage: --analyze-keys <path-to-authorized_keys-or-content>");

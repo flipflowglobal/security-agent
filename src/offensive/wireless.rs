@@ -41,9 +41,11 @@ impl fmt::Display for WpaHandshakeInfo {
 }
 
 /// Analyze raw EAPOL frame data to determine handshake completeness.
+#[must_use]
+#[allow(clippy::similar_names)]
 pub fn analyze_eapol_frames(frames: &[Vec<u8>]) -> WpaHandshakeInfo {
-    let mut has_anonce = false;
-    let mut has_snonce = false;
+    let mut found_anonce = false;
+    let mut found_snonce = false;
     let mut has_mic = false;
     let mut has_pmkid = false;
     let mut pmkid_value = None;
@@ -67,18 +69,17 @@ pub fn analyze_eapol_frames(frames: &[Vec<u8>]) -> WpaHandshakeInfo {
         let is_install = (key_info & 0x0040) != 0;
         let is_ack = (key_info & 0x0080) != 0;
         let is_mic = (key_info & 0x0100) != 0;
-        let _key_descriptor_version = key_info & 0x0007;
 
         // Message 1: ANonce (ACK=1, MIC=0, Install=0)
         if is_ack && !is_mic && !is_install && is_pairwise {
-            has_anonce = true;
+            found_anonce = true;
             if frame.len() >= 115 {
                 anonce_value = Some(hex_encode(&frame[99..131]));
             }
         }
         // Message 2: SNonce (ACK=0, MIC=1, Install=0)
         if !is_ack && is_mic && !is_install && is_pairwise {
-            has_snonce = true;
+            found_snonce = true;
             has_mic = true;
             if frame.len() >= 115 {
                 snonce_value = Some(hex_encode(&frame[99..131]));
@@ -87,7 +88,7 @@ pub fn analyze_eapol_frames(frames: &[Vec<u8>]) -> WpaHandshakeInfo {
         }
         // Message 3: (ACK=1, MIC=1, Install=1)
         if is_ack && is_mic && is_install {
-            has_anonce = true; // ANonce resent in msg 3
+            found_anonce = true; // ANonce resent in msg 3
         }
 
         // Check for PMKID in Key Data (AKM type 0x004F for PMKID)
@@ -114,7 +115,7 @@ pub fn analyze_eapol_frames(frames: &[Vec<u8>]) -> WpaHandshakeInfo {
     }
 
     let eapol_count = frames.len();
-    let crackable = (has_anonce && has_snonce && has_mic) || has_pmkid;
+    let crackable = (found_anonce && found_snonce && has_mic) || has_pmkid;
 
     let handshake_version = match frames.first().and_then(|f| f.get(99)).copied() {
         Some(2) => "WPA2 (RSN)".to_string(),
@@ -124,7 +125,7 @@ pub fn analyze_eapol_frames(frames: &[Vec<u8>]) -> WpaHandshakeInfo {
 
     let recommended_attack = if has_pmkid {
         "PMKID attack — offline crack without client".to_string()
-    } else if has_anonce && has_snonce && has_mic {
+    } else if found_anonce && found_snonce && has_mic {
         "4-way handshake capture — offline dictionary/brute-force crack".to_string()
     } else {
         format!(
@@ -149,7 +150,11 @@ pub fn analyze_eapol_frames(frames: &[Vec<u8>]) -> WpaHandshakeInfo {
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    use std::fmt::Write as _;
+    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+        let _ = write!(s, "{b:02x}");
+        s
+    })
 }
 
 // ─── WPS PIN Analysis ────────────────────────────────────────────────────────
@@ -221,6 +226,7 @@ const KNOWN_DEFAULT_PINS: &[&str] = &[
 ];
 
 /// Analyze a WPS PIN for known vulnerabilities.
+#[must_use]
 pub fn analyze_wps_pin(pin: &str) -> WpsPinInfo {
     let is_default = KNOWN_DEFAULT_PINS.contains(&pin);
 
@@ -286,6 +292,7 @@ impl fmt::Display for DeauthAnalysis {
 }
 
 /// Analyze a raw 802.11 deauthentication/disassociation frame.
+#[must_use]
 pub fn analyze_deauth_frame(frame: &[u8]) -> Option<DeauthAnalysis> {
     if frame.len() < 26 {
         return None;
@@ -413,6 +420,7 @@ impl fmt::Display for WirelessSecurityAudit {
 }
 
 /// Generate a wireless security audit report from beacon frame data.
+#[must_use]
 pub fn audit_wireless_security(
     essid: &str,
     security_protocol: &str,

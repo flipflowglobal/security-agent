@@ -23,11 +23,11 @@ pub enum Severity {
 impl fmt::Display for Severity {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Severity::Critical => write!(f, "CRITICAL"),
-            Severity::High => write!(f, "HIGH"),
-            Severity::Medium => write!(f, "MEDIUM"),
-            Severity::Low => write!(f, "LOW"),
-            Severity::Informational => write!(f, "INFORMATIONAL"),
+            Self::Critical => write!(f, "CRITICAL"),
+            Self::High => write!(f, "HIGH"),
+            Self::Medium => write!(f, "MEDIUM"),
+            Self::Low => write!(f, "LOW"),
+            Self::Informational => write!(f, "INFORMATIONAL"),
         }
     }
 }
@@ -64,6 +64,7 @@ impl fmt::Display for AwsFinding {
 /// Analyze an AWS IAM policy document for misconfigurations.
 ///
 /// Input should be the JSON policy body (inline or attached policy).
+#[must_use]
 pub fn analyze_iam_policy(policy: &str) -> Vec<AwsFinding> {
     let mut findings = Vec::new();
 
@@ -153,6 +154,7 @@ pub fn analyze_iam_policy(policy: &str) -> Vec<AwsFinding> {
 }
 
 /// Analyze an AWS S3 bucket policy for public access misconfigurations.
+#[must_use]
 pub fn analyze_s3_policy(policy: &str) -> Vec<AwsFinding> {
     let mut findings = Vec::new();
 
@@ -205,7 +207,8 @@ pub fn analyze_s3_policy(policy: &str) -> Vec<AwsFinding> {
 
 /// Analyze an AWS security group for overly permissive rules.
 ///
-/// Input should be a JSON representation of security group rules (IpPermissions).
+/// Input should be a JSON representation of security group rules (`IpPermissions`).
+#[must_use]
 pub fn analyze_security_group(sg_rules: &str) -> Vec<AwsFinding> {
     let mut findings = Vec::new();
 
@@ -288,6 +291,7 @@ impl fmt::Display for GcpFinding {
 }
 
 /// Analyze a GCP IAM policy for misconfigurations.
+#[must_use]
 pub fn analyze_gcp_iam(policy: &str) -> Vec<GcpFinding> {
     let mut findings = Vec::new();
 
@@ -338,7 +342,7 @@ pub fn analyze_gcp_iam(policy: &str) -> Vec<GcpFinding> {
     }
 
     // Check for overly broad service account impersonation
-    if policy.contains("iam.serviceAccounts.getAccessToken") && policy.contains("*") {
+    if policy.contains("iam.serviceAccounts.getAccessToken") && policy.contains('*') {
         findings.push(GcpFinding {
             service: "IAM".into(),
             misconfiguration: "GCP IAM policy grants getAccessToken for wildcard service accounts"
@@ -354,6 +358,7 @@ pub fn analyze_gcp_iam(policy: &str) -> Vec<GcpFinding> {
 }
 
 /// Analyze a GCP firewall rules definition for misconfigurations.
+#[must_use]
 pub fn analyze_gcp_firewall(rules: &str) -> Vec<GcpFinding> {
     let mut findings = Vec::new();
 
@@ -417,6 +422,7 @@ impl fmt::Display for AzureFinding {
 }
 
 /// Analyze an Azure role assignment for overly privileged access.
+#[must_use]
 pub fn analyze_azure_role(assignment: &str) -> Vec<AzureFinding> {
     let mut findings = Vec::new();
 
@@ -477,6 +483,7 @@ pub fn analyze_azure_role(assignment: &str) -> Vec<AzureFinding> {
 }
 
 /// Analyze an Azure Network Security Group (NSG) for overly permissive rules.
+#[must_use]
 pub fn analyze_azure_nsg(nsg_rules: &str) -> Vec<AzureFinding> {
     let mut findings = Vec::new();
 
@@ -513,7 +520,7 @@ pub fn analyze_azure_nsg(nsg_rules: &str) -> Vec<AzureFinding> {
     // Check for SSH/RDP open to the world
     let open_ports: Vec<(&str, &str)> = vec![("22", "SSH"), ("3389", "RDP")];
     for (port, name) in &open_ports {
-        if nsg_rules.contains(port) && nsg_rules.contains("*") {
+        if nsg_rules.contains(port) && nsg_rules.contains('*') {
             findings.push(AzureFinding {
                 service: "Network".into(),
                 misconfiguration: format!(
@@ -553,7 +560,8 @@ impl Default for CloudSecurityReport {
 
 impl CloudSecurityReport {
     /// Create an empty report.
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self {
             aws_findings: Vec::new(),
             gcp_findings: Vec::new(),
@@ -605,6 +613,7 @@ impl CloudSecurityReport {
     }
 
     /// Total number of findings across all providers.
+    #[must_use]
     pub fn total_findings(&self) -> usize {
         self.aws_findings.len() + self.gcp_findings.len() + self.azure_findings.len()
     }
@@ -654,10 +663,11 @@ impl fmt::Display for CloudSecurityReport {
 /// Generate a unified report from raw cloud configuration JSON dumps.
 ///
 /// Pass `None` for any provider you don't want to analyze.
+#[must_use]
 pub fn generate_cloud_report(
     aws_iam: Option<&str>,
-    aws_s3: Option<&str>,
-    aws_sg: Option<&str>,
+    aws_s3_policy: Option<&str>,
+    aws_security_group: Option<&str>,
     gcp_iam: Option<&str>,
     gcp_fw: Option<&str>,
     azure_role: Option<&str>,
@@ -668,10 +678,10 @@ pub fn generate_cloud_report(
     if let Some(policy) = aws_iam {
         report.add_aws(analyze_iam_policy(policy));
     }
-    if let Some(policy) = aws_s3 {
+    if let Some(policy) = aws_s3_policy {
         report.add_aws(analyze_s3_policy(policy));
     }
-    if let Some(sg) = aws_sg {
+    if let Some(sg) = aws_security_group {
         report.add_aws(analyze_security_group(sg));
     }
     if let Some(policy) = gcp_iam {

