@@ -31,6 +31,10 @@ fn main() -> ExitCode {
         Some("--plan-scan") => plan_scan_command(&mut arguments),
         Some("--record-findings") => record_findings_command(&mut arguments),
         Some("--view-audit") => view_audit_command(&mut arguments),
+        Some("--view-audit-db") => view_audit_db_command(&mut arguments),
+        Some("--view-findings-db") => view_findings_db_command(&mut arguments),
+        Some("--view-calibration-db") => view_calibration_db_command(&mut arguments),
+        Some("--view-reasoning-log-db") => view_reasoning_log_db_command(&mut arguments),
         Some("--schedule-retest") => schedule_retest_command(&mut arguments),
         Some("--llm-generate") => llm_generate_command(&mut arguments),
         Some("--llm-perplexity") => llm_perplexity_command(&mut arguments),
@@ -751,6 +755,12 @@ fn plan_scan_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
     match plan_scan(arguments) {
         Ok((plan, cognitive_output, outcomes, findings)) => {
             print!("{plan}");
+            // The orchestrated schedule shows the deterministic,
+            // least-invasive-first order execution will follow (and that
+            // `--execute` actually runs), deduplicated per (target, tool).
+            let schedule = security_agent::ToolOrchestrator::new().schedule(&plan);
+            println!();
+            print!("{schedule}");
             if let Some((assessment, deliberation, anomalies)) = cognitive_output {
                 println!();
                 print!("{assessment}");
@@ -1011,12 +1021,17 @@ fn ask_command(
         Intent::ShowSkill => ask_show_skill(assets, slot),
         Intent::Generate => ask_generate(&model, slot),
         Intent::AnomalyCheck => ask_anomaly(&model, slot),
-        // Help, PlanScan, ScheduleRetest, ViewAudit, OutOfScope: the reply
-        // already told the operator what to do next; nothing to execute.
+        // Help, PlanScan, ScheduleRetest, every ViewAudit/ViewAudit-Db-style
+        // intent, OutOfScope: the reply already told the operator what to
+        // do next; nothing to execute.
         Intent::Help
         | Intent::PlanScan
         | Intent::ScheduleRetest
         | Intent::ViewAudit
+        | Intent::ViewAuditDb
+        | Intent::ViewFindingsDb
+        | Intent::ViewCalibrationDb
+        | Intent::ViewReasoningLogDb
         | Intent::OutOfScope => ExitCode::SUCCESS,
     }
 }
@@ -1161,28 +1176,12 @@ fn dispatch_tui_choice(
         }
         "6" => tui_run_builtin_tool(lines),
         "7" => tui_run_external_tool(lines, assets),
-        "8" => tui_plan_scan(lines),
+        "8" => {
+            let _ = tui_plan_scan(lines);
+        }
         "9" => tui_record_findings(lines),
-        "10" => {
-            let Some(path) = tui_prompt(lines, "audit log path: ") else {
-                return;
-            };
-            if path.trim().is_empty() {
-                println!("cancelled.");
-                return;
-            }
-            let _ = view_audit_command(&mut std::iter::once(path));
-        }
-        "11" => {
-            let Some(path) = tui_prompt(lines, "findings log path: ") else {
-                return;
-            };
-            if path.trim().is_empty() {
-                println!("cancelled.");
-                return;
-            }
-            let _ = schedule_retest_command(&mut std::iter::once(path));
-        }
+        "10" => tui_run_with_prompted_path(lines, "audit log path: ", view_audit_command),
+        "11" => tui_run_with_prompted_path(lines, "findings log path: ", schedule_retest_command),
         "12" => {
             let Some(prompt) = tui_prompt(lines, "prompt: ") else {
                 return;
@@ -1204,6 +1203,20 @@ fn dispatch_tui_choice(
             let _ = llm_perplexity_command(&mut std::iter::once(text));
         }
         "14" => tui_listen(lines),
+        "15" => tui_run_with_prompted_path(lines, "audit database path: ", view_audit_db_command),
+        "16" => {
+            tui_run_with_prompted_path(lines, "findings database path: ", view_findings_db_command);
+        }
+        "17" => tui_run_with_prompted_path(
+            lines,
+            "calibration database path: ",
+            view_calibration_db_command,
+        ),
+        "18" => tui_run_with_prompted_path(
+            lines,
+            "reasoning log database path: ",
+            view_reasoning_log_db_command,
+        ),
         // The chat bar: anything else typed is a plain-English instruction,
         // routed through the same grounded router as `--ask`. Passed as one
         // already-trimmed line (not split into words) — `ask_command` joins
@@ -1215,6 +1228,25 @@ fn dispatch_tui_choice(
             let _ = ask_command(assets, &mut std::iter::once(input.to_string()));
         }
     }
+}
+
+/// Prompts for a path and, if it's non-blank, runs `command` with it as
+/// the sole argument -- the shared shape behind every TUI menu entry that
+/// just needs "one path, then dispatch" (every `--view-*` command, plus
+/// `schedule_retest_command`).
+fn tui_run_with_prompted_path(
+    lines: &mut impl Iterator<Item = io::Result<String>>,
+    prompt: &str,
+    command: fn(&mut std::iter::Once<String>) -> ExitCode,
+) {
+    let Some(path) = tui_prompt(lines, prompt) else {
+        return;
+    };
+    if path.trim().is_empty() {
+        println!("cancelled.");
+        return;
+    }
+    let _ = command(&mut std::iter::once(path));
 }
 
 /// Reads one line from `lines`. Returns `None` at clean end-of-input (e.g. a
@@ -1319,81 +1351,108 @@ fn tui_run_external_tool(
     let _ = run_external_tool_command(assets, &mut args.into_iter());
 }
 
-/// Menu flow for `--plan-scan <config> [--audit-log <p>] [--cognitive-review]
-/// [--memory <p>] [--findings-log <p>] [--allow-network] [--execute <args>]`.
-/// Prompts follow the exact flag order `parse_plan_scan_args` expects.
-fn tui_plan_scan(lines: &mut impl Iterator<Item = io::Result<String>>) {
-    let Some(config) = tui_prompt(lines, "engagement config path: ") else {
-        return;
-    };
+/// Prompts for an optional `<flag> <path>` pair, pushing both onto `args`
+/// only if a non-blank path is entered. Returns `None` at end-of-input
+/// (propagated by the caller via `?`), `Some(())` otherwise -- including
+/// when the prompt was left blank and skipped.
+fn tui_optional_path_flag(
+    lines: &mut impl Iterator<Item = io::Result<String>>,
+    prompt: &str,
+    flag: &str,
+    args: &mut Vec<String>,
+) -> Option<()> {
+    let value = tui_prompt(lines, prompt)?;
+    let value = value.trim();
+    if !value.is_empty() {
+        args.push(flag.to_string());
+        args.push(value.to_string());
+    }
+    Some(())
+}
+
+/// Menu flow for `--plan-scan <config> [--audit-log <p>] [--audit-db <p>]
+/// [--cognitive-review] [--memory <p>] [--calibration-db <p>]
+/// [--findings-log <p>] [--findings-db <p>] [--reasoning-log-db <p>]
+/// [--allow-network] [--execute <args>]`. Prompts follow the exact flag
+/// order `parse_plan_scan_args` expects.
+fn tui_plan_scan(lines: &mut impl Iterator<Item = io::Result<String>>) -> Option<()> {
+    let config = tui_prompt(lines, "engagement config path: ")?;
     let config = config.trim().to_string();
     if config.is_empty() {
         println!("cancelled.");
-        return;
+        return Some(());
     }
     let mut args = vec![config];
 
-    let Some(audit) = tui_prompt(lines, "audit log path (blank to skip): ") else {
-        return;
-    };
-    let audit = audit.trim();
-    if !audit.is_empty() {
-        args.push("--audit-log".to_string());
-        args.push(audit.to_string());
-    }
+    tui_optional_path_flag(
+        lines,
+        "audit log path (blank to skip): ",
+        "--audit-log",
+        &mut args,
+    )?;
+    tui_optional_path_flag(
+        lines,
+        "audit database path (blank to skip): ",
+        "--audit-db",
+        &mut args,
+    )?;
 
-    let Some(review) = tui_prompt(lines, "run cognitive review? (y/N): ") else {
-        return;
-    };
+    let review = tui_prompt(lines, "run cognitive review? (y/N): ")?;
     if tui_answered_yes(&review) {
         args.push("--cognitive-review".to_string());
     }
 
-    let Some(memory) = tui_prompt(lines, "prior-findings memory log (blank to skip): ") else {
-        return;
-    };
-    let memory = memory.trim();
-    if !memory.is_empty() {
-        args.push("--memory".to_string());
-        args.push(memory.to_string());
-    }
+    tui_optional_path_flag(
+        lines,
+        "prior-findings memory log (blank to skip): ",
+        "--memory",
+        &mut args,
+    )?;
+    tui_optional_path_flag(
+        lines,
+        "calibration database path (blank to skip; only used with --cognitive-review): ",
+        "--calibration-db",
+        &mut args,
+    )?;
 
-    let Some(findings_log) = tui_prompt(
+    tui_optional_path_flag(
         lines,
         "findings log to append to (blank to skip; only used with --execute): ",
-    ) else {
-        return;
-    };
-    let findings_log = findings_log.trim();
-    if !findings_log.is_empty() {
-        args.push("--findings-log".to_string());
-        args.push(findings_log.to_string());
-    }
+        "--findings-log",
+        &mut args,
+    )?;
+    tui_optional_path_flag(
+        lines,
+        "findings database to append to (blank to skip; only used with --execute): ",
+        "--findings-db",
+        &mut args,
+    )?;
+    tui_optional_path_flag(
+        lines,
+        "reasoning log database (blank to skip; only used with --cognitive-review): ",
+        "--reasoning-log-db",
+        &mut args,
+    )?;
 
-    let Some(execute) = tui_prompt(lines, "execute approved tools now? (y/N): ") else {
-        return;
-    };
+    let execute = tui_prompt(lines, "execute approved tools now? (y/N): ")?;
     if tui_answered_yes(&execute) {
-        let Some(online) = tui_prompt(
+        let online = tui_prompt(
             lines,
             "opt into live network / active tools for execution? (y/N): ",
-        ) else {
-            return;
-        };
+        )?;
         if tui_answered_yes(&online) {
             args.push("--allow-network".to_string());
         }
         args.push("--execute".to_string());
-        let Some(exec_args) = tui_prompt(
+        let exec_args = tui_prompt(
             lines,
             "arguments passed to each executed tool (space-separated, blank for none): ",
-        ) else {
-            return;
-        };
+        )?;
         args.extend(exec_args.split_whitespace().map(str::to_string));
     }
 
     let _ = plan_scan_command(&mut args.into_iter());
+    Some(())
 }
 
 /// Menu flow for `--record-findings <destination-log> <source-log>`.
@@ -1457,8 +1516,9 @@ fn tui_menu() -> String {
      [7]  Run a real external tool    [8]  Plan a scan (engagement config)\n\
      [9]  Record findings (merge)     [10] View audit log\n\
      [11] Schedule retest             [12] Generate text (LLM)\n\
-     [13] Score text for anomaly (LLM)\n\
-     [14] Start reverse shell listener\n\
+     [13] Score text for anomaly (LLM) [14] Reverse shell listener\n\
+     [15] View audit database          [16] View findings database\n\
+     [17] View calibration database    [18] View reasoning log database\n\
      [0]  Help / full capability summary          [q] Quit"
         .to_string()
 }
@@ -1511,6 +1571,26 @@ const CAPABILITY_ROWS: &[(&str, &str, &str)] = &[
         "View audit log",
         "--view-audit <log>",
         "\"show the audit log\" (explains the command)",
+    ),
+    (
+        "View audit database",
+        "--view-audit-db <db>",
+        "\"show the audit database\" (explains the command)",
+    ),
+    (
+        "View findings database",
+        "--view-findings-db <db>",
+        "\"show the findings database\" (explains the command)",
+    ),
+    (
+        "View calibration database",
+        "--view-calibration-db <db>",
+        "\"show the calibration database\" (explains the command)",
+    ),
+    (
+        "View reasoning log database",
+        "--view-reasoning-log-db <db>",
+        "\"show the reasoning log\" (explains the command)",
     ),
     (
         "Run a built-in local tool",
@@ -1651,6 +1731,200 @@ fn schedule_retest_command(arguments: &mut impl Iterator<Item = String>) -> Exit
         }
         Err(error) => {
             eprintln!("failed to read findings log: {error}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// Read-only view of a persisted `.sadb` audit database
+/// (`--view-audit-db <path>.sadb`). Same role as [`view_audit_command`],
+/// backed by [`security_agent::audit_db`] instead of JSON Lines.
+fn view_audit_db_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    let Some(path) = arguments.next() else {
+        eprintln!("missing audit database file path");
+        return ExitCode::from(2);
+    };
+    match security_agent::audit_db::load_audit_records(Path::new(&path)) {
+        Ok(records) => {
+            let role = security_agent::Role::Viewer;
+            println!("Audit Database View (role: {role})");
+            println!("================================");
+            if records.is_empty() {
+                println!("No audit records found.");
+            } else {
+                for record in &records {
+                    println!(
+                        "{}\tactor={}\trole={}\taction={}\ttarget={}",
+                        record.timestamp_epoch_seconds,
+                        record.actor,
+                        record.role,
+                        record.action,
+                        record.target
+                    );
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("failed to read audit database: {error}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// Read-only view of a persisted `.sadb` findings database
+/// (`--view-findings-db <path>.sadb`).
+///
+/// There is no JSON Lines equivalent command: a `.jsonl` findings log can
+/// be read directly with any text tool, but `.sadb`'s binary page format
+/// has no such fallback -- which is exactly why this command exists.
+fn view_findings_db_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    let Some(path) = arguments.next() else {
+        eprintln!("missing findings database file path");
+        return ExitCode::from(2);
+    };
+    match security_agent::findings_db::load_findings(Path::new(&path)) {
+        Ok(findings) => {
+            let role = security_agent::Role::Viewer;
+            println!("Findings Database View (role: {role})");
+            println!("==================================");
+            if findings.is_empty() {
+                println!("No findings found.");
+            } else {
+                for finding in &findings {
+                    println!(
+                        "{}\tsource={}\tseverity={}\tconfidence={}%\trisk={:.1}\ttarget={}\t{}",
+                        finding.finding_id,
+                        finding.source_tool,
+                        finding.severity,
+                        finding.confidence_percent,
+                        finding.normalized_risk_score,
+                        finding.target_id,
+                        finding.title
+                    );
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("failed to read findings database: {error}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// Read-only view of a persisted `.sadb` calibration database
+/// (`--view-calibration-db <path>.sadb`): the accumulated
+/// `(predicted_percent, occurred)` history plus the metrics
+/// [`security_agent::CalibrationTracker`] derives from it.
+///
+/// Surfaces those metrics through the CLI for the first time -- until now
+/// they existed only in library code with no command reading them.
+fn view_calibration_db_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    let Some(path) = arguments.next() else {
+        eprintln!("missing calibration database file path");
+        return ExitCode::from(2);
+    };
+    match security_agent::calibration_db::load_calibration(Path::new(&path)) {
+        Ok(tracker) => {
+            let role = security_agent::Role::Viewer;
+            println!("Calibration Database View (role: {role})");
+            println!("====================================");
+            if tracker.is_empty() {
+                println!("No calibration records found.");
+                return ExitCode::SUCCESS;
+            }
+            println!("Records: {}", tracker.len());
+            if let Some(mean_predicted) = tracker.mean_predicted() {
+                println!("Mean predicted confidence: {:.1}%", mean_predicted * 100.0);
+            }
+            if let Some(empirical_rate) = tracker.empirical_rate() {
+                println!("Empirical hit rate:        {:.1}%", empirical_rate * 100.0);
+            }
+            if let Some(brier_score) = tracker.brier_score() {
+                println!("Brier score:                {brier_score:.4}");
+            }
+            if let Some(mean_error) = tracker.mean_calibration_error() {
+                println!("Mean calibration error:     {:.1} pts", mean_error * 100.0);
+            }
+            if let Some(tendency) = tracker.tendency(0.1) {
+                println!("Tendency:                   {tendency}");
+            }
+            println!();
+            println!("Reliability bins:");
+            for bin in tracker.reliability_bins(5) {
+                if bin.count == 0 {
+                    continue;
+                }
+                println!(
+                    "  [{:>3}-{:<3}%)  n={:<4}  predicted={:.1}%  actual={:.1}%",
+                    bin.lower_percent,
+                    bin.upper_percent,
+                    bin.count,
+                    bin.mean_predicted * 100.0,
+                    bin.empirical_rate * 100.0
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("failed to read calibration database: {error}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// Read-only view of a persisted `.sadb` reasoning-log database
+/// (`--view-reasoning-log-db <path>.sadb`): every archived
+/// `--cognitive-review` run's full train of thought and metacognitive
+/// verdict, oldest first.
+///
+/// This is the whole reason [`security_agent::reasoning_log_db`] exists --
+/// auditable, after-the-fact explainability -- so without this command
+/// that archive had no way to actually be read by a person.
+fn view_reasoning_log_db_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    let Some(path) = arguments.next() else {
+        eprintln!("missing reasoning log database file path");
+        return ExitCode::from(2);
+    };
+    match security_agent::reasoning_log_db::load_runs(Path::new(&path)) {
+        Ok(runs) => {
+            let role = security_agent::Role::Viewer;
+            println!("Reasoning Log Database View (role: {role})");
+            println!("=======================================");
+            if runs.is_empty() {
+                println!("No reasoning runs found.");
+                return ExitCode::SUCCESS;
+            }
+            for (index, run) in runs.iter().enumerate() {
+                println!();
+                println!(
+                    "Run {} @ {}  (overall confidence: {}%)",
+                    index + 1,
+                    run.timestamp_epoch_seconds,
+                    run.reasoning_chain.overall_confidence()
+                );
+                for thought in run.reasoning_chain.thoughts() {
+                    println!(
+                        "  [{}] {} ({}%)",
+                        thought.kind, thought.statement, thought.confidence_percent
+                    );
+                }
+                println!(
+                    "  Metacognition: self-assessed {}%, uncertainty {:.2}, escalate={}",
+                    run.metacognition.self_assessed_confidence,
+                    run.metacognition.uncertainty,
+                    run.metacognition.should_escalate
+                );
+                println!("    {}", run.metacognition.reasoning);
+                for gap in &run.metacognition.knowledge_gaps {
+                    println!("    knowledge gap: {gap}");
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("failed to read reasoning log database: {error}");
             ExitCode::from(1)
         }
     }
@@ -2966,6 +3240,171 @@ criticality=2
     fn view_audit_reports_missing_path() {
         let mut arguments = std::iter::empty::<String>();
         assert_ne!(view_audit_command(&mut arguments), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn view_audit_db_reads_a_written_database() {
+        let path = std::env::temp_dir().join(format!(
+            "security-agent-main-view-audit-db-{}.sadb",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+        security_agent::audit_db::append_audit_records(
+            &path,
+            &[security_agent::AuditRecord {
+                timestamp_epoch_seconds: 42,
+                actor: "jane.doe".to_string(),
+                role: security_agent::Role::SecurityAdmin,
+                action: "plan_authorized_scan".to_string(),
+                target: "eng-view".to_string(),
+                details: "tasks=1 high_impact=0".to_string(),
+                test_run_id: None,
+            }],
+        )
+        .expect("write audit db");
+
+        let mut arguments = vec![path.to_string_lossy().into_owned()].into_iter();
+        let outcome = view_audit_db_command(&mut arguments);
+        fs::remove_file(&path).expect("remove temp audit db");
+
+        assert_eq!(outcome, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn view_audit_db_reports_missing_path() {
+        let mut arguments = std::iter::empty::<String>();
+        assert_ne!(view_audit_db_command(&mut arguments), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn view_audit_db_creates_and_shows_an_empty_database_for_a_new_path() {
+        // Unlike --view-audit's plain text log, opening a .sadb path that
+        // doesn't exist yet creates an empty database rather than
+        // erroring -- see crate::audit_db's module docs.
+        let path = std::env::temp_dir().join(format!(
+            "security-agent-main-view-audit-db-new-{}.sadb",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+
+        let mut arguments = vec![path.to_string_lossy().into_owned()].into_iter();
+        let outcome = view_audit_db_command(&mut arguments);
+        fs::remove_file(&path).expect("remove created audit db");
+
+        assert_eq!(outcome, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn view_findings_db_reads_a_written_database() {
+        let path = std::env::temp_dir().join(format!(
+            "security-agent-main-view-findings-db-{}.sadb",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+        security_agent::findings_db::append_findings(
+            &path,
+            &[security_agent::Finding {
+                finding_id: "F-view-1".to_string(),
+                source_tool: "semgrep".to_string(),
+                title: "exec detected".to_string(),
+                target_id: "api-staging".to_string(),
+                severity: security_agent::Severity::High,
+                confidence_percent: 75,
+                remediation_playbook: "review call site".to_string(),
+                normalized_risk_score: 6.0,
+            }],
+        )
+        .expect("write findings db");
+
+        let mut arguments = vec![path.to_string_lossy().into_owned()].into_iter();
+        let outcome = view_findings_db_command(&mut arguments);
+        fs::remove_file(&path).expect("remove temp findings db");
+
+        assert_eq!(outcome, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn view_findings_db_reports_missing_path() {
+        let mut arguments = std::iter::empty::<String>();
+        assert_ne!(view_findings_db_command(&mut arguments), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn view_calibration_db_reads_a_written_database() {
+        let path = std::env::temp_dir().join(format!(
+            "security-agent-main-view-calibration-db-{}.sadb",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+        security_agent::calibration_db::append_calibration_records(
+            &path,
+            &[
+                security_agent::CalibrationRecord {
+                    predicted_percent: 70,
+                    occurred: true,
+                },
+                security_agent::CalibrationRecord {
+                    predicted_percent: 40,
+                    occurred: false,
+                },
+            ],
+        )
+        .expect("write calibration db");
+
+        let mut arguments = vec![path.to_string_lossy().into_owned()].into_iter();
+        let outcome = view_calibration_db_command(&mut arguments);
+        fs::remove_file(&path).expect("remove temp calibration db");
+
+        assert_eq!(outcome, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn view_calibration_db_reports_missing_path() {
+        let mut arguments = std::iter::empty::<String>();
+        assert_ne!(
+            view_calibration_db_command(&mut arguments),
+            ExitCode::SUCCESS
+        );
+    }
+
+    #[test]
+    fn view_reasoning_log_db_reads_a_written_database() {
+        let path = std::env::temp_dir().join(format!(
+            "security-agent-main-view-reasoning-log-db-{}.sadb",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+        let mut chain = security_agent::ReasoningChain::new();
+        chain.push(
+            security_agent::ThoughtKind::Observation,
+            "target has no history",
+            100,
+            vec![],
+        );
+        let metacognition = security_agent::Metacognition {
+            self_assessed_confidence: 55,
+            uncertainty: 0.4,
+            knowledge_gaps: vec!["no prior engagements".to_string()],
+            should_escalate: false,
+            reasoning: "adequate confidence for a routine review".to_string(),
+        };
+        security_agent::reasoning_log_db::append_run(&path, 1_700_000_000, &chain, &metacognition)
+            .expect("write reasoning log db");
+
+        let mut arguments = vec![path.to_string_lossy().into_owned()].into_iter();
+        let outcome = view_reasoning_log_db_command(&mut arguments);
+        fs::remove_file(&path).expect("remove temp reasoning log db");
+
+        assert_eq!(outcome, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn view_reasoning_log_db_reports_missing_path() {
+        let mut arguments = std::iter::empty::<String>();
+        assert_ne!(
+            view_reasoning_log_db_command(&mut arguments),
+            ExitCode::SUCCESS
+        );
     }
 
     #[test]

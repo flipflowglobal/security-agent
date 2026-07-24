@@ -11,7 +11,10 @@ pub mod cognition;
 pub mod cognitive_engine;
 pub mod compat;
 pub mod coordinator;
+pub mod correlation;
 pub mod engagement_config;
+pub mod engagement_context;
+pub mod evidence;
 pub mod execution;
 pub mod findings;
 pub mod findings_db;
@@ -30,13 +33,17 @@ pub mod model;
 pub mod network_policy;
 pub mod nlu;
 pub mod offensive;
+pub mod orchestrator;
 pub mod pcap;
+pub mod pipeline;
 pub mod policy;
 pub mod reasoning_log_db;
 pub mod registry;
 pub mod roadmap;
+pub mod runtime;
 pub mod sadb;
 pub mod tagged_run;
+pub mod tool_adapter;
 pub mod workflow;
 
 pub use advanced::{
@@ -72,6 +79,7 @@ pub use coordinator::{Coordinator, ExecutionPlan, ScanTask};
 pub use engagement_config::{
     EngagementConfigError, load_engagement_config, parse_engagement_config,
 };
+pub use engagement_context::{Endpoint, EngagementContext, Host, Service};
 pub use execution::{
     DEFAULT_TIMEOUT, TaskExecutionOutcome, ToolExecutionError, ToolExecutionReport, execute_plan,
     run_external_tool, run_external_tool_with_default_timeout,
@@ -96,14 +104,19 @@ pub use model::{
 pub use network_policy::NetworkMode;
 pub use nlu::{Intent, Interpretation, interpret};
 pub use offensive::*;
+pub use orchestrator::{OrchestrationSchedule, OrchestrationStep, ToolOrchestrator};
 pub use pcap::{CaptureTimestamp, ProtocolCounts, WiresharkReport, run_wireshark};
 pub use policy::{AuthorizationError, AuthorizationOutcome, PolicyEngine};
 pub use registry::{
     CapabilityRegistry, ExecutionClass, SpecialistCapability, ToolDefinition, ToolchainPack,
-    ToolchainPackRegistry, UseCase,
+    ToolchainPackRegistry, UseCase, classify_execution,
 };
 pub use roadmap::{ROADMAP_PHASES, RoadmapPhase};
+pub use runtime::{ExecutionRuntime, RuntimeConfig};
 pub use tagged_run::{TaggedTestRun, TestEnvironment, TestRunReport};
+pub use tool_adapter::{
+    AdapterRegistry, InvocationContext, OutputChannel, OutputFormat, ToolAdapter, ToolInvocation,
+};
 pub use workflow::WorkflowStage;
 
 #[cfg(test)]

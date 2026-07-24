@@ -227,6 +227,8 @@ criticality=3
     let text = stdout(&output);
     assert!(text.contains("Execution Plan"));
     assert!(text.contains("eng-it-ok"));
+    // The orchestrated, least-invasive-first schedule is surfaced too.
+    assert!(text.contains("Execution Schedule"));
 }
 
 #[test]
@@ -398,4 +400,24 @@ fn tui_menu_option_generate_prompts_and_continues_text() {
     assert!(output.status.success());
     let text = stdout(&output);
     assert!(text.contains("the coordinator"));
+}
+
+#[test]
+fn tui_menu_option_view_audit_database_prompts_for_and_reads_a_path() {
+    let path = std::env::temp_dir().join(format!(
+        "security-agent-cli-it-view-audit-db-{}.sadb",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+
+    // A fresh path is a valid, empty database (see crate::audit_db's
+    // module docs) -- this proves the real --tui process reaches
+    // view_audit_db_command end to end, not just that it compiles.
+    let output = run_with_stdin(&["--tui"], &format!("14\n{}\nq\n", path.display()));
+    let _ = std::fs::remove_file(&path);
+
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("Audit Database View"));
+    assert!(text.contains("No audit records found."));
 }

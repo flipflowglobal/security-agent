@@ -37,6 +37,10 @@ pub enum Intent {
     PlanScan,
     ScheduleRetest,
     ViewAudit,
+    ViewAuditDb,
+    ViewFindingsDb,
+    ViewCalibrationDb,
+    ViewReasoningLogDb,
     Generate,
     AnomalyCheck,
     OutOfScope,
@@ -56,6 +60,10 @@ impl Intent {
             Self::PlanScan => "plan-scan",
             Self::ScheduleRetest => "schedule-retest",
             Self::ViewAudit => "view-audit",
+            Self::ViewAuditDb => "view-audit-db",
+            Self::ViewFindingsDb => "view-findings-db",
+            Self::ViewCalibrationDb => "view-calibration-db",
+            Self::ViewReasoningLogDb => "view-reasoning-log-db",
             Self::Generate => "generate",
             Self::AnomalyCheck => "anomaly-check",
             Self::OutOfScope => "out-of-scope",
@@ -151,6 +159,49 @@ const SPECS: &[IntentSpec] = &[
         intent: Intent::ViewAudit,
         triggers: &["audit", "ledger"],
         examples: &["show the audit log", "view audit records", "audit history"],
+    },
+    // The four `*Db` intents below share the word "database"/"db" with
+    // each other, so each also carries a distinguishing phrase trigger
+    // ("audit database", "findings database", ...) worth 1.5 lexical
+    // points -- enough to outrank a same-topic single-word intent like
+    // `ViewAudit` (worth 1.0) whenever the instruction actually names the
+    // database, while a bare "show the audit log" still routes to
+    // `ViewAudit` since no `*Db` phrase trigger matches it at all.
+    IntentSpec {
+        intent: Intent::ViewAuditDb,
+        triggers: &["audit database", "audit db"],
+        examples: &[
+            "show the audit database",
+            "view the audit database",
+            "open the audit db",
+        ],
+    },
+    IntentSpec {
+        intent: Intent::ViewFindingsDb,
+        triggers: &["findings database", "findings db"],
+        examples: &[
+            "show the findings database",
+            "view the findings database",
+            "open the findings db",
+        ],
+    },
+    IntentSpec {
+        intent: Intent::ViewCalibrationDb,
+        triggers: &["calibration database", "calibration db", "calibration"],
+        examples: &[
+            "show the calibration database",
+            "how calibrated are you",
+            "view calibration history",
+        ],
+    },
+    IntentSpec {
+        intent: Intent::ViewReasoningLogDb,
+        triggers: &["reasoning log", "reasoning database", "reasoning history"],
+        examples: &[
+            "show the reasoning log",
+            "view past reasoning",
+            "show archived reasoning",
+        ],
     },
     IntentSpec {
         intent: Intent::Generate,
@@ -331,7 +382,13 @@ fn extract_slot(
             ],
         )),
         Intent::AnomalyCheck => Some(after_marker(instruction, lowered)),
-        Intent::PlanScan | Intent::ViewAudit | Intent::ScheduleRetest => instruction
+        Intent::PlanScan
+        | Intent::ViewAudit
+        | Intent::ViewAuditDb
+        | Intent::ViewFindingsDb
+        | Intent::ViewCalibrationDb
+        | Intent::ViewReasoningLogDb
+        | Intent::ScheduleRetest => instruction
             .split_whitespace()
             .find(|token| token.contains('/') || token.contains('.'))
             .map(ToString::to_string),
@@ -424,6 +481,25 @@ fn build_reply(intent: Intent, slot: Option<&str>, assets: &LocalAgentAssets) ->
             || "Point me at an audit log: --view-audit <log>.jsonl.".to_string(),
             |path| format!("Viewing the audit log '{path}'."),
         ),
+        Intent::ViewAuditDb => slot.map_or_else(
+            || "Point me at an audit database: --view-audit-db <db>.sadb.".to_string(),
+            |path| format!("Viewing the audit database '{path}'."),
+        ),
+        Intent::ViewFindingsDb => slot.map_or_else(
+            || "Point me at a findings database: --view-findings-db <db>.sadb.".to_string(),
+            |path| format!("Viewing the findings database '{path}'."),
+        ),
+        Intent::ViewCalibrationDb => slot.map_or_else(
+            || "Point me at a calibration database: --view-calibration-db <db>.sadb.".to_string(),
+            |path| format!("Viewing the calibration database '{path}'."),
+        ),
+        Intent::ViewReasoningLogDb => slot.map_or_else(
+            || {
+                "Point me at a reasoning log database: --view-reasoning-log-db <db>.sadb."
+                    .to_string()
+            },
+            |path| format!("Viewing the reasoning log database '{path}'."),
+        ),
         Intent::Generate => {
             "Generating a continuation with the built-in language model.".to_string()
         }
@@ -481,6 +557,31 @@ mod tests {
         let interp = route("is this suspicious: \"zzq xqv payload\"");
         assert_eq!(interp.intent, Intent::AnomalyCheck);
         assert_eq!(interp.slot.as_deref(), Some("zzq xqv payload"));
+    }
+
+    #[test]
+    fn routes_the_new_db_view_intents_and_distinguishes_them_from_view_audit() {
+        assert_eq!(route("show the audit database").intent, Intent::ViewAuditDb);
+        assert_eq!(route("show the audit log").intent, Intent::ViewAudit);
+        assert_eq!(
+            route("show the findings database").intent,
+            Intent::ViewFindingsDb
+        );
+        assert_eq!(
+            route("show the calibration database").intent,
+            Intent::ViewCalibrationDb
+        );
+        assert_eq!(
+            route("show the reasoning log").intent,
+            Intent::ViewReasoningLogDb
+        );
+    }
+
+    #[test]
+    fn extracts_a_path_for_the_new_db_view_intents() {
+        let interp = route("show the audit database at audit.sadb");
+        assert_eq!(interp.intent, Intent::ViewAuditDb);
+        assert_eq!(interp.slot.as_deref(), Some("audit.sadb"));
     }
 
     #[test]
