@@ -66,7 +66,7 @@ impl fmt::Display for ListenerConfig {
             self.bind_address,
             self.port,
             self.max_connections
-                .map_or("unlimited".to_string(), |n| n.to_string())
+                .map_or_else(|| "unlimited".to_string(), |n| n.to_string())
         )
     }
 }
@@ -157,6 +157,97 @@ impl fmt::Display for ListenerSummary {
 
 // ─── Core Listener ───────────────────────────────────────────────────────────
 
+struct AcceptLoopState {
+    total_connections: u32,
+    total_sessions: u32,
+    total_bytes_sent: u64,
+    total_bytes_received: u64,
+    shutdown_reason: ShutdownReason,
+}
+
+fn run_accept_loop(
+    listener: &TcpListener,
+    config: &ListenerConfig,
+) -> AcceptLoopState {
+    let mut state = AcceptLoopState {
+        total_connections: 0,
+        total_sessions: 0,
+        total_bytes_sent: 0,
+        total_bytes_received: 0,
+        shutdown_reason: ShutdownReason::OperatorInterrupt,
+    };
+
+    loop {
+        if let Some(max) = config.max_connections {
+            if state.total_connections >= max {
+                state.shutdown_reason = ShutdownReason::MaxConnectionsReached;
+                break;
+            }
+        }
+
+        match listener.accept() {
+            Ok((stream, peer_addr)) => {
+                state.total_connections += 1;
+                let peer = peer_addr.to_string();
+
+                emit(&ListenerEvent::Connected {
+                    peer_addr: peer.clone(),
+                    connection_number: state.total_connections,
+                });
+
+                eprintln!("[+] Connection #{} from {peer}", state.total_connections);
+
+                let timeout = config.io_timeout.unwrap_or(Duration::from_secs(300));
+                let _ = stream.set_read_timeout(Some(timeout));
+                let _ = stream.set_write_timeout(Some(timeout));
+
+                match handle_connection(stream, &peer, state.total_connections, config.io_timeout) {
+                    Ok(conn_data) => {
+                        state.total_sessions += 1;
+                        state.total_bytes_sent += conn_data.bytes_sent;
+                        state.total_bytes_received += conn_data.bytes_received;
+
+                        emit(&ListenerEvent::SessionEnded {
+                            peer_addr: peer.clone(),
+                            connection_number: state.total_connections,
+                            duration: conn_data.duration,
+                            bytes_sent: conn_data.bytes_sent,
+                            bytes_received: conn_data.bytes_received,
+                        });
+
+                        eprintln!(
+                            "[*] Session #{} ended — {:.1}s, {}↑ {}↓",
+                            state.total_connections,
+                            conn_data.duration.as_secs_f64(),
+                            HumanBytes(conn_data.bytes_sent),
+                            HumanBytes(conn_data.bytes_received),
+                        );
+                    }
+                    Err(e) => {
+                        emit(&ListenerEvent::Warning(format!(
+                            "session #{} error: {e}",
+                            state.total_connections
+                        )));
+                        eprintln!("[!] Session error: {e}");
+                    }
+                }
+
+                eprintln!("[*] Waiting for next connection...\n");
+            }
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => {
+                emit(&ListenerEvent::Warning(format!("accept error: {e}")));
+                eprintln!("[!] Accept error: {e}");
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        }
+    }
+
+    state
+}
+
 /// Start a reverse shell listener with the given configuration.
 ///
 /// This function **blocks** until the listener is shut down (either by
@@ -166,12 +257,11 @@ impl fmt::Display for ListenerSummary {
 ///
 /// # Errors
 ///
-/// Returns an error if the address cannot be resolved or the socket
-/// cannot be bound.
+/// Returns [`ListenerError::BindFailed`] if the address cannot be resolved
+/// or the TCP socket cannot be bound or set to non-blocking mode.
 pub fn start_listener(config: &ListenerConfig) -> Result<ListenerSummary, ListenerError> {
     let bind_addr = format!("{}:{}", config.bind_address, config.port);
 
-    // Resolve the address to validate it before binding.
     let _resolved: Vec<_> = bind_addr
         .to_socket_addrs()
         .map_err(|e| ListenerError::BindFailed(bind_addr.clone(), e.to_string()))?
@@ -180,7 +270,6 @@ pub fn start_listener(config: &ListenerConfig) -> Result<ListenerSummary, Listen
     let listener = TcpListener::bind(&bind_addr)
         .map_err(|e| ListenerError::BindFailed(bind_addr.clone(), e.to_string()))?;
 
-    // Set non-blocking so we can detect Ctrl-C between accepts.
     listener
         .set_nonblocking(true)
         .map_err(|e| ListenerError::BindFailed(bind_addr.clone(), e.to_string()))?;
@@ -190,113 +279,30 @@ pub fn start_listener(config: &ListenerConfig) -> Result<ListenerSummary, Listen
         "[*] Max connections: {}",
         config
             .max_connections
-            .map_or("unlimited".to_string(), |n| n.to_string())
+            .map_or_else(|| "unlimited".to_string(), |n| n.to_string())
     );
     eprintln!("[*] Press Ctrl-C to stop\n");
 
-    let _ = emit(ListenerEvent::Started {
+    emit(&ListenerEvent::Started {
         address: config.bind_address.clone(),
         port: config.port,
     });
 
-    let mut total_connections: u32 = 0;
-    let mut total_sessions: u32 = 0;
-    let mut total_bytes_sent: u64 = 0;
-    let mut total_bytes_received: u64 = 0;
     let start_time = Instant::now();
-    #[allow(unused_assignments)]
-    let mut shutdown_reason = ShutdownReason::OperatorInterrupt;
-
-    loop {
-        // Check if we've reached the connection limit.
-        if let Some(max) = config.max_connections {
-            if total_connections >= max {
-                shutdown_reason = ShutdownReason::MaxConnectionsReached;
-                break;
-            }
-        }
-
-        // Try to accept a connection (non-blocking).
-        match listener.accept() {
-            Ok((stream, peer_addr)) => {
-                total_connections += 1;
-                let peer = peer_addr.to_string();
-
-                let _ = emit(ListenerEvent::Connected {
-                    peer_addr: peer.clone(),
-                    connection_number: total_connections,
-                });
-
-                eprintln!("[+] Connection #{total_connections} from {peer}");
-
-                // Set I/O timeout on the stream.
-                let timeout = config.io_timeout.unwrap_or(Duration::from_secs(300));
-                let _ = stream.set_read_timeout(Some(timeout));
-                let _ = stream.set_write_timeout(Some(timeout));
-
-                // Handle the shell session.
-                let session_result =
-                    handle_connection(stream, &peer, total_connections, config.io_timeout);
-
-                match session_result {
-                    Ok(stats) => {
-                        total_sessions += 1;
-                        total_bytes_sent += stats.bytes_sent;
-                        total_bytes_received += stats.bytes_received;
-
-                        let _ = emit(ListenerEvent::SessionEnded {
-                            peer_addr: peer.clone(),
-                            connection_number: total_connections,
-                            duration: stats.duration,
-                            bytes_sent: stats.bytes_sent,
-                            bytes_received: stats.bytes_received,
-                        });
-
-                        eprintln!(
-                            "[*] Session #{total_connections} ended — \
-                             {:.1}s, {}↑ {}↓",
-                            stats.duration.as_secs_f64(),
-                            HumanBytes(stats.bytes_sent),
-                            HumanBytes(stats.bytes_received),
-                        );
-                    }
-                    Err(e) => {
-                        let _ = emit(ListenerEvent::Warning(format!(
-                            "session #{total_connections} error: {e}"
-                        )));
-                        eprintln!("[!] Session error: {e}");
-                    }
-                }
-
-                eprintln!("[*] Waiting for next connection...\n");
-            }
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                // No connection ready — sleep briefly then retry.
-                // This gives Ctrl-C a chance to fire.
-                std::thread::sleep(Duration::from_millis(100));
-                continue;
-            }
-            Err(e) => {
-                let _ = emit(ListenerEvent::Warning(format!("accept error: {e}")));
-                eprintln!("[!] Accept error: {e}");
-                // Transient error — keep listening.
-                std::thread::sleep(Duration::from_millis(500));
-            }
-        }
-    }
+    let state = run_accept_loop(&listener, config);
 
     let summary = ListenerSummary {
-        total_connections,
-        total_sessions,
+        total_connections: state.total_connections,
+        total_sessions: state.total_sessions,
         total_duration: start_time.elapsed(),
-        total_bytes_sent,
-        total_bytes_received,
-        shutdown_reason,
+        total_bytes_sent: state.total_bytes_sent,
+        total_bytes_received: state.total_bytes_received,
+        shutdown_reason: state.shutdown_reason,
     };
 
-    let _ = emit(ListenerEvent::Shutdown {
-        total_connections,
-        reason: shutdown_reason,
+    emit(&ListenerEvent::Shutdown {
+        total_connections: state.total_connections,
+        reason: state.shutdown_reason,
     });
 
     eprintln!("\n{summary}");
@@ -325,7 +331,7 @@ fn handle_connection(
     connection_number: u32,
     _io_timeout: Option<Duration>,
 ) -> Result<SessionStats, ListenerError> {
-    let _ = emit(ListenerEvent::SessionActive {
+    emit(&ListenerEvent::SessionActive {
         peer_addr: peer.to_string(),
         connection_number,
     });
@@ -361,13 +367,11 @@ fn handle_connection(
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                     std::thread::sleep(Duration::from_millis(10));
-                    continue;
                 }
                 Err(ref e)
                     if e.kind() == io::ErrorKind::TimedOut
                         || e.kind() == io::ErrorKind::WouldBlock =>
                 {
-                    continue;
                 }
                 Err(e) => {
                     return Err(ListenerError::SessionFailed(format!("read error: {e}")));
@@ -407,7 +411,6 @@ fn handle_connection(
                     }
                     Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(10));
-                        continue;
                     }
                     Err(e) => {
                         return Err(ListenerError::SessionFailed(format!("write error: {e}")));
@@ -428,10 +431,10 @@ fn handle_connection(
             bytes_received = remote_bytes;
         }
         Ok(Err(e)) => {
-            let _ = emit(ListenerEvent::Warning(format!("reader thread: {e}")));
+            emit(&ListenerEvent::Warning(format!("reader thread: {e}")));
         }
         Err(_) => {
-            let _ = emit(ListenerEvent::Warning("reader thread panicked".to_string()));
+            emit(&ListenerEvent::Warning("reader thread panicked".to_string()));
         }
     }
 
@@ -471,10 +474,10 @@ impl std::error::Error for ListenerError {}
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /// Emit a [`ListenerEvent`] to stderr (structured logging placeholder).
-fn emit(event: ListenerEvent) -> fmt::Result {
+fn emit(event: &ListenerEvent) {
     // In the current implementation we just eprintln for human readability.
     // A future integration with the audit ledger could persist these events.
-    match &event {
+    match event {
         ListenerEvent::Started { address, port } => {
             eprintln!("[*] LISTENER_STARTED {address}:{port}");
         }
@@ -513,13 +516,13 @@ fn emit(event: ListenerEvent) -> fmt::Result {
             eprintln!("[*] LISTENER_SHUTDOWN connections={total_connections} reason={reason}");
         }
     }
-    Ok(())
 }
 
 /// Human-readable byte count formatter.
 struct HumanBytes(u64);
 
 impl fmt::Display for HumanBytes {
+    #[allow(clippy::cast_precision_loss)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let b = self.0;
         if b < 1024 {
@@ -561,7 +564,7 @@ mod tests {
             ..Default::default()
         };
         let display = format!("{limited}");
-        assert!(display.contains("5"));
+        assert!(display.contains('5'));
     }
 
     #[test]
@@ -582,7 +585,7 @@ mod tests {
         assert_eq!(format!("{}", HumanBytes(0)), "0B");
         assert_eq!(format!("{}", HumanBytes(512)), "512B");
         assert_eq!(format!("{}", HumanBytes(1536)), "1.5KiB");
-        assert_eq!(format!("{}", HumanBytes(1048576)), "1.0MiB");
+        assert_eq!(format!("{}", HumanBytes(1_048_576)), "1.0MiB");
     }
 
     #[test]
@@ -608,8 +611,8 @@ mod tests {
             shutdown_reason: ShutdownReason::OperatorInterrupt,
         };
         let display = format!("{summary}");
-        assert!(display.contains("3"));
-        assert!(display.contains("2"));
+        assert!(display.contains('3'));
+        assert!(display.contains('2'));
         assert!(display.contains("45"));
         assert!(display.contains("operator interrupt"));
     }

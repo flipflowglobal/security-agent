@@ -134,7 +134,7 @@ fn truncate(s: &str, max: usize) -> &str {
 }
 
 /// Well-known port-to-service mapping for fingerprinting.
-fn well_known_service(port: u16) -> Option<&'static str> {
+const fn well_known_service(port: u16) -> Option<&'static str> {
     match port {
         21 => Some("ftp"),
         22 => Some("ssh"),
@@ -170,6 +170,7 @@ fn well_known_service(port: u16) -> Option<&'static str> {
 /// This is a synchronous, blocking scan suitable for authorized testing.
 /// Each connection attempt uses the given timeout. Returns a structured
 /// report with open ports, service detection, and banner grabbing.
+#[must_use]
 pub fn run_tcp_scan(
     target: &str,
     ports: &[u16],
@@ -197,7 +198,7 @@ pub fn run_tcp_scan(
         }
     }
 
-    let scan_duration_ms = start.elapsed().as_millis() as u64;
+    let scan_duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
     // OS fingerprinting based on open ports and banner patterns
     let os_fingerprint = fingerprint_os(&open_ports);
@@ -243,7 +244,7 @@ fn resolve_target(target: &str) -> Option<Ipv4Addr> {
     let addr = format!("{target}:0").to_socket_addrs().ok()?.next()?;
     match addr.ip() {
         IpAddr::V4(ip) => Some(ip),
-        _ => None,
+        IpAddr::V6(_) => None,
     }
 }
 
@@ -269,7 +270,7 @@ fn scan_port(target: &str, port: u16, timeout: Duration, grab_banners: bool) -> 
         Err(_) => PortState::Filtered,
     };
 
-    let response_time_ms = start.elapsed().as_millis() as u64;
+    let response_time_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
     let service = well_known_service(port).map(str::to_string);
 
     let banner = if state == PortState::Open && grab_banners {
@@ -309,10 +310,10 @@ fn grab_banner(target: &str, port: u16, timeout: Duration) -> Option<String> {
             .unwrap_or("")
             .trim()
             .to_string();
-        if !banner.is_empty() {
-            Some(banner)
-        } else {
+        if banner.is_empty() {
             None
+        } else {
+            Some(banner)
         }
     } else {
         None
@@ -362,9 +363,8 @@ fn fingerprint_os(open_ports: &[PortResult]) -> Option<OsFingerprint> {
 }
 
 fn extract_version(banner: Option<&str>) -> String {
-    let banner = match banner {
-        Some(b) => b,
-        None => return "unknown".to_string(),
+    let Some(banner) = banner else {
+        return "unknown".to_string();
     };
 
     // Try to extract version strings from common patterns
@@ -410,6 +410,7 @@ fn extract_version(banner: Option<&str>) -> String {
 
 /// Run a SYN scan simulation (reports what a SYN scan would find based on
 /// connect scan results, with timing analysis for filtered detection).
+#[must_use]
 pub fn run_syn_scan_analysis(target: &str, ports: &[u16], timeout_ms: u64) -> PortScanReport {
     // SYN scan is conceptually different but for a builtin we approximate
     // using connect scan with stricter timeout and no banner grabbing
