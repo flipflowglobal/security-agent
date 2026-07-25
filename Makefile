@@ -3,7 +3,7 @@
 # All targets are thin wrappers around `cargo`; they do not hide errors.
 # Run `make help` to list available targets.
 
-.PHONY: all help fmt clippy test build check status clean android deploy electron electron-install electron-pack
+.PHONY: all help fmt clippy test build check status clean android deploy electron electron-install electron-pack electron-icons electron-installer electron-installer-win electron-installer-mac electron-installer-linux
 
 CARGO ?= cargo
 RELEASE_BIN := target/release/security-agent
@@ -79,8 +79,32 @@ electron: build
 electron-pack: build
 	cd electron && npm run dist
 
+## electron-icons: Generate app icon PNGs from the shield SVG.
+electron-icons:
+	cd electron && node scripts/generate-icons.js
+
+## electron-installer: Build platform installer for the current OS.
+#   On Windows: NSIS .exe installer + portable .exe
+#   On macOS:   .dmg disk image
+#   On Linux:   .deb + .rpm + .AppImage + .tar.gz
+electron-installer: build electron-icons
+	cd electron && npm run dist
+
+## electron-installer-win: Cross-compile Windows NSIS installer from Linux.
+#   Requires: Wine + NSIS (apt install wine64 nsis) or native Windows build.
+electron-installer-win: build electron-icons
+	cd electron && npm run dist:win
+
+## electron-installer-mac: Build macOS DMG (requires macOS host).
+electron-installer-mac: build electron-icons
+	cd electron && npm run dist:mac
+
+## electron-installer-linux: Build Linux deb/rpm/AppImage packages.
+electron-installer-linux: build electron-icons
+	cd electron && npm run dist:linux
+
 ## clean: Remove build artifacts.
 clean:
 	$(CARGO) clean
 	rm -rf dist
-	cd electron && rm -rf node_modules dist
+	cd electron && rm -rf node_modules dist out

@@ -177,8 +177,8 @@ pub fn identify_hash(hash: &str) -> HashAnalysis {
         hash_type: hash_type.to_string(),
         length: len,
         is_cracked_pattern: false,
-        format_info,
-        john_format,
+        format_info: format_info.to_string(),
+        john_format: john_format.to_string(),
         hashcat_mode,
     }
 }
@@ -398,9 +398,10 @@ pub fn generate_targeted_wordlist(
 
     // Add company name variations if provided
     if let Some(company) = company_name {
+        let lowered = company.to_lowercase();
         let company_words: Vec<&str> = vec![
             company,
-            &company.to_lowercase(),
+            &lowered,
         ];
         for base in &company_words {
             for suffix in &suffixes {

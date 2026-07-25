@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="shieldGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#58a6ff"/>
+      <stop offset="100%" stop-color="#1f6feb"/>
+    </linearGradient>
+    <linearGradient id="checkGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3fb950"/>
+      <stop offset="100%" stop-color="#238636"/>
+    </linearGradient>
+  </defs>
+  <!-- Shield body -->
+  <path d="M256 16 L464 80 C464 80 480 240 440 340 C400 440 320 488 256 496 C192 488 112 440 72 340 C32 240 48 80 48 80 Z"
+        fill="url(#shieldGrad)" stroke="#1f6feb" stroke-width="8"/>
+  <!-- Inner shield highlight -->
+  <path d="M256 48 L432 104 C432 104 444 232 410 316 C376 400 310 448 256 456 C202 448 136 400 102 316 C68 232 80 104 80 104 Z"
+        fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="4"/>
+  <!-- Checkmark -->
+  <polyline points="168,260 224,320 352,192"
+            fill="none" stroke="url(#checkGrad)" stroke-width="36"
+            stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

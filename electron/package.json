@@ -3,20 +3,34 @@
   "version": "0.1.0",
   "description": "Desktop GUI for the Security-Agent orchestration platform",
   "main": "main.js",
+  "author": "Security-Agent Contributors <security-agent@example.com>",
+  "homepage": "https://github.com/user/security-agent",
+  "license": "MIT",
   "scripts": {
     "start": "electron .",
     "build": "electron-builder --dir",
-    "dist": "electron-builder"
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win",
+    "dist:mac": "electron-builder --mac",
+    "dist:linux": "electron-builder --linux",
+    "icons": "node scripts/generate-icons.js",
+    "installer": "node scripts/generate-icons.js && electron-builder",
+    "installer:win": "node scripts/generate-icons.js && electron-builder --win",
+    "installer:mac": "node scripts/generate-icons.js && electron-builder --mac",
+    "installer:linux": "node scripts/generate-icons.js && electron-builder --linux"
   },
   "devDependencies": {
     "electron": "^33.0.0",
-    "electron-builder": "^25.1.8"
+    "electron-builder": "^25.1.8",
+    "typescript": "^7.0.2"
   },
   "build": {
     "appId": "com.security-agent.gui",
     "productName": "Security-Agent",
+    "copyright": "Copyright © 2026 Security-Agent Contributors",
     "directories": {
-      "output": "dist"
+      "output": "dist",
+      "buildResources": "assets"
     },
     "files": [
       "main.js",
@@ -25,14 +39,160 @@
       "styles.css",
       "renderer.js"
     ],
-    "linux": {
-      "target": ["AppImage", "deb"]
-    },
+    "extraResources": [
+      {
+        "from": "../target/release/security-agent",
+        "to": "security-agent",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "compression": "maximum",
+    "asar": true,
+    "icon": "assets/icon.png",
     "win": {
-      "target": ["nsis", "portable"]
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.png",
+      "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "allowElevation": true,
+      "installerIcon": "assets/icon.png",
+      "uninstallerIcon": "assets/icon.png",
+      "installerHeaderIcon": "assets/icon.png",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Security-Agent",
+      "installerLanguages": [
+        "English"
+      ],
+      "language": "1033",
+      "warningsAsErrors": false,
+      "runAfterFinish": false,
+      "deleteAppDataOnUninstall": false,
+      "script": null,
+      "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "${productName}-Portable-${version}.${ext}"
     },
     "mac": {
-      "target": ["dmg"]
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "assets/icon-1024.png",
+      "category": "public.app-category.developer-tools",
+      "darkModeSupport": true,
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "dmg": {
+      "backgroundColor": "#0d1117",
+      "window": {
+        "width": 540,
+        "height": 380
+      },
+      "contents": [
+        {
+          "x": 140,
+          "y": 200
+        },
+        {
+          "x": 400,
+          "y": 200,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ],
+      "artifactName": "${productName}-${version}.${ext}"
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "rpm",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.png",
+      "category": "Development",
+      "desktop": {
+        "Name": "Security-Agent",
+        "Comment": "Desktop GUI for Security-Agent orchestration",
+        "Keywords": "security;pentest;audit;agent;",
+        "StartupNotify": "true"
+      },
+      "artifactName": "${productName}-${version}.${ext}"
+    },
+    "deb": {
+      "depends": [
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libuuid1",
+        "libsecret-1-0"
+      ],
+      "priority": "optional",
+      "compression": "xz",
+      "artifactName": "${productName}-${version}_${arch}.${ext}"
+    },
+    "rpm": {
+      "depends": [
+        "gtk3",
+        "libnotify",
+        "nss",
+        "libXScrnSaver",
+        "libXtst",
+        "xdg-utils",
+        "atspi2-core",
+        "libuuid",
+        "libsecret"
+      ],
+      "compression": "xz",
+      "artifactName": "${productName}-${version}.${ext}"
     }
   }
 }
