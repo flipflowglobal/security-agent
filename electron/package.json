@@ -87,6 +87,7 @@
       "warningsAsErrors": false,
       "runAfterFinish": false,
       "deleteAppDataOnUninstall": false,
+      "include": "build/installer.nsh",
       "script": null,
       "artifactName": "${productName}-Setup-${version}.${ext}"
     },
