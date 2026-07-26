@@ -51,7 +51,7 @@ pub fn analyze_eapol_frames(frames: &[Vec<u8>]) -> WpaHandshakeInfo {
     let mut snonce_value = None;
     let mut mic_value = None;
     let mut bssid = String::from("unknown");
-    let mut essid = String::from("unknown");
+    let essid = String::from("unknown");
 
     for frame in frames {
         // Parse 802.1X / EAPOL header
@@ -67,7 +67,7 @@ pub fn analyze_eapol_frames(frames: &[Vec<u8>]) -> WpaHandshakeInfo {
         let is_install = (key_info & 0x0040) != 0;
         let is_ack = (key_info & 0x0080) != 0;
         let is_mic = (key_info & 0x0100) != 0;
-        let key_descriptor_version = key_info & 0x0007;
+        let _key_descriptor_version = key_info & 0x0007;
 
         // Message 1: ANonce (ACK=1, MIC=0, Install=0)
         if is_ack && !is_mic && !is_install && is_pairwise {
@@ -79,6 +79,7 @@ pub fn analyze_eapol_frames(frames: &[Vec<u8>]) -> WpaHandshakeInfo {
         // Message 2: SNonce (ACK=0, MIC=1, Install=0)
         if !is_ack && is_mic && !is_install && is_pairwise {
             has_snonce = true;
+            has_mic = true;
             if frame.len() >= 115 {
                 snonce_value = Some(hex_encode(&frame[99..131]));
             }

@@ -20,6 +20,8 @@ pub mod payload_gen;
 pub mod post_exploit;
 pub mod wireless;
 pub mod evasion;
+pub mod cloud_security;
+pub mod supply_chain;
 
 pub use recon::*;
 pub use web_exploit::*;
@@ -28,3 +30,5 @@ pub use payload_gen::*;
 pub use post_exploit::*;
 pub use wireless::*;
 pub use evasion::*;
+pub use cloud_security::*;
+pub use supply_chain::*;

@@ -7,6 +7,8 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use crate::findings::Severity;
+
 // =============================================================================
 // Types and Enums
 // =============================================================================
@@ -40,18 +42,7 @@ impl fmt::Display for FindingType {
             FindingType::SecretsExposure => write!(f, "Secrets Exposure"),
             FindingType::BroadPermissions => write!(f, "Broad Permissions"),
             FindingType::MissingIntegrity => write!(f, "Missing Integrity"),
-        }
-    }
-}
-
-impl fmt::Display for Severity {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Severity::Critical => write!(f, "CRITICAL"),
-            Severity::High => write!(f, "HIGH"),
-            Severity::Medium => write!(f, "MEDIUM"),
-            Severity::Low => write!(f, "LOW"),
-            Severity::Informational => write!(f, "INFO"),
+            FindingType::Informational => write!(f, "Informational"),
         }
     }
 }
@@ -115,19 +106,7 @@ impl fmt::Display for CicdFinding {
 
 /// License risk assessment
 #[derive(Debug, Clone)]
-pub enum FindingType {
-    Typosquat,
-    KnownVuln,
-    Outdated,
-    Unmaintained,
-    LicenseRisk,
-    UnpinnedAction,
-    InlineScript,
-    SecretsExposure,
-    BroadPermissions,
-    MissingIntegrity,
-    Informational,
-}
+pub struct LicenseRisk {
     pub license_name: String,
     pub risk_level: Severity,
     pub copyleft: bool,
@@ -598,11 +577,6 @@ fn count_lock_deps(content: &str, file_type: &str) -> usize {
         "poetry.lock" => content.matches("name = ").count(),
         _ => content.lines().filter(|l| !l.trim().is_empty() && !l.trim().starts_with('#')).count(),
     }
-}
-}
-}
-}
-}
 }
 
 /// Count dependencies without integrity checks

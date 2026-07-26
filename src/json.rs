@@ -54,7 +54,7 @@ impl JsonValue {
     /// exactly as one (used for line numbers in tool-emitted JSON).
     // The guard checks non-negativity, upper bound, and whole-number-ness
     // before the cast, so it cannot truncate or lose sign; the u64::MAX
-    // comparison is inherently approximate at the top of the f64 range,
+    // comparison is inherently approximate at the top of f64 range,
     // which is acceptable for this bounds check.
     #[allow(
         clippy::cast_precision_loss,
@@ -70,6 +70,48 @@ impl JsonValue {
                 Some(*value as u64)
             }
             _ => None,
+        }
+    }
+
+    /// Returns `true` when the value is `JsonValue::Bool(true)`.
+    #[must_use]
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Self::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+
+    /// Returns `true` when the value is `JsonValue::Null`.
+    #[must_use]
+    pub fn is_null(&self) -> bool {
+        matches!(self, Self::Null)
+    }
+
+    /// Returns an iterator over the key-value pairs of an object value.
+    /// Yields nothing for any other variant.
+    #[must_use]
+    pub fn iter_object(&self) -> JsonObjectIter<'_> {
+        match self {
+            Self::Object(fields) => JsonObjectIter::Some(fields.iter()),
+            _ => JsonObjectIter::Empty,
+        }
+    }
+}
+
+/// Iterator over JSON object key-value pairs.
+pub enum JsonObjectIter<'a> {
+    Some(std::collections::btree_map::Iter<'a, String, JsonValue>),
+    Empty,
+}
+
+impl<'a> Iterator for JsonObjectIter<'a> {
+    type Item = (&'a str, &'a JsonValue);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Some(iter) => iter.next().map(|(k, v)| (k.as_str(), v)),
+            Self::Empty => None,
         }
     }
 }

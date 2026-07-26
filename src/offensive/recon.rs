@@ -5,6 +5,8 @@
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, TcpStream, ToSocketAddrs};
 use std::io::Write;
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant};
 
 // ─── TCP Connect Port Scanner ────────────────────────────────────────────────
@@ -235,6 +237,105 @@ pub fn run_tcp_scan(
         closed_ports,
         filtered_ports,
         timeout_ports,
+        scan_duration_ms,
+        os_fingerprint,
+        services,
+    }
+}
+
+/// Runs a parallel TCP port scan using multiple threads for significantly
+/// faster scanning of large port ranges. Uses a configurable thread count
+/// (default: 64 threads) and a shared work queue.
+pub fn run_tcp_scan_parallel(
+    target: &str,
+    ports: &[u16],
+    timeout_ms: u64,
+    grab_banners: bool,
+    thread_count: usize,
+) -> PortScanReport {
+    let timeout = Duration::from_millis(timeout_ms);
+    let start = Instant::now();
+
+    let target_ip = resolve_target(target);
+    let target = Arc::new(target.to_string());
+
+    let results: Arc<Mutex<Vec<PortResult>>> = Arc::new(Mutex::new(Vec::new()));
+    let closed: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+    let filtered: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+    let timed_out: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+
+    // Split ports into chunks for each thread
+    let chunk_size = (ports.len() / thread_count.max(1)).max(1);
+    let mut handles = Vec::new();
+
+    for chunk in ports.chunks(chunk_size) {
+        let chunk = chunk.to_vec();
+        let target = Arc::clone(&target);
+        let results = Arc::clone(&results);
+        let closed = Arc::clone(&closed);
+        let filtered = Arc::clone(&filtered);
+        let timed_out = Arc::clone(&timed_out);
+
+        handles.push(thread::spawn(move || {
+            for &port in &chunk {
+                let result = scan_port(&target, port, timeout, grab_banners);
+                match result.state {
+                    PortState::Open => {
+                        results.lock().unwrap().push(result);
+                    }
+                    PortState::Closed => {
+                        *closed.lock().unwrap() += 1;
+                    }
+                    PortState::Filtered => {
+                        *filtered.lock().unwrap() += 1;
+                    }
+                    PortState::Timeout => {
+                        *timed_out.lock().unwrap() += 1;
+                    }
+                }
+            }
+        }));
+    }
+
+    for handle in handles {
+        handle.join().ok();
+    }
+
+    let scan_duration_ms = start.elapsed().as_millis() as u64;
+
+    let mut open_ports = Arc::try_unwrap(results).unwrap().into_inner().unwrap();
+    open_ports.sort_by_key(|p| p.port);
+
+    let os_fingerprint = fingerprint_os(&open_ports);
+
+    let services: Vec<ServiceInfo> = open_ports
+        .iter()
+        .map(|pr| ServiceInfo {
+            port: pr.port,
+            name: pr
+                .service
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
+            version: extract_version(pr.banner.as_deref()),
+            extra: pr
+                .banner
+                .as_deref()
+                .unwrap_or("")
+                .chars()
+                .take(60)
+                .collect(),
+        })
+        .collect();
+
+    PortScanReport {
+        target: (*target).clone(),
+        target_ip,
+        scan_type: format!("TCP Connect ({thread_count} threads)"),
+        total_ports_scanned: ports.len(),
+        open_ports,
+        closed_ports: Arc::try_unwrap(closed).unwrap().into_inner().unwrap(),
+        filtered_ports: Arc::try_unwrap(filtered).unwrap().into_inner().unwrap(),
+        timeout_ports: Arc::try_unwrap(timed_out).unwrap().into_inner().unwrap(),
         scan_duration_ms,
         os_fingerprint,
         services,
