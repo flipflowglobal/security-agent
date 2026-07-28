@@ -1,6 +1,21 @@
 use crate::model::{SpecialistKind, TargetType, Technique, TestIntensity};
 use std::collections::HashMap;
 
+/// The complete, deduplicated, sorted list of every tool name in the
+/// catalog — the desktop/full toolset plus the Android toolset.
+///
+/// This is the authoritative enumeration used to assert full coverage: every
+/// name here has a compiled-in skill ([`crate::local_assets`]) and a
+/// registered invocation adapter ([`crate::tool_adapter`]).
+#[must_use]
+pub fn cataloged_tool_names() -> Vec<String> {
+    let mut names = requested_full_toolset_names();
+    names.extend(android_toolset_names());
+    names.sort();
+    names.dedup();
+    names
+}
+
 fn requested_full_toolset_names() -> Vec<String> {
     vec![
         "autopsy",
