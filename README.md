@@ -175,6 +175,12 @@ The `MobileAndroid` specialist uses a dedicated tool set for APK/DEX analysis an
 | `src/orchestrator.rs` | Turns a plan into an ordered, deduplicated execution schedule (least-invasive first: static → active network → exploitation) |
 | `src/engagement_config.rs` | Zero-dependency parser for `--plan-scan` engagement config files |
 | `src/execution.rs` | Bounded real execution of `StaticLocalAnalysis` cataloged tools, run in the orchestrator's scheduled order via `execute_plan` |
+| `src/tool_adapter.rs` | Per-tool invocation model: builds each tool's concrete `argv`/output-format from an authorized step + discovered context (`AdapterRegistry`, `ToolAdapter`) |
+| `src/runtime.rs` | Concurrent execution runtime: class-ordered bounded concurrency, deterministic output, rate limiting, cancellation, mid-run authorization guard, checkpoint/resume (`ExecutionRuntime`) |
+| `src/engagement_context.rs` | Discovery blackboard: deduplicated hosts/services/endpoints threaded through the staged pipeline (`EngagementContext`) |
+| `src/pipeline.rs` | Result-driven staged engagement: runs the schedule class-by-class, folding each stage's discoveries forward (`run_engagement_pipeline`) |
+| `src/correlation.rs` | Deduplicates and cross-tool-correlates findings, boosting confidence on independent corroboration (`correlate`) |
+| `src/evidence.rs` | Evidence capture / chain-of-custody: SHA-256 of each tool's output plus provenance (`EvidenceRecord`, `capture`) |
 | `src/audit_log.rs` | Append-only on-disk persistence for the audit ledger |
 | `src/audit_db.rs` | Same role as `audit_log.rs`, backed by the zero-dependency `.sadb` embedded database instead of JSON Lines |
 | `src/findings.rs` | Unified finding model and normalized risk scorer |
