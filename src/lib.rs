@@ -121,7 +121,7 @@ pub use pipeline::{
 pub use policy::{AuthorizationError, AuthorizationOutcome, PolicyEngine};
 pub use registry::{
     CapabilityRegistry, ExecutionClass, SpecialistCapability, ToolDefinition, ToolchainPack,
-    ToolchainPackRegistry, UseCase, classify_execution,
+    ToolchainPackRegistry, UseCase, cataloged_tool_names, classify_execution,
 };
 pub use report::{
     ReportInputs, SeverityRollup, render_json as render_report_json, render_markdown, render_sarif,

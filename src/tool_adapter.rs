@@ -14,11 +14,14 @@
 //! This is **Stage-1 territory** (real per-tool invocation). Adapters are
 //! pure: they translate authorized intent into a command, they never decide
 //! authorization or egress — the [`crate::policy`] and
-//! [`crate::network_policy`] gates still own that. The [`AdapterRegistry`]
-//! resolves a step's tool to its adapter and falls back to a conservative
-//! default (the historical prepend-address behavior) for tools that don't
-//! have a bespoke adapter yet, so nothing regresses while adapters are added
-//! incrementally.
+//! [`crate::network_policy`] gates still own that. **Every cataloged tool has
+//! an adapter**: the tools with rich behavior (intensity mapping,
+//! discovered-target selection) have hand-written adapters, and the rest are
+//! covered by a declarative [`ToolSpec`] table driving a single
+//! [`SpecAdapter`]. The `every_cataloged_tool_has_a_registered_adapter` test
+//! enforces that coverage against [`crate::registry::cataloged_tool_names`].
+//! A name outside the catalog still resolves to a conservative fallback (the
+//! historical prepend-address behavior), so nothing ever runs uncommanded.
 
 use crate::engagement_context::EngagementContext;
 use crate::model::TestIntensity;
@@ -170,8 +173,10 @@ impl AdapterRegistry {
         }
     }
 
-    /// A registry seeded with a bespoke adapter for every tool this module
-    /// knows how to drive; un-adapted tools use the fallback.
+    /// A registry seeded with an adapter for every cataloged tool — bespoke
+    /// adapters for the tools with rich behavior, and the [`CATALOG_SPECS`]
+    /// spec table for the rest. Only names outside the catalog use the
+    /// fallback.
     #[must_use]
     pub fn with_defaults() -> Self {
         let mut registry = Self::new();
@@ -189,6 +194,11 @@ impl AdapterRegistry {
         registry.register(Box::new(SubfinderAdapter));
         registry.register(Box::new(SqlmapAdapter));
         registry.register(Box::new(HydraAdapter));
+        // Every remaining cataloged tool gets a spec-driven adapter, so the
+        // registry covers the whole catalog rather than falling back.
+        for spec in CATALOG_SPECS {
+            registry.register(Box::new(SpecAdapter(spec)));
+        }
         registry
     }
 
@@ -707,6 +717,187 @@ const fn intensity_threads(intensity: TestIntensity) -> u8 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Spec-driven adapters for the rest of the catalog
+// ---------------------------------------------------------------------------
+
+/// How a [`ToolSpec`] positions its target in the argument list.
+#[derive(Debug, Clone, Copy)]
+enum ArgShape {
+    /// Append the authorized network host/address as the positional target
+    /// (recon/scan tools that take a host or range).
+    NetworkHost,
+    /// Append the primary discovered web URL (web scanners/crawlers).
+    WebUrl,
+    /// Append the target id, treated as a local file or image path
+    /// (forensic/static-analysis/cracking tools that operate on a file).
+    LocalPath,
+    /// No positional target — the tool runs against an interface, a wordlist,
+    /// or a fixed local scope, or is launched interactively. Operator
+    /// arguments still apply.
+    NoTarget,
+}
+
+/// A declarative adapter definition for a cataloged tool: its fixed leading
+/// arguments, where the target goes, and the format of its output.
+#[derive(Debug, Clone, Copy)]
+struct ToolSpec {
+    name: &'static str,
+    format: OutputFormat,
+    shape: ArgShape,
+    fixed: &'static [&'static str],
+}
+
+/// A [`ToolAdapter`] built from a [`ToolSpec`]: fixed args, then the target
+/// (per the spec's shape), then the operator's overrides.
+struct SpecAdapter(&'static ToolSpec);
+
+impl ToolAdapter for SpecAdapter {
+    fn tool_name(&self) -> &'static str {
+        self.0.name
+    }
+
+    fn output_format(&self) -> OutputFormat {
+        self.0.format
+    }
+
+    fn build(&self, ctx: &InvocationContext) -> ToolInvocation {
+        let spec = self.0;
+        let mut argv: Vec<String> = spec.fixed.iter().map(|arg| (*arg).to_string()).collect();
+        match spec.shape {
+            ArgShape::NetworkHost => argv.push(ctx.network_target().to_string()),
+            ArgShape::WebUrl => argv.push(ctx.primary_web_target()),
+            ArgShape::LocalPath => argv.push(ctx.target_id.to_string()),
+            ArgShape::NoTarget => {}
+        }
+        argv.extend_from_slice(ctx.operator_args);
+        ToolInvocation {
+            tool: spec.name.to_string(),
+            argv,
+            output: OutputChannel::Stdout,
+            format: spec.format,
+        }
+    }
+}
+
+/// A spec-table entry — keeps [`CATALOG_SPECS`] compact and readable.
+const fn spec(name: &'static str, shape: ArgShape, fixed: &'static [&'static str]) -> ToolSpec {
+    ToolSpec {
+        name,
+        format: OutputFormat::PlainText,
+        shape,
+        fixed,
+    }
+}
+
+/// A spec-driven adapter for every cataloged tool that does not already have
+/// a bespoke adapter above. The fixed arguments reflect each tool's primary
+/// non-interactive invocation; the shape places the authorized target; and
+/// the operator's `--execute` arguments are appended last. Tools that are
+/// interface-, wordlist-, or GUI-driven use [`ArgShape::NoTarget`].
+static CATALOG_SPECS: &[ToolSpec] = &[
+    // --- Digital forensics / local-file analysis (target = a file/image) ---
+    spec("autopsy", ArgShape::NoTarget, &[]),
+    spec("volatility", ArgShape::LocalPath, &["-f"]),
+    spec("binwalk", ArgShape::LocalPath, &["-e"]),
+    spec("bulk_extractor", ArgShape::LocalPath, &["-o", "bulk-out"]),
+    spec(
+        "foremost",
+        ArgShape::LocalPath,
+        &["-o", "foremost-out", "-i"],
+    ),
+    spec("hashdeep", ArgShape::LocalPath, &["-r"]),
+    spec("galleta", ArgShape::LocalPath, &[]),
+    spec("mdb-sql", ArgShape::LocalPath, &[]),
+    spec("sqlitebrowser", ArgShape::LocalPath, &[]),
+    spec("chkrootkit", ArgShape::NoTarget, &[]),
+    spec("lynis", ArgShape::NoTarget, &["audit", "system"]),
+    spec("keepnote", ArgShape::NoTarget, &[]),
+    spec("recordmydesktop", ArgShape::NoTarget, &[]),
+    spec("cutycapt", ArgShape::NoTarget, &[]),
+    // --- Network capture / MITM (interface-driven) ---
+    spec("wireshark", ArgShape::LocalPath, &["-r"]),
+    spec(
+        "tcpdump",
+        ArgShape::NoTarget,
+        &["-c", "100", "-w", "tcpdump.pcap"],
+    ),
+    spec("netsniff-ng", ArgShape::NoTarget, &[]),
+    spec("driftnet", ArgShape::NoTarget, &["-i", "eth0"]),
+    spec("bettercap", ArgShape::NoTarget, &[]),
+    spec("ettercap", ArgShape::NoTarget, &["-T", "-q"]),
+    spec("mitmproxy", ArgShape::NoTarget, &[]),
+    spec("yersinia", ArgShape::NoTarget, &[]),
+    spec("thc-ipv6", ArgShape::NoTarget, &[]),
+    // --- Host / service / network recon (target = host or range) ---
+    spec("amass", ArgShape::NetworkHost, &["enum", "-d"]),
+    spec("dmitry", ArgShape::NetworkHost, &[]),
+    spec("netdiscover", ArgShape::NetworkHost, &["-P", "-r"]),
+    spec("ike-scan", ArgShape::NetworkHost, &[]),
+    spec("enum4linux", ArgShape::NetworkHost, &["-a"]),
+    spec("smbmap", ArgShape::NetworkHost, &["-H"]),
+    spec("ncrack", ArgShape::NetworkHost, &[]),
+    spec("medusa", ArgShape::NetworkHost, &["-h"]),
+    spec("netexec", ArgShape::NetworkHost, &["smb"]),
+    spec("crackmapexec", ArgShape::NetworkHost, &["smb"]),
+    spec("evil-winrm", ArgShape::NetworkHost, &["-i"]),
+    // --- Web content discovery / crawling (target = URL) ---
+    spec("dirb", ArgShape::WebUrl, &[]),
+    spec("wfuzz", ArgShape::WebUrl, &["-c"]),
+    spec("skipfish", ArgShape::WebUrl, &["-o", "skipfish-out"]),
+    spec("wafw00f", ArgShape::WebUrl, &[]),
+    spec("httrack", ArgShape::WebUrl, &[]),
+    spec("cewl", ArgShape::WebUrl, &[]),
+    // --- Exploitation frameworks / payloads (interactive) ---
+    spec(
+        "msfconsole",
+        ArgShape::NoTarget,
+        &["-q", "-x", "version; exit"],
+    ),
+    spec("msfpc", ArgShape::NoTarget, &[]),
+    spec("searchsploit", ArgShape::NoTarget, &[]),
+    spec("setoolkit", ArgShape::NoTarget, &[]),
+    spec("beef-xss", ArgShape::NoTarget, &[]),
+    // --- Password / hash cracking (target = a local hash/capture file) ---
+    spec("hashcat", ArgShape::LocalPath, &["-m", "0", "-a", "0"]),
+    spec("john", ArgShape::LocalPath, &[]),
+    spec("ophcrack", ArgShape::NoTarget, &[]),
+    spec("rcrack", ArgShape::NoTarget, &[]),
+    spec("crunch", ArgShape::NoTarget, &["1", "8"]),
+    spec("pyrit", ArgShape::NoTarget, &["eval"]),
+    // --- Wireless / RFID / hardware (interface-driven) ---
+    spec("aircrack-ng", ArgShape::LocalPath, &[]),
+    spec("kismet", ArgShape::NoTarget, &[]),
+    spec("wifite", ArgShape::NoTarget, &[]),
+    spec("reaver", ArgShape::NoTarget, &["-i", "wlan0"]),
+    spec("giskismet", ArgShape::NoTarget, &[]),
+    spec("macchanger", ArgShape::NoTarget, &["-r"]),
+    spec("chirpw", ArgShape::NoTarget, &[]),
+    spec("mfoc", ArgShape::NoTarget, &["-O", "mfoc-dump.mfd"]),
+    spec("mfterm", ArgShape::NoTarget, &[]),
+    spec("termineter", ArgShape::NoTarget, &[]),
+    // --- Android / mobile static & dynamic analysis (target = an APK/path) ---
+    spec(
+        "apktool",
+        ArgShape::LocalPath,
+        &["d", "-f", "-o", "apktool-out"],
+    ),
+    spec("androguard", ArgShape::LocalPath, &["analyze"]),
+    spec("apkleaks", ArgShape::LocalPath, &["-f"]),
+    spec("apksigner", ArgShape::LocalPath, &["verify"]),
+    spec("dex2jar", ArgShape::LocalPath, &[]),
+    spec("qark", ArgShape::LocalPath, &["--apk"]),
+    spec("mariana-trench", ArgShape::NoTarget, &[]),
+    spec("trueseeing", ArgShape::LocalPath, &[]),
+    spec("mobsf", ArgShape::LocalPath, &[]),
+    spec("frida", ArgShape::NoTarget, &[]),
+    spec("objection", ArgShape::NoTarget, &[]),
+    spec("drozer", ArgShape::NoTarget, &[]),
+    // --- Proxies / GUI suites (launched, not scripted) ---
+    spec("burpsuite", ArgShape::NoTarget, &[]),
+    spec("zenmap", ArgShape::NoTarget, &[]),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -740,6 +931,96 @@ mod tests {
 
     fn build(tool: &str, c: &InvocationContext) -> ToolInvocation {
         AdapterRegistry::with_defaults().invocation_for(&step(tool, c.network_address), c)
+    }
+
+    #[test]
+    fn every_cataloged_tool_has_a_registered_adapter() {
+        let registry = AdapterRegistry::with_defaults();
+        let engagement = EngagementContext::new();
+        let args: Vec<String> = Vec::new();
+        let catalog = crate::registry::cataloged_tool_names();
+        assert!(!catalog.is_empty());
+
+        for name in &catalog {
+            // Coverage: a bespoke or spec adapter exists for the tool — never
+            // the conservative fallback.
+            assert!(
+                registry.adapter_for(name).is_some(),
+                "no adapter registered for cataloged tool '{name}'",
+            );
+            // The adapter builds a well-formed invocation for that exact tool.
+            let invocation = registry.invocation_for(
+                &step(name, Some("10.0.0.5")),
+                &ctx(
+                    Some("10.0.0.5"),
+                    TestIntensity::Standard,
+                    &args,
+                    &engagement,
+                ),
+            );
+            assert_eq!(
+                &invocation.tool, name,
+                "adapter built a mismatched tool name"
+            );
+        }
+    }
+
+    #[test]
+    fn spec_adapters_place_targets_per_shape() {
+        let engagement = EngagementContext::new();
+        let args: Vec<String> = Vec::new();
+        let context = ctx(
+            Some("10.0.0.5"),
+            TestIntensity::Standard,
+            &args,
+            &engagement,
+        );
+
+        // NetworkHost: the address is the positional target.
+        let smbmap = build("smbmap", &context);
+        assert_eq!(smbmap.argv, vec!["-H".to_string(), "10.0.0.5".to_string()]);
+
+        // LocalPath: the target id is the positional target.
+        let binwalk = build("binwalk", &context);
+        assert_eq!(binwalk.argv, vec!["-e".to_string(), "t1".to_string()]);
+
+        // WebUrl: a synthesized URL for the target.
+        let dirb = build("dirb", &context);
+        assert_eq!(dirb.argv, vec!["http://10.0.0.5".to_string()]);
+
+        // NoTarget: only the fixed arguments, no positional target.
+        let msf = build("msfconsole", &context);
+        assert_eq!(
+            msf.argv,
+            vec![
+                "-q".to_string(),
+                "-x".to_string(),
+                "version; exit".to_string()
+            ],
+        );
+    }
+
+    #[test]
+    fn spec_adapter_appends_operator_args_after_target() {
+        let engagement = EngagementContext::new();
+        let args = vec!["--extra".to_string()];
+        let inv = build(
+            "smbmap",
+            &ctx(
+                Some("10.0.0.5"),
+                TestIntensity::Standard,
+                &args,
+                &engagement,
+            ),
+        );
+        assert_eq!(
+            inv.argv,
+            vec![
+                "-H".to_string(),
+                "10.0.0.5".to_string(),
+                "--extra".to_string()
+            ],
+        );
     }
 
     #[test]
@@ -842,9 +1123,16 @@ mod tests {
     fn unadapted_tool_uses_fallback_prepend_behavior() {
         let eng = EngagementContext::new();
         let args = vec!["-x".to_string()];
-        // netdiscover has no bespoke adapter and is a network tool.
+        // A name outside the catalog has no registered adapter, so the
+        // conservative fallback applies (network tools get the address
+        // prepended). Every cataloged tool, by contrast, is covered.
+        assert!(
+            !crate::registry::cataloged_tool_names()
+                .iter()
+                .any(|n| n == "uncataloged-probe")
+        );
         let inv = build(
-            "netdiscover",
+            "uncataloged-probe",
             &ctx(Some("10.0.0.9"), TestIntensity::Standard, &args, &eng),
         );
         assert_eq!(inv.argv, vec!["10.0.0.9".to_string(), "-x".to_string()]);

@@ -10,6 +10,19 @@ conventions. Releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## [Unreleased]
 
 ### Added
+- **Full catalog adapter coverage: every cataloged tool now has an
+  invocation adapter and is coverage-tested.** The 14 tools with rich
+  behavior keep their hand-written adapters; the remaining ~75 are driven by
+  a declarative `ToolSpec` table (`CATALOG_SPECS`) through a single
+  `SpecAdapter`, each with a realistic non-interactive invocation and a
+  target-placement shape (network host / web URL / local path / no target).
+  `registry::cataloged_tool_names()` exposes the authoritative,
+  deduplicated 89-tool catalog, and two data-driven tests enforce the
+  contract: `every_cataloged_tool_has_a_registered_adapter` (a real adapter,
+  never the fallback, builds a well-formed invocation for each) and
+  `every_cataloged_tool_has_a_bundled_skill` (each has its compiled-in
+  `SKILL.md`). Names outside the catalog still resolve to the conservative
+  fallback.
 - **End-to-end reporting integration tests (Stage 8).** A new
   `tests/report_e2e.rs` seeds a real findings log through the library, then
   drives the compiled binary's `--report` command and asserts on the
