@@ -42,15 +42,40 @@ type HashSpec = (&'static str, &'static str, &'static str, Option<u32>);
 
 fn classify_hash_by_prefix(hash: &str) -> Option<HashSpec> {
     if hash.starts_with("$1$") {
-        Some(("MD5-crypt", "Unix $1$ MD5 password hash", "md5crypt", Some(500)))
+        Some((
+            "MD5-crypt",
+            "Unix $1$ MD5 password hash",
+            "md5crypt",
+            Some(500),
+        ))
     } else if hash.starts_with("{SHA}") {
-        Some(("SHA-1 (NetWare)", "Base64-encoded SHA-1", "nsldaps", Some(101)))
+        Some((
+            "SHA-1 (NetWare)",
+            "Base64-encoded SHA-1",
+            "nsldaps",
+            Some(101),
+        ))
     } else if hash.starts_with("$5$") {
-        Some(("SHA-256-crypt", "Unix $5$ SHA-256 password hash", "sha256crypt", Some(7400)))
+        Some((
+            "SHA-256-crypt",
+            "Unix $5$ SHA-256 password hash",
+            "sha256crypt",
+            Some(7400),
+        ))
     } else if hash.starts_with("$sha256$") {
-        Some(("SHA-256 (dotnet)", "ASP.NET SHA-256 hash", "sha256", Some(1400)))
+        Some((
+            "SHA-256 (dotnet)",
+            "ASP.NET SHA-256 hash",
+            "sha256",
+            Some(1400),
+        ))
     } else if hash.starts_with("$6$") {
-        Some(("SHA-512-crypt", "Unix $6$ SHA-512 password hash", "sha512crypt", Some(1800)))
+        Some((
+            "SHA-512-crypt",
+            "Unix $6$ SHA-512 password hash",
+            "sha512crypt",
+            Some(1800),
+        ))
     } else if hash.starts_with("$2a$") || hash.starts_with("$2b$") || hash.starts_with("$2y$") {
         if hash.starts_with("$2y$") {
             Some(("bcrypt (2y)", "bcrypt variant 2y", "bcrypt", Some(3200)))
@@ -70,29 +95,76 @@ fn classify_hash_by_prefix(hash: &str) -> Option<HashSpec> {
     } else if hash.starts_with("$argon2") {
         Some(("argon2", "Argon2 — memory-hard KDF", "argon2", None))
     } else if hash.starts_with("0x0100") && hash.len() == 54 {
-        Some(("MSSQL 2005", "Microsoft SQL Server 2005 hash", "mssql05", Some(131)))
+        Some((
+            "MSSQL 2005",
+            "Microsoft SQL Server 2005 hash",
+            "mssql05",
+            Some(131),
+        ))
     } else if hash.starts_with("0x0100") && hash.len() == 94 {
-        Some(("MSSQL 2008+", "Microsoft SQL Server 2008+ hash", "mssql12", Some(1731)))
+        Some((
+            "MSSQL 2008+",
+            "Microsoft SQL Server 2008+ hash",
+            "mssql12",
+            Some(1731),
+        ))
     } else if hash.starts_with("S:") && hash.len() == 50 {
-        Some(("Oracle 11g", "Oracle 11g password hash", "oracle11", Some(112)))
+        Some((
+            "Oracle 11g",
+            "Oracle 11g password hash",
+            "oracle11",
+            Some(112),
+        ))
     } else if hash.starts_with("T:") && hash.len() == 50 {
         Some(("Oracle 12c", "Oracle 12c password hash", "oracle12", None))
     } else if hash.starts_with("$krb5tgs$23$*") {
-        Some(("Kerberos TGS-REP", "Kerberos TGS-REP (AS-REP Roastable)", "krb5tgs", Some(13100)))
+        Some((
+            "Kerberos TGS-REP",
+            "Kerberos TGS-REP (AS-REP Roastable)",
+            "krb5tgs",
+            Some(13100),
+        ))
     } else if hash.starts_with("$krb5tgs$23$") {
-        Some(("Kerberos TGS-REP", "Kerberos TGS-REP (Kerberoastable)", "krb5tgs", Some(13100)))
+        Some((
+            "Kerberos TGS-REP",
+            "Kerberos TGS-REP (Kerberoastable)",
+            "krb5tgs",
+            Some(13100),
+        ))
     } else if hash.starts_with("$krb5asrep$23$") {
-        Some(("Kerberos AS-REP", "Kerberos AS-REP (AS-REP Roastable)", "krb5asrep", Some(18200)))
-    } else if hash.starts_with("admin::") || (hash.contains(':') && hash.len() > 30 && hash.len() < 200) {
-        Some(("NetNTLMv1/v2", "NTLM authentication capture hash", "netntlmv2", Some(5600)))
+        Some((
+            "Kerberos AS-REP",
+            "Kerberos AS-REP (AS-REP Roastable)",
+            "krb5asrep",
+            Some(18200),
+        ))
+    } else if hash.starts_with("admin::")
+        || (hash.contains(':') && hash.len() > 30 && hash.len() < 200)
+    {
+        Some((
+            "NetNTLMv1/v2",
+            "NTLM authentication capture hash",
+            "netntlmv2",
+            Some(5600),
+        ))
     } else if hash.starts_with("$P$") || hash.starts_with("$H$") {
         Some(("phpBB3", "phpBB3 password hash", "phpass", Some(400)))
     } else if hash.starts_with("$P$B") {
-        Some(("WordPress (phpass)", "WordPress phpass hash", "phpass", Some(400)))
+        Some((
+            "WordPress (phpass)",
+            "WordPress phpass hash",
+            "phpass",
+            Some(400),
+        ))
     } else if hash.starts_with("sha1$") {
         Some(("Django SHA1", "Django SHA1 password hash", "django", None))
     } else if hash.starts_with("$S$") {
-        Some(("Drupal 7+", "Drupal 7+ password hash (SHA-512)", "drupal7", Some(7900)))
+        Some((
+            "Drupal 7+",
+            "Drupal 7+ password hash (SHA-512)",
+            "drupal7",
+            Some(7900),
+        ))
     } else if hash.starts_with("$pbkdf2-") {
         Some(("PBKDF2", "PBKDF2 password hash", "pbkdf2", None))
     } else {
@@ -106,11 +178,24 @@ fn classify_hash_by_length(hash: &str) -> HashSpec {
     match len {
         32 if all_hex => ("MD5", "MD5 hex digest (128-bit)", "raw-md5", Some(0)),
         40 if all_hex => ("SHA-1", "SHA-1 hex digest (160-bit)", "raw-sha1", Some(100)),
-        64 if all_hex => ("SHA-256", "SHA-256 hex digest (256-bit)", "raw-sha256", Some(1400)),
-        128 if all_hex => ("SHA-512", "SHA-512 hex digest (512-bit)", "raw-sha512", Some(1700)),
-        32 if hash.chars().all(|c| c.is_ascii_uppercase()) => {
-            ("LM (assumed)", "32-char uppercase hex — likely LM hash", "lm", Some(3000))
-        }
+        64 if all_hex => (
+            "SHA-256",
+            "SHA-256 hex digest (256-bit)",
+            "raw-sha256",
+            Some(1400),
+        ),
+        128 if all_hex => (
+            "SHA-512",
+            "SHA-512 hex digest (512-bit)",
+            "raw-sha512",
+            Some(1700),
+        ),
+        32 if hash.chars().all(|c| c.is_ascii_uppercase()) => (
+            "LM (assumed)",
+            "32-char uppercase hex — likely LM hash",
+            "lm",
+            Some(3000),
+        ),
         41 if hash.starts_with('*') && hash[1..].chars().all(|c| c.is_ascii_hexdigit()) => (
             "MySQL 4.1+",
             "MySQL 4.1+ password hash (* prefixed)",
@@ -261,7 +346,11 @@ pub fn analyze_password_strength(password: &str) -> PasswordStrength {
     }
 
     // Estimate crack time (10 billion guesses/sec — modern GPU cluster)
-    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     let combinations = (charset_size as f64).powi(i32::try_from(len).unwrap_or(i32::MAX));
     let seconds = combinations / 10_000_000_000.0;
     let crack_time = format_crack_time(seconds);
@@ -342,18 +431,8 @@ pub fn generate_targeted_wordlist(
 
     // Common patterns (using W for word, Y for year as non-format-arg placeholders)
     let patterns = [
-        "W",
-        "WY",
-        "W!",
-        "WY!",
-        "W@123",
-        "W#123",
-        "W$123",
-        "Welcome1",
-        "WelcomeW",
-        "P@ssW",
-        "WP@ss",
-        "W2026!",
+        "W", "WY", "W!", "WY!", "W@123", "W#123", "W$123", "Welcome1", "WelcomeW", "P@ssW",
+        "WP@ss", "W2026!",
     ];
 
     for base in &base_words {
