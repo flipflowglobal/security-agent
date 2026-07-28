@@ -40,6 +40,13 @@ fn truncate_str(s: &str, max: usize) -> &str {
 
 type HashSpec = (&'static str, &'static str, &'static str, Option<u32>);
 
+// A flat prefix-dispatch chain: one arm per recognized hash format. Kept
+// as a single function so the ordered matching (more specific prefixes
+// before their more general ones) stays in one place. rustfmt wraps the
+// wider `Some((..))` tuples across several lines each, which pushes the
+// line count past the pedantic `too_many_lines` threshold without any
+// added complexity, so the lint is allowed here.
+#[allow(clippy::too_many_lines)]
 fn classify_hash_by_prefix(hash: &str) -> Option<HashSpec> {
     if hash.starts_with("$1$") {
         Some((
