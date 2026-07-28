@@ -43,9 +43,22 @@ const FIRST_FREE_PAGE: u32 = pager::CATALOG_PAGE + 1;
 
 /// Marks a page as a transaction footer. Distinct from `pager`'s own
 /// magic so the two are never confused.
-const FOOTER_MAGIC: &[u8; 8] = b"SACOMMT1";
+///
+/// Bumped from `SACOMMT1` to `SACOMMT2` when the footer grew a hash of
+/// the catalog-image page *contents* (see [`build_footer`]): an
+/// old-format footer no longer carries enough to prove its catalog image
+/// reached disk intact, so it must be cleanly rejected as unrecoverable
+/// rather than misread under the new layout.
+const FOOTER_MAGIC: &[u8; 8] = b"SACOMMT2";
 const FOOTER_CATALOG_IMAGE_OFFSET: usize = 8;
-const FOOTER_CHECKSUM_OFFSET: usize = 12;
+/// Hex-encoded SHA-256 of the catalog-image page's contents. This is what
+/// closes the durability gap: the footer commits not just *which* page is
+/// the catalog image but *what bytes* it must contain, so a torn or
+/// still-zeroed catalog image is detectable at recovery.
+const FOOTER_CONTENT_HASH_OFFSET: usize = 12;
+/// A SHA-256 digest is 32 bytes -> 64 lowercase hex characters.
+const HASH_HEX_LEN: usize = 64;
+const FOOTER_CHECKSUM_OFFSET: usize = FOOTER_CONTENT_HASH_OFFSET + HASH_HEX_LEN;
 
 #[derive(Debug)]
 pub enum DbError {
@@ -79,28 +92,60 @@ impl From<catalog::CatalogError> for DbError {
     }
 }
 
-fn checksum_hex(catalog_image_page: u32) -> String {
+/// Hashes the catalog-image page's *contents*. This digest is committed
+/// in the footer and re-checked against the actual page bytes at
+/// recovery, so a footer can never validate against a catalog image whose
+/// bytes never reached disk (a torn or still-zeroed page hashes to a
+/// different value).
+fn content_hash_hex(catalog_image: &Page) -> String {
     let mut hasher = crate::builtin_tools::Sha256::new();
-    hasher.update(FOOTER_MAGIC);
-    hasher.update(&catalog_image_page.to_le_bytes());
+    hasher.update(catalog_image);
     hasher.finalize_hex()
 }
 
-fn build_footer(catalog_image_page: u32) -> Page {
+/// The footer's own integrity checksum. It now covers both the
+/// catalog-image *page number* and the hash of its *contents*, so neither
+/// can be tampered with (or torn) without invalidating the footer.
+fn checksum_hex(catalog_image_page: u32, content_hash: &str) -> String {
+    let mut hasher = crate::builtin_tools::Sha256::new();
+    hasher.update(FOOTER_MAGIC);
+    hasher.update(&catalog_image_page.to_le_bytes());
+    hasher.update(content_hash.as_bytes());
+    hasher.finalize_hex()
+}
+
+fn build_footer(catalog_image_page: u32, content_hash: &str) -> Page {
+    debug_assert_eq!(content_hash.len(), HASH_HEX_LEN);
     let mut page = [0u8; PAGE_SIZE];
     page[0..FOOTER_CATALOG_IMAGE_OFFSET].copy_from_slice(FOOTER_MAGIC);
-    page[FOOTER_CATALOG_IMAGE_OFFSET..FOOTER_CHECKSUM_OFFSET]
+    page[FOOTER_CATALOG_IMAGE_OFFSET..FOOTER_CONTENT_HASH_OFFSET]
         .copy_from_slice(&catalog_image_page.to_le_bytes());
-    let checksum = checksum_hex(catalog_image_page);
+    page[FOOTER_CONTENT_HASH_OFFSET..FOOTER_CHECKSUM_OFFSET]
+        .copy_from_slice(content_hash.as_bytes());
+    let checksum = checksum_hex(catalog_image_page, content_hash);
     page[FOOTER_CHECKSUM_OFFSET..FOOTER_CHECKSUM_OFFSET + checksum.len()]
         .copy_from_slice(checksum.as_bytes());
     page
 }
 
-/// Returns the footer's `catalog_image_page` if `page` is a valid,
-/// untorn footer, or `None` if it's an ordinary data page, an
-/// uncommitted footer that never finished writing, or garbage.
-fn verify_footer(page: &Page) -> Option<u32> {
+/// A footer's committed reference to its catalog image: which page it is
+/// and the hash its contents must match.
+struct FooterRef {
+    catalog_image_page: u32,
+    content_hash: String,
+}
+
+/// Returns the footer's [`FooterRef`] if `page` is a valid, untorn
+/// footer, or `None` if it's an ordinary data page, an uncommitted footer
+/// that never finished writing, an old-format (`SACOMMT1`) footer, or
+/// garbage.
+///
+/// A passing checksum proves only that the footer's *own* bytes
+/// (magic, catalog-image page number, and committed content hash) are
+/// intact -- it does not prove the catalog-image page itself reached
+/// disk. Recovery must still read that page and confirm it hashes to
+/// `content_hash` (see [`recover`]).
+fn verify_footer(page: &Page) -> Option<FooterRef> {
     if page[0..FOOTER_CATALOG_IMAGE_OFFSET] != *FOOTER_MAGIC {
         return None;
     }
@@ -110,10 +155,17 @@ fn verify_footer(page: &Page) -> Option<u32> {
         page[FOOTER_CATALOG_IMAGE_OFFSET + 2],
         page[FOOTER_CATALOG_IMAGE_OFFSET + 3],
     ]);
-    let expected = checksum_hex(catalog_image_page);
+    let content_hash = &page[FOOTER_CONTENT_HASH_OFFSET..FOOTER_CHECKSUM_OFFSET];
+    let Ok(content_hash) = std::str::from_utf8(content_hash) else {
+        return None;
+    };
+    let expected = checksum_hex(catalog_image_page, content_hash);
     let actual = &page[FOOTER_CHECKSUM_OFFSET..FOOTER_CHECKSUM_OFFSET + expected.len()];
     if actual == expected.as_bytes() {
-        Some(catalog_image_page)
+        Some(FooterRef {
+            catalog_image_page,
+            content_hash: content_hash.to_string(),
+        })
     } else {
         None
     }
@@ -125,10 +177,13 @@ fn verify_footer(page: &Page) -> Option<u32> {
 /// it names.
 ///
 /// A footer's checksum only proves its own bytes weren't torn -- it
-/// doesn't prove `catalog_image_page` is a real, readable page. A
-/// legitimately-written footer always names a page strictly before
-/// itself (see [`Transaction::commit`]), so a footer naming its own page
-/// or later, or a page this pager can't read, is treated exactly like a
+/// doesn't prove `catalog_image_page` is a real, readable page, nor that
+/// the page's *contents* ever reached disk. A legitimately-written footer
+/// always names a page strictly before itself (see
+/// [`Transaction::commit`]) whose bytes hash to the footer's committed
+/// `content_hash`, so a footer naming its own page or later, a page this
+/// pager can't read, or a page whose contents don't match the committed
+/// hash (a torn or still-zeroed catalog image) is treated exactly like a
 /// footer that failed its checksum: skipped, and the scan continues
 /// further back for an earlier commit to recover to instead.
 ///
@@ -139,11 +194,13 @@ fn recover(pager: &mut Pager) -> Result<Page, DbError> {
     let mut page_no = pager.page_count().saturating_sub(1);
     while page_no >= FIRST_FREE_PAGE {
         let page = pager.read_page(page_no)?;
-        if let Some(catalog_image_page) = verify_footer(&page) {
-            if catalog_image_page < page_no {
-                if let Ok(catalog) = pager.read_page(catalog_image_page) {
-                    pager.truncate_to(page_no + 1)?;
-                    return Ok(catalog);
+        if let Some(footer) = verify_footer(&page) {
+            if footer.catalog_image_page < page_no {
+                if let Ok(catalog) = pager.read_page(footer.catalog_image_page) {
+                    if content_hash_hex(&catalog) == footer.content_hash {
+                        pager.truncate_to(page_no + 1)?;
+                        return Ok(catalog);
+                    }
                 }
             }
         }
@@ -338,10 +395,11 @@ impl Transaction<'_> {
             .pager
             .write_page(catalog_image_page, &self.catalog)?;
 
+        let content_hash = content_hash_hex(&self.catalog);
         let footer_page = self.db.pager.allocate_page()?;
         self.db
             .pager
-            .write_page(footer_page, &build_footer(catalog_image_page))?;
+            .write_page(footer_page, &build_footer(catalog_image_page, &content_hash))?;
 
         self.db.pager.flush()?;
         self.db.catalog = self.catalog;
@@ -542,6 +600,53 @@ mod tests {
     }
 
     #[test]
+    fn a_footer_naming_a_zeroed_catalog_image_is_rolled_back_to_the_prior_commit() {
+        let path = temp_path("zeroed-catalog-image");
+        let _ = fs::remove_file(&path);
+
+        {
+            let mut db = Database::open(&path).expect("open");
+            let mut first = db.begin();
+            first.insert("findings", b"kept").expect("insert");
+            first.commit().expect("commit");
+
+            let mut second = db.begin();
+            second
+                .insert("findings", b"should be discarded")
+                .expect("insert");
+            second.commit().expect("commit");
+        }
+
+        // Simulate a crash with write reordering: the second commit's
+        // footer reached disk, but the catalog-image page it names never
+        // did -- its bytes are still zeros. A zeroed catalog page parses
+        // as a complete *empty* catalog, so without a content hash
+        // recovery would silently accept the footer and lose every
+        // table's data even though the data pages physically survive.
+        let mut bytes = fs::read(&path).expect("read file");
+        let footer_start = bytes.len() - PAGE_SIZE;
+        let catalog_image_page = u32::from_le_bytes([
+            bytes[footer_start + FOOTER_CATALOG_IMAGE_OFFSET],
+            bytes[footer_start + FOOTER_CATALOG_IMAGE_OFFSET + 1],
+            bytes[footer_start + FOOTER_CATALOG_IMAGE_OFFSET + 2],
+            bytes[footer_start + FOOTER_CATALOG_IMAGE_OFFSET + 3],
+        ]) as usize;
+        let catalog_start = catalog_image_page * PAGE_SIZE;
+        bytes[catalog_start..catalog_start + PAGE_SIZE].fill(0);
+        fs::write(&path, bytes).expect("write torn file");
+
+        let mut reopened = Database::open(&path).expect("reopen despite the torn catalog image");
+        assert_eq!(
+            reopened.scan("findings").expect("scan"),
+            vec![b"kept".to_vec()],
+            "recovery must fall back to the first commit, not read the zeroed \
+             (empty) catalog image the second footer names"
+        );
+
+        fs::remove_file(&path).expect("remove temp file");
+    }
+
+    #[test]
     fn dropping_an_uncommitted_transaction_eagerly_truncates_orphaned_pages() {
         let path = temp_path("drop-truncates");
         let _ = fs::remove_file(&path);
@@ -583,8 +688,12 @@ mod tests {
             let mut pager = Pager::open(&path).expect("reopen pager directly");
             let bogus_catalog_image_page = pager.page_count() + 100;
             let footer_page = pager.allocate_page().expect("allocate forged footer page");
+            let content_hash = content_hash_hex(&[0u8; PAGE_SIZE]);
             pager
-                .write_page(footer_page, &build_footer(bogus_catalog_image_page))
+                .write_page(
+                    footer_page,
+                    &build_footer(bogus_catalog_image_page, &content_hash),
+                )
                 .expect("write forged footer");
             pager.flush().expect("flush");
         }
