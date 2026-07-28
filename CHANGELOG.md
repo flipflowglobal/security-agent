@@ -10,6 +10,14 @@ conventions. Releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## [Unreleased]
 
 ### Added
+- **End-to-end reporting integration tests (Stage 8).** A new
+  `tests/report_e2e.rs` seeds a real findings log through the library, then
+  drives the compiled binary's `--report` command and asserts on the
+  rendered deliverables — SARIF validity and severity levels, Markdown
+  risk-ranking and the attack-path section, JSON summary counts, and clean
+  tolerance of a findings log full of garbage. This covers the full load →
+  correlate → render → print path with real data, complementing the
+  black-box `cli.rs` (which relies only on built-in assets).
 - **`src/observability.rs` — structured engagement observability (Stage 7),
   emitted live by the runtime.** A typed `EngagementEvent` stream
   (stage/step started, completed, failed, refused) serializes to
