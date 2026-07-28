@@ -26,11 +26,16 @@
 //! interrupted engagement skips the steps it already completed.
 
 use crate::engagement_context::EngagementContext;
-use crate::execution::{DEFAULT_TIMEOUT, TaskExecutionOutcome, run_external_tool};
+use crate::execution::ToolExecutionError;
+use crate::execution::{
+    DEFAULT_TIMEOUT, TaskExecutionOutcome, ToolExecutionReport, run_external_tool,
+};
 use crate::local_assets::LocalAgentAssets;
 use crate::network_policy::NetworkMode;
 use crate::orchestrator::OrchestrationSchedule;
 use crate::registry::ExecutionClass;
+use crate::scope::ScopePolicy;
+use crate::secrets::SecretStore;
 use crate::tool_adapter::{AdapterRegistry, InvocationContext};
 use std::collections::HashSet;
 use std::fs::OpenOptions;
@@ -85,6 +90,53 @@ pub struct RunInputs<'a> {
     pub operator_args: &'a [String],
     /// The egress gate for this run.
     pub mode: NetworkMode,
+    /// Optional egress scope enforcement: when set, a step whose resolved
+    /// arguments carry an out-of-scope network target is refused before it
+    /// spawns (see [`crate::scope`]).
+    pub scope: Option<&'a ScopePolicy>,
+    /// Optional secret store: when set, `${secret:NAME}` references in a
+    /// step's arguments are resolved to plaintext just before spawning, and
+    /// any secret value echoed in the tool's output is redacted before the
+    /// outcome is recorded (see [`crate::secrets`]).
+    pub secrets: Option<&'a SecretStore>,
+}
+
+impl<'a> RunInputs<'a> {
+    /// Convenience constructor for a run with no scope or secret guards.
+    #[must_use]
+    pub const fn new(
+        schedule: &'a OrchestrationSchedule,
+        adapters: &'a AdapterRegistry,
+        assets: &'a LocalAgentAssets,
+        engagement: &'a EngagementContext,
+        operator_args: &'a [String],
+        mode: NetworkMode,
+    ) -> Self {
+        Self {
+            schedule,
+            adapters,
+            assets,
+            engagement,
+            operator_args,
+            mode,
+            scope: None,
+            secrets: None,
+        }
+    }
+
+    /// Adds egress scope enforcement.
+    #[must_use]
+    pub const fn with_scope(mut self, scope: &'a ScopePolicy) -> Self {
+        self.scope = Some(scope);
+        self
+    }
+
+    /// Adds secret resolution and output redaction.
+    #[must_use]
+    pub const fn with_secrets(mut self, secrets: &'a SecretStore) -> Self {
+        self.secrets = Some(secrets);
+        self
+    }
 }
 
 /// Runtime controls layered on top of a plain run: cancellation, a mid-run
@@ -134,14 +186,7 @@ impl ExecutionRuntime {
         operator_args: &[String],
         mode: NetworkMode,
     ) -> Vec<TaskExecutionOutcome> {
-        let inputs = RunInputs {
-            schedule,
-            adapters,
-            assets,
-            engagement,
-            operator_args,
-            mode,
-        };
+        let inputs = RunInputs::new(schedule, adapters, assets, engagement, operator_args, mode);
         let never_cancel = AtomicBool::new(false);
         let always = || true;
         self.execute(
@@ -266,15 +311,23 @@ impl ExecutionRuntime {
                                 engagement: inputs.engagement,
                             };
                             let invocation = inputs.adapters.invocation_for(step, &ctx);
+                            let result = match preflight(inputs, &invocation.argv) {
+                                Ok(argv) => {
+                                    let mut result = run_external_tool(
+                                        tool,
+                                        &argv,
+                                        self.config.per_tool_timeout,
+                                        inputs.mode,
+                                    );
+                                    redact_output(inputs.secrets, &mut result);
+                                    result
+                                }
+                                Err(refusal) => Err(refusal),
+                            };
                             let outcome = TaskExecutionOutcome {
                                 target_id: step.target_id.clone(),
                                 tool: step.tool.clone(),
-                                result: run_external_tool(
-                                    tool,
-                                    &invocation.argv,
-                                    self.config.per_tool_timeout,
-                                    inputs.mode,
-                                ),
+                                result,
                             };
                             if let Some(writer) = &checkpoint {
                                 record_completed(writer, &step.target_id, &step.tool);
@@ -321,6 +374,37 @@ impl ExecutionRuntime {
     }
 }
 
+/// Applies the pre-spawn guards to a step's argv: resolves `${secret:NAME}`
+/// references, then enforces egress scope on the resolved argv. Returns the
+/// argv to run, or a [`ToolExecutionError::Refused`] (failing closed) if a
+/// reference is unresolved or a target is out of scope.
+fn preflight(inputs: &RunInputs, argv: &[String]) -> Result<Vec<String>, ToolExecutionError> {
+    let resolved = match inputs.secrets {
+        Some(secrets) => secrets
+            .resolve_args(argv)
+            .map_err(|error| ToolExecutionError::Refused(error.to_string()))?,
+        None => argv.to_vec(),
+    };
+    if let Some(scope) = inputs.scope {
+        scope
+            .enforce_args(&resolved)
+            .map_err(|violation| ToolExecutionError::Refused(violation.to_string()))?;
+    }
+    Ok(resolved)
+}
+
+/// Redacts any configured secret value that leaked into the tool's captured
+/// output, before the outcome is recorded.
+fn redact_output(
+    secrets: Option<&SecretStore>,
+    result: &mut Result<ToolExecutionReport, ToolExecutionError>,
+) {
+    if let (Some(secrets), Ok(report)) = (secrets, result.as_mut()) {
+        report.stdout = secrets.redact(&report.stdout);
+        report.stderr = secrets.redact(&report.stderr);
+    }
+}
+
 /// Reads the `(target, tool)` pairs a prior run recorded. A missing or
 /// malformed file yields an empty set — resume never fails a run.
 fn load_checkpoint(path: &Path) -> HashSet<(String, String)> {
@@ -359,7 +443,9 @@ mod tests {
     use crate::model::TestIntensity;
     use crate::orchestrator::OrchestrationStep;
     use crate::registry::ToolDefinition;
+    use crate::secrets::Secret;
     use std::path::PathBuf;
+    use std::time::Duration;
 
     fn tool(name: &str, path: &str, class: ExecutionClass) -> LocalTool {
         LocalTool {
@@ -406,14 +492,7 @@ mod tests {
         eng: &'a EngagementContext,
         args: &'a [String],
     ) -> RunInputs<'a> {
-        RunInputs {
-            schedule: sched,
-            adapters,
-            assets: asset,
-            engagement: eng,
-            operator_args: args,
-            mode: NetworkMode::Online,
-        }
+        RunInputs::new(sched, adapters, asset, eng, args, NetworkMode::Online)
     }
 
     #[test]
@@ -552,5 +631,70 @@ mod tests {
         );
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].tool, "known");
+    }
+
+    fn secret_ref(name: &str) -> String {
+        format!("${{secret:{name}}}")
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn out_of_scope_target_is_refused_before_spawn() {
+        let asset = assets(vec![tool(
+            "nmap",
+            "/bin/true",
+            ExecutionClass::ActiveNetwork,
+        )]);
+        let mut refused_step = step(1, "t", "nmap", ExecutionClass::ActiveNetwork);
+        refused_step.network_address = Some("10.9.9.9".to_string());
+        let sched = schedule(vec![refused_step]);
+        let adapters = AdapterRegistry::with_defaults();
+        let eng = EngagementContext::new();
+        let args: Vec<String> = Vec::new();
+        let policy = ScopePolicy::from_targets(&["10.0.0.0/24".to_string()]);
+        let ins = inputs(&sched, &adapters, &asset, &eng, &args).with_scope(&policy);
+
+        let outcomes = ExecutionRuntime::default().run_with_cancel(&ins, &AtomicBool::new(false));
+        assert_eq!(outcomes.len(), 1);
+        assert!(matches!(
+            outcomes[0].result,
+            Err(ToolExecutionError::Refused(_)),
+        ));
+    }
+
+    #[test]
+    fn preflight_resolves_secrets_and_fails_closed_on_unknown() {
+        let sched = schedule(Vec::new());
+        let adapters = AdapterRegistry::with_defaults();
+        let asset = assets(Vec::new());
+        let eng = EngagementContext::new();
+        let args: Vec<String> = Vec::new();
+        let mut store = SecretStore::new();
+        store.insert("pw", Secret::new("s3cret"));
+        let ins = inputs(&sched, &adapters, &asset, &eng, &args).with_secrets(&store);
+
+        let resolved = preflight(&ins, &[format!("--pw={}", secret_ref("pw"))]).expect("resolves");
+        assert_eq!(resolved[0], "--pw=s3cret");
+
+        let refused = preflight(&ins, &[secret_ref("missing")]);
+        assert!(matches!(refused, Err(ToolExecutionError::Refused(_))));
+    }
+
+    #[test]
+    fn redact_output_masks_secrets_in_the_report() {
+        let mut store = SecretStore::new();
+        store.insert("pw", Secret::new("s3cret"));
+        let mut result: Result<ToolExecutionReport, ToolExecutionError> = Ok(ToolExecutionReport {
+            tool: "x".to_string(),
+            arguments: Vec::new(),
+            exit_code: Some(0),
+            stdout: "auth ok using s3cret".to_string(),
+            stderr: String::new(),
+            duration: Duration::from_millis(1),
+        });
+        redact_output(Some(&store), &mut result);
+        let report = result.expect("ok");
+        assert!(!report.stdout.contains("s3cret"));
+        assert!(report.stdout.contains("***"));
     }
 }

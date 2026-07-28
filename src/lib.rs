@@ -43,6 +43,8 @@ pub mod report;
 pub mod roadmap;
 pub mod runtime;
 pub mod sadb;
+pub mod scope;
+pub mod secrets;
 pub mod tagged_run;
 pub mod tool_adapter;
 pub mod workflow;
@@ -122,6 +124,8 @@ pub use report::{
 };
 pub use roadmap::{ROADMAP_PHASES, RoadmapPhase};
 pub use runtime::{ExecutionRuntime, RunInputs, RuntimeConfig};
+pub use scope::{ScopePolicy, ScopeViolation};
+pub use secrets::{Secret, SecretError, SecretStore};
 pub use tagged_run::{TaggedTestRun, TestEnvironment, TestRunReport};
 pub use tool_adapter::{
     AdapterRegistry, InvocationContext, OutputChannel, OutputFormat, ToolAdapter, ToolInvocation,

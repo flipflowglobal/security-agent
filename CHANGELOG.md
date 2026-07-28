@@ -10,6 +10,20 @@ conventions. Releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## [Unreleased]
 
 ### Added
+- **`src/secrets.rs` + `src/scope.rs` — secrets handling and egress scope
+  enforcement (Stage 6), wired into the runtime.** Authenticated tooling can
+  now be driven safely: `Secret` wraps a credential so it never renders in
+  `Debug`/`Display`, and `SecretStore` resolves named secrets from the
+  environment (`SECAGENT_SECRET_*`) or an on-disk file, substitutes
+  `${secret:NAME}` references in a tool's arguments at spawn time, and
+  redacts any secret value echoed in a tool's output before it is recorded.
+  `ScopePolicy` enforces the authorized egress scope: before a tool spawns,
+  the runtime checks the concrete argv for IPv4 literals, `host:port` pairs,
+  and URL hosts and refuses (`ToolExecutionError::Refused`) any target
+  outside the configured exact hosts / IPv4 CIDR ranges — defense in depth
+  atop `NetworkMode`, with in-house CIDR matching and no DNS. Both are wired
+  into `ExecutionRuntime` via `RunInputs::with_scope` / `with_secrets`, so a
+  run resolves secrets, enforces scope, and scrubs output on every step.
 - **`src/report.rs` — engagement reporting and deliverables (Stage 5).**
   Renders scored, correlated findings and their evidence into the documents
   an engagement is judged by: a **SARIF 2.1.0** file for scanners/CI/

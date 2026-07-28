@@ -70,6 +70,8 @@ Release packaging:                  scripts/deploy.sh (make deploy)
 | Authz | `src/integrity.rs` | Offline tool-integrity verification vs. manifest | `verify`, `IntegrityStatus` |
 | Authz | `src/intensity_guard.rs` | Non-blocking intensity advisories | `advise` |
 | Authz | `src/network_policy.rs` | Offline-by-default / online-opt-in egress governance | `NetworkMode` |
+| Authz | `src/scope.rs` | Pre-spawn egress scope enforcement (IPv4/CIDR/URL target allow-listing) | `ScopePolicy` |
+| Authz | `src/secrets.rs` | Credential store: redaction-safe secrets, `${secret:NAME}` resolution, output scrubbing | `SecretStore`, `Secret` |
 | Tools | `src/builtin_tools.rs` | Offline substitutes (autopsy, volatility) + SHA-256 | `run_builtin_tool`, `is_builtin_tool` |
 | Tools | `src/local_analyzers.rs` | Forensic substitutes (binwalk, foremost, bulk_extractor, hashdeep) | `run_binwalk`, `run_foremost`, `run_bulk_extractor`, `run_hashdeep` |
 | Tools | `src/pcap.rs` | Offline Wireshark substitute (classic PCAP parser) | `run_wireshark` |
