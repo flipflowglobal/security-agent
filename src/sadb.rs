@@ -397,9 +397,10 @@ impl Transaction<'_> {
 
         let content_hash = content_hash_hex(&self.catalog);
         let footer_page = self.db.pager.allocate_page()?;
-        self.db
-            .pager
-            .write_page(footer_page, &build_footer(catalog_image_page, &content_hash))?;
+        self.db.pager.write_page(
+            footer_page,
+            &build_footer(catalog_image_page, &content_hash),
+        )?;
 
         self.db.pager.flush()?;
         self.db.catalog = self.catalog;
