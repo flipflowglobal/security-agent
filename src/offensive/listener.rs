@@ -165,10 +165,7 @@ struct AcceptLoopState {
     shutdown_reason: ShutdownReason,
 }
 
-fn run_accept_loop(
-    listener: &TcpListener,
-    config: &ListenerConfig,
-) -> AcceptLoopState {
+fn run_accept_loop(listener: &TcpListener, config: &ListenerConfig) -> AcceptLoopState {
     let mut state = AcceptLoopState {
         total_connections: 0,
         total_sessions: 0,
@@ -370,9 +367,7 @@ fn handle_connection(
                 }
                 Err(ref e)
                     if e.kind() == io::ErrorKind::TimedOut
-                        || e.kind() == io::ErrorKind::WouldBlock =>
-                {
-                }
+                        || e.kind() == io::ErrorKind::WouldBlock => {}
                 Err(e) => {
                     return Err(ListenerError::SessionFailed(format!("read error: {e}")));
                 }
@@ -434,7 +429,9 @@ fn handle_connection(
             emit(&ListenerEvent::Warning(format!("reader thread: {e}")));
         }
         Err(_) => {
-            emit(&ListenerEvent::Warning("reader thread panicked".to_string()));
+            emit(&ListenerEvent::Warning(
+                "reader thread panicked".to_string(),
+            ));
         }
     }
 

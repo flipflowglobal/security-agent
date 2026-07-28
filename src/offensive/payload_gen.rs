@@ -172,10 +172,12 @@ pub fn encode_payload(payload: &str, encoding: PayloadEncoding) -> String {
 
 fn encode_hex(payload: &str) -> String {
     use std::fmt::Write as _;
-    payload.bytes().fold(String::with_capacity(payload.len() * 4), |mut s, b| {
-        let _ = write!(s, "\\x{b:02x}");
-        s
-    })
+    payload
+        .bytes()
+        .fold(String::with_capacity(payload.len() * 4), |mut s, b| {
+            let _ = write!(s, "\\x{b:02x}");
+            s
+        })
 }
 
 fn url_encode(payload: &str) -> String {
@@ -197,8 +199,16 @@ fn base64_encode(payload: &str) -> String {
 
     for chunk in bytes.chunks(3) {
         let b0 = u32::from(chunk[0]);
-        let b1 = if chunk.len() > 1 { u32::from(chunk[1]) } else { 0 };
-        let b2 = if chunk.len() > 2 { u32::from(chunk[2]) } else { 0 };
+        let b1 = if chunk.len() > 1 {
+            u32::from(chunk[1])
+        } else {
+            0
+        };
+        let b2 = if chunk.len() > 2 {
+            u32::from(chunk[2])
+        } else {
+            0
+        };
 
         let triple = (b0 << 16) | (b1 << 8) | b2;
 
@@ -221,18 +231,22 @@ fn base64_encode(payload: &str) -> String {
 
 fn unicode_escape(payload: &str) -> String {
     use std::fmt::Write as _;
-    payload.bytes().fold(String::with_capacity(payload.len() * 6), |mut s, b| {
-        let _ = write!(s, "\\u{:04x}", u16::from(b));
-        s
-    })
+    payload
+        .bytes()
+        .fold(String::with_capacity(payload.len() * 6), |mut s, b| {
+            let _ = write!(s, "\\u{:04x}", u16::from(b));
+            s
+        })
 }
 
 fn xor_encode(payload: &str, key: u8) -> String {
     use std::fmt::Write as _;
-    payload.bytes().fold(String::with_capacity(payload.len() * 4), |mut s, b| {
-        let _ = write!(s, "\\x{:02x}", b ^ key);
-        s
-    })
+    payload
+        .bytes()
+        .fold(String::with_capacity(payload.len() * 4), |mut s, b| {
+            let _ = write!(s, "\\x{:02x}", b ^ key);
+            s
+        })
 }
 
 // ─── Payload Analysis ────────────────────────────────────────────────────────
@@ -273,7 +287,9 @@ impl fmt::Display for PayloadAnalysis {
 pub fn analyze_payload(payload: &str) -> PayloadAnalysis {
     let bytes = payload.as_bytes();
     let length = bytes.len();
-    let null_bytes = bytes.iter().fold(0usize, |acc, &b| acc + usize::from(b == 0));
+    let null_bytes = bytes
+        .iter()
+        .fold(0usize, |acc, &b| acc + usize::from(b == 0));
     let printable = bytes
         .iter()
         .filter(|&&b| (0x20..=0x7E).contains(&b))

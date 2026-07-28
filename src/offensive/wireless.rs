@@ -151,10 +151,12 @@ pub fn analyze_eapol_frames(frames: &[Vec<u8>]) -> WpaHandshakeInfo {
 
 fn hex_encode(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
-    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
 }
 
 // ─── WPS PIN Analysis ────────────────────────────────────────────────────────

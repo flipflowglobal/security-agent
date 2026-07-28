@@ -216,8 +216,16 @@ fn base64_encode_simple(input: &str) -> String {
 
     for chunk in bytes.chunks(3) {
         let b0 = u32::from(chunk[0]);
-        let b1 = if chunk.len() > 1 { u32::from(chunk[1]) } else { 0 };
-        let b2 = if chunk.len() > 2 { u32::from(chunk[2]) } else { 0 };
+        let b1 = if chunk.len() > 1 {
+            u32::from(chunk[1])
+        } else {
+            0
+        };
+        let b2 = if chunk.len() > 2 {
+            u32::from(chunk[2])
+        } else {
+            0
+        };
 
         let triple = (b0 << 16) | (b1 << 8) | b2;
 
@@ -268,10 +276,7 @@ pub fn fragment_http_payload(payload: &[u8], mtu: u16) -> FragmentedPayload {
     let max_fragment = (mtu as usize).saturating_sub(header_overhead);
     let max_fragment = max_fragment.max(1);
 
-    let fragments: Vec<Vec<u8>> = payload
-        .chunks(max_fragment)
-        .map(<[u8]>::to_vec)
-        .collect();
+    let fragments: Vec<Vec<u8>> = payload.chunks(max_fragment).map(<[u8]>::to_vec).collect();
 
     let technique = if fragments.len() > 3 {
         "TCP segment fragmentation — evades DPI reassembly".to_string()

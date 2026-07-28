@@ -2046,7 +2046,9 @@ fn gen_shell_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
         eprintln!("unexpected argument: {extra}");
         return ExitCode::from(2);
     }
-    let lport: u16 = if let Ok(p) = lport_str.parse() { p } else {
+    let lport: u16 = if let Ok(p) = lport_str.parse() {
+        p
+    } else {
         eprintln!("invalid lport: {lport_str}");
         return ExitCode::from(2);
     };
@@ -2146,7 +2148,9 @@ fn listen_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
         eprintln!("requires --allow-network (opens a listening socket)");
         return ExitCode::from(2);
     };
-    let port: u16 = if let Ok(p) = port_str.parse() { p } else {
+    let port: u16 = if let Ok(p) = port_str.parse() {
+        p
+    } else {
         eprintln!("invalid port: {port_str}");
         return ExitCode::from(2);
     };
