@@ -32,6 +32,7 @@ pub mod mission;
 pub mod model;
 pub mod network_policy;
 pub mod nlu;
+pub mod observability;
 pub mod offensive;
 pub mod orchestrator;
 pub mod pcap;
@@ -39,9 +40,12 @@ pub mod pipeline;
 pub mod policy;
 pub mod reasoning_log_db;
 pub mod registry;
+pub mod report;
 pub mod roadmap;
 pub mod runtime;
 pub mod sadb;
+pub mod scope;
+pub mod secrets;
 pub mod tagged_run;
 pub mod tool_adapter;
 pub mod workflow;
@@ -105,6 +109,9 @@ pub use model::{
 };
 pub use network_policy::NetworkMode;
 pub use nlu::{Intent, Interpretation, interpret};
+pub use observability::{
+    CollectingSink, EngagementEvent, EventSink, NullSink, ProgressSummary, WriterSink,
+};
 pub use offensive::*;
 pub use orchestrator::{OrchestrationSchedule, OrchestrationStep, ToolOrchestrator};
 pub use pcap::{CaptureTimestamp, ProtocolCounts, WiresharkReport, run_wireshark};
@@ -116,8 +123,13 @@ pub use registry::{
     CapabilityRegistry, ExecutionClass, SpecialistCapability, ToolDefinition, ToolchainPack,
     ToolchainPackRegistry, UseCase, classify_execution,
 };
+pub use report::{
+    ReportInputs, SeverityRollup, render_json as render_report_json, render_markdown, render_sarif,
+};
 pub use roadmap::{ROADMAP_PHASES, RoadmapPhase};
 pub use runtime::{ExecutionRuntime, RunInputs, RuntimeConfig};
+pub use scope::{ScopePolicy, ScopeViolation};
+pub use secrets::{Secret, SecretError, SecretStore};
 pub use tagged_run::{TaggedTestRun, TestEnvironment, TestRunReport};
 pub use tool_adapter::{
     AdapterRegistry, InvocationContext, OutputChannel, OutputFormat, ToolAdapter, ToolInvocation,

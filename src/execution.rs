@@ -54,6 +54,10 @@ pub enum ToolExecutionError {
         tool: String,
         timeout: Duration,
     },
+    /// The tool was refused before spawning by a pre-execution guard — an
+    /// out-of-scope target ([`crate::scope`]) or an unresolved secret
+    /// reference ([`crate::secrets`]). The message explains which.
+    Refused(String),
 }
 
 impl fmt::Display for ToolExecutionError {
@@ -75,6 +79,7 @@ impl fmt::Display for ToolExecutionError {
                 formatter,
                 "{tool} exceeded the {timeout:?} execution timeout and was killed"
             ),
+            Self::Refused(message) => write!(formatter, "refused before execution: {message}"),
         }
     }
 }

@@ -33,7 +33,7 @@ impl fmt::Display for ObfuscationResult {
     }
 }
 
-/// Apply PowerShell string obfuscation techniques.
+/// Apply `PowerShell` string obfuscation techniques.
 #[must_use]
 pub fn obfuscate_powershell(command: &str) -> Vec<ObfuscationResult> {
     let mut results = Vec::new();

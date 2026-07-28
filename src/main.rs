@@ -36,6 +36,7 @@ fn main() -> ExitCode {
         Some("--view-calibration-db") => view_calibration_db_command(&mut arguments),
         Some("--view-reasoning-log-db") => view_reasoning_log_db_command(&mut arguments),
         Some("--schedule-retest") => schedule_retest_command(&mut arguments),
+        Some("--report") => report_command(&mut arguments),
         Some("--llm-generate") => llm_generate_command(&mut arguments),
         Some("--llm-perplexity") => llm_perplexity_command(&mut arguments),
         Some("--ask") => ask_command(&assets, &mut arguments),
@@ -1736,6 +1737,81 @@ fn schedule_retest_command(arguments: &mut impl Iterator<Item = String>) -> Exit
     }
 }
 
+/// Renders an engagement report from a persisted findings log.
+///
+/// `--report <findings-log> [--format sarif|json|markdown] [--evidence
+/// <path>] [--engagement <id>]`. Loads the findings, correlates them
+/// (dedup + cross-tool corroboration), optionally attaches an evidence log,
+/// and writes the chosen deliverable to stdout (Markdown by default). See
+/// [`security_agent::report`].
+fn report_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    let Some(findings_path) = arguments.next() else {
+        eprintln!(
+            "usage: --report <findings-log> [--format sarif|json|markdown] \
+             [--evidence <path>] [--engagement <id>]"
+        );
+        return ExitCode::from(2);
+    };
+
+    let mut format = "markdown".to_string();
+    let mut evidence_path: Option<String> = None;
+    let mut engagement_id = "engagement".to_string();
+    while let Some(flag) = arguments.next() {
+        let Some(value) = arguments.next() else {
+            eprintln!("{flag} requires a value");
+            return ExitCode::from(2);
+        };
+        match flag.as_str() {
+            "--format" => format = value,
+            "--evidence" => evidence_path = Some(value),
+            "--engagement" => engagement_id = value,
+            other => {
+                eprintln!("unknown --report option: {other}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    let findings = match security_agent::load_findings(Path::new(&findings_path)) {
+        Ok(findings) => findings,
+        Err(error) => {
+            eprintln!("failed to read findings log: {error}");
+            return ExitCode::from(1);
+        }
+    };
+    let correlated = security_agent::correlate(&findings);
+
+    let evidence = match &evidence_path {
+        Some(path) => match security_agent::load_evidence(Path::new(path)) {
+            Ok(records) => records,
+            Err(error) => {
+                eprintln!("failed to read evidence log: {error}");
+                return ExitCode::from(1);
+            }
+        },
+        None => Vec::new(),
+    };
+
+    let inputs = security_agent::ReportInputs {
+        engagement_id: &engagement_id,
+        findings: &correlated,
+        evidence: &evidence,
+        generated_at_epoch: current_epoch_seconds(),
+    };
+
+    let output = match format.as_str() {
+        "sarif" => security_agent::render_sarif(&correlated),
+        "json" => security_agent::render_report_json(&inputs),
+        "markdown" | "md" => security_agent::render_markdown(&inputs),
+        other => {
+            eprintln!("unknown format: {other} (want sarif|json|markdown)");
+            return ExitCode::from(2);
+        }
+    };
+    print!("{output}");
+    ExitCode::SUCCESS
+}
+
 /// Read-only view of a persisted `.sadb` audit database
 /// (`--view-audit-db <path>.sadb`). Same role as [`view_audit_command`],
 /// backed by [`security_agent::audit_db`] instead of JSON Lines.
@@ -2097,7 +2173,7 @@ fn analyze_payload_command(arguments: &mut impl Iterator<Item = String>) -> Exit
     ExitCode::SUCCESS
 }
 
-/// `--obfuscate-ps <command>` — apply PowerShell obfuscation techniques.
+/// `--obfuscate-ps <command>` — apply `PowerShell` obfuscation techniques.
 fn obfuscate_ps_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
     let Some(command) = arguments.next() else {
         eprintln!("usage: --obfuscate-ps <command>");

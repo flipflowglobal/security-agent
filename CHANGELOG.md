@@ -10,6 +10,52 @@ conventions. Releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## [Unreleased]
 
 ### Added
+- **End-to-end reporting integration tests (Stage 8).** A new
+  `tests/report_e2e.rs` seeds a real findings log through the library, then
+  drives the compiled binary's `--report` command and asserts on the
+  rendered deliverables — SARIF validity and severity levels, Markdown
+  risk-ranking and the attack-path section, JSON summary counts, and clean
+  tolerance of a findings log full of garbage. This covers the full load →
+  correlate → render → print path with real data, complementing the
+  black-box `cli.rs` (which relies only on built-in assets).
+- **`src/observability.rs` — structured engagement observability (Stage 7),
+  emitted live by the runtime.** A typed `EngagementEvent` stream
+  (stage/step started, completed, failed, refused) serializes to
+  deterministic JSON lines and flows to pluggable `EventSink`s — a
+  `WriterSink` for JSON-Lines log aggregation, a `CollectingSink` for tests,
+  or `NullSink`. Sinks are `Sync`, so `ExecutionRuntime` emits from its
+  concurrent workers (wired via `RunInputs::with_events`), giving a live
+  signal of a long run. `ProgressSummary::of` folds a set of outcomes into a
+  one-line status (succeeded / failed / refused), counting a pre-spawn
+  refusal separately from an execution failure.
+- **`src/secrets.rs` + `src/scope.rs` — secrets handling and egress scope
+  enforcement (Stage 6), wired into the runtime.** Authenticated tooling can
+  now be driven safely: `Secret` wraps a credential so it never renders in
+  `Debug`/`Display`, and `SecretStore` resolves named secrets from the
+  environment (`SECAGENT_SECRET_*`) or an on-disk file, substitutes
+  `${secret:NAME}` references in a tool's arguments at spawn time, and
+  redacts any secret value echoed in a tool's output before it is recorded.
+  `ScopePolicy` enforces the authorized egress scope: before a tool spawns,
+  the runtime checks the concrete argv for IPv4 literals, `host:port` pairs,
+  and URL hosts and refuses (`ToolExecutionError::Refused`) any target
+  outside the configured exact hosts / IPv4 CIDR ranges — defense in depth
+  atop `NetworkMode`, with in-house CIDR matching and no DNS. Both are wired
+  into `ExecutionRuntime` via `RunInputs::with_scope` / `with_secrets`, so a
+  run resolves secrets, enforces scope, and scrubs output on every step.
+- **`src/report.rs` — engagement reporting and deliverables (Stage 5).**
+  Renders scored, correlated findings and their evidence into the documents
+  an engagement is judged by: a **SARIF 2.1.0** file for scanners/CI/
+  dashboards, a machine-readable **JSON summary**, and a human **Markdown
+  report** (executive summary, severity rollup, ranked findings with
+  remediation, the attack-path narrative from `advanced.rs`, and the
+  evidence chain-of-custody table). Every renderer is deterministic for a
+  given input — findings ordered by descending risk then id, timestamp
+  supplied by the caller — so a report is byte-identical across runs.
+  Serialization is in-house (an escaping JSON value writer plus an epoch→UTC
+  formatter; no date/JSON dependency). Surfaced end to end via the new
+  `--report <findings-log> [--format sarif|json|markdown] [--evidence
+  <path>] [--engagement <id>]` CLI command, which loads a findings log,
+  correlates it, and writes the chosen deliverable.
 - **Execution/data plane: a real per-tool invocation layer, a concurrent
   runtime, a result-driven pipeline, and findings hardening.** Four stages
   built on the merged foundation (`tool_adapter.rs`, `runtime.rs`,

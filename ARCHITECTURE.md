@@ -70,6 +70,8 @@ Release packaging:                  scripts/deploy.sh (make deploy)
 | Authz | `src/integrity.rs` | Offline tool-integrity verification vs. manifest | `verify`, `IntegrityStatus` |
 | Authz | `src/intensity_guard.rs` | Non-blocking intensity advisories | `advise` |
 | Authz | `src/network_policy.rs` | Offline-by-default / online-opt-in egress governance | `NetworkMode` |
+| Authz | `src/scope.rs` | Pre-spawn egress scope enforcement (IPv4/CIDR/URL target allow-listing) | `ScopePolicy` |
+| Authz | `src/secrets.rs` | Credential store: redaction-safe secrets, `${secret:NAME}` resolution, output scrubbing | `SecretStore`, `Secret` |
 | Tools | `src/builtin_tools.rs` | Offline substitutes (autopsy, volatility) + SHA-256 | `run_builtin_tool`, `is_builtin_tool` |
 | Tools | `src/local_analyzers.rs` | Forensic substitutes (binwalk, foremost, bulk_extractor, hashdeep) | `run_binwalk`, `run_foremost`, `run_bulk_extractor`, `run_hashdeep` |
 | Tools | `src/pcap.rs` | Offline Wireshark substitute (classic PCAP parser) | `run_wireshark` |
@@ -81,11 +83,13 @@ Release packaging:                  scripts/deploy.sh (make deploy)
 | Exec | `src/runtime.rs` | Concurrent runtime: class-ordered bounded concurrency, deterministic output, rate limit, cancel, guard, checkpoint/resume | `ExecutionRuntime`, `RuntimeConfig` |
 | Exec | `src/engagement_context.rs` | Discovery blackboard (hosts/services/endpoints) threaded through the pipeline | `EngagementContext` |
 | Exec | `src/pipeline.rs` | Staged, result-driven engagement: discovery feeds later stages | `run_engagement_pipeline`, `EngagementReport` |
+| Exec | `src/observability.rs` | Structured stage/step events, pluggable sinks, progress rollup | `EngagementEvent`, `EventSink`, `ProgressSummary` |
 | Exec | `src/engagement_config.rs` | Zero-dependency engagement-config parser | `load_engagement_config` |
 | Exec | `src/tagged_run.rs` | Tagged test-run metadata for audit correlation | `TaggedTestRun` |
 | Findings | `src/ingest.rs` | Real tool output (semgrep/SARIF/JSONL/nmap-XML) → scored `Finding`s | `ingest` |
 | Findings | `src/correlation.rs` | Dedup + cross-tool correlation of findings, corroboration-boosted confidence | `correlate` |
 | Findings | `src/evidence.rs` | Evidence capture / chain-of-custody (SHA-256 + provenance) | `EvidenceRecord`, `capture` |
+| Findings | `src/report.rs` | Engagement deliverables: SARIF 2.1.0, JSON summary, Markdown report | `render_sarif`, `render_markdown`, `ReportInputs` |
 | Findings | `src/findings_log.rs` | Append-only on-disk findings log (single format) | `append_findings`, `load_findings` |
 | Findings | `src/findings_db.rs` | Same role as `findings_log.rs`, backed by `.sadb` (see Infra) instead of JSON Lines | `append_findings`, `load_findings` |
 | Findings | `src/memory_store.rs` | Folds the findings log into cognitive memory | `load_memory` |

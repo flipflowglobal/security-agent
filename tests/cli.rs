@@ -413,11 +413,33 @@ fn tui_menu_option_view_audit_database_prompts_for_and_reads_a_path() {
     // A fresh path is a valid, empty database (see crate::audit_db's
     // module docs) -- this proves the real --tui process reaches
     // view_audit_db_command end to end, not just that it compiles.
-    let output = run_with_stdin(&["--tui"], &format!("14\n{}\nq\n", path.display()));
+    let output = run_with_stdin(&["--tui"], &format!("15\n{}\nq\n", path.display()));
     let _ = std::fs::remove_file(&path);
 
     assert!(output.status.success());
     let text = stdout(&output);
     assert!(text.contains("Audit Database View"));
     assert!(text.contains("No audit records found."));
+}
+
+#[test]
+fn report_without_a_findings_path_exits_2() {
+    let output = run(&["--report"]);
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn report_with_missing_findings_file_exits_1() {
+    let output = run(&["--report", "/nonexistent/does-not-exist.log"]);
+    assert_eq!(output.status.code(), Some(1));
+}
+
+#[test]
+fn report_rejects_unknown_format() {
+    // An empty temp findings log exists but the format is invalid.
+    let path = unique_temp_path("report-bad-format");
+    std::fs::write(&path, "").expect("write empty findings log");
+    let output = run(&["--report", &path.to_string_lossy(), "--format", "xml"]);
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(output.status.code(), Some(2));
 }
