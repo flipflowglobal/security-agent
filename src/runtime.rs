@@ -32,6 +32,7 @@ use crate::execution::{
 };
 use crate::local_assets::LocalAgentAssets;
 use crate::network_policy::NetworkMode;
+use crate::observability::{EngagementEvent, EventSink};
 use crate::orchestrator::OrchestrationSchedule;
 use crate::registry::ExecutionClass;
 use crate::scope::ScopePolicy;
@@ -99,6 +100,10 @@ pub struct RunInputs<'a> {
     /// any secret value echoed in the tool's output is redacted before the
     /// outcome is recorded (see [`crate::secrets`]).
     pub secrets: Option<&'a SecretStore>,
+    /// Optional structured-event sink: when set, the runtime emits
+    /// stage/step lifecycle events as the run progresses (see
+    /// [`crate::observability`]).
+    pub events: Option<&'a dyn EventSink>,
 }
 
 impl<'a> RunInputs<'a> {
@@ -121,6 +126,7 @@ impl<'a> RunInputs<'a> {
             mode,
             scope: None,
             secrets: None,
+            events: None,
         }
     }
 
@@ -135,6 +141,13 @@ impl<'a> RunInputs<'a> {
     #[must_use]
     pub const fn with_secrets(mut self, secrets: &'a SecretStore) -> Self {
         self.secrets = Some(secrets);
+        self
+    }
+
+    /// Adds a structured-event sink for live progress reporting.
+    #[must_use]
+    pub const fn with_events(mut self, events: &'a dyn EventSink) -> Self {
+        self.events = Some(events);
         self
     }
 }
@@ -283,6 +296,13 @@ impl ExecutionRuntime {
             if indices.is_empty() {
                 continue;
             }
+            emit(
+                inputs.events,
+                &EngagementEvent::StageStarted {
+                    class: format!("{class:?}"),
+                    steps: indices.len(),
+                },
+            );
             let queue = Mutex::new(indices.into_iter());
             let worker_count = workers.min(steps.len().max(1));
             std::thread::scope(|scope| {
@@ -311,6 +331,13 @@ impl ExecutionRuntime {
                                 engagement: inputs.engagement,
                             };
                             let invocation = inputs.adapters.invocation_for(step, &ctx);
+                            emit(
+                                inputs.events,
+                                &EngagementEvent::StepStarted {
+                                    target: step.target_id.clone(),
+                                    tool: step.tool.clone(),
+                                },
+                            );
                             let result = match preflight(inputs, &invocation.argv) {
                                 Ok(argv) => {
                                     let mut result = run_external_tool(
@@ -324,6 +351,7 @@ impl ExecutionRuntime {
                                 }
                                 Err(refusal) => Err(refusal),
                             };
+                            emit_step_result(inputs.events, &step.target_id, &step.tool, &result);
                             let outcome = TaskExecutionOutcome {
                                 target_id: step.target_id.clone(),
                                 tool: step.tool.clone(),
@@ -337,23 +365,11 @@ impl ExecutionRuntime {
                     });
                 }
             });
+
+            emit_stage_completed(inputs.events, &results, &steps, class);
         }
 
-        // Report in execution order: class-grouped (least-invasive first),
-        // stable within a class — deterministic regardless of input order or
-        // which worker finished first.
-        let mut filled = results.into_inner().expect("results poisoned");
-        let mut ordered = Vec::with_capacity(filled.len());
-        for class in CLASS_ORDER {
-            for (index, step) in steps.iter().enumerate() {
-                if step.execution_class == class {
-                    if let Some(outcome) = filled[index].take() {
-                        ordered.push(outcome);
-                    }
-                }
-            }
-        }
-        ordered
+        collect_ordered(results, &steps)
     }
 
     /// Enforces `min_spawn_interval` between spawns by holding the spacing
@@ -391,6 +407,99 @@ fn preflight(inputs: &RunInputs, argv: &[String]) -> Result<Vec<String>, ToolExe
             .map_err(|violation| ToolExecutionError::Refused(violation.to_string()))?;
     }
     Ok(resolved)
+}
+
+/// Emits a `StageCompleted` event tallying the outcomes recorded for `class`.
+fn emit_stage_completed(
+    sink: Option<&dyn EventSink>,
+    results: &Mutex<Vec<Option<TaskExecutionOutcome>>>,
+    steps: &[&crate::orchestrator::OrchestrationStep],
+    class: ExecutionClass,
+) {
+    if sink.is_none() {
+        return;
+    }
+    let guard = results.lock().expect("results poisoned");
+    let (mut completed, mut failed) = (0usize, 0usize);
+    for (index, step) in steps.iter().enumerate() {
+        if step.execution_class != class {
+            continue;
+        }
+        match guard[index].as_ref().map(|outcome| outcome.result.is_ok()) {
+            Some(true) => completed += 1,
+            Some(false) => failed += 1,
+            None => {}
+        }
+    }
+    drop(guard);
+    emit(
+        sink,
+        &EngagementEvent::StageCompleted {
+            class: format!("{class:?}"),
+            completed,
+            failed,
+        },
+    );
+}
+
+/// Drains the per-index results into execution order: class-grouped
+/// (least-invasive first), stable within a class — deterministic regardless
+/// of input order or which worker finished first.
+fn collect_ordered(
+    results: Mutex<Vec<Option<TaskExecutionOutcome>>>,
+    steps: &[&crate::orchestrator::OrchestrationStep],
+) -> Vec<TaskExecutionOutcome> {
+    let mut filled = results.into_inner().expect("results poisoned");
+    let mut ordered = Vec::with_capacity(filled.len());
+    for class in CLASS_ORDER {
+        for (index, step) in steps.iter().enumerate() {
+            if step.execution_class == class {
+                if let Some(outcome) = filled[index].take() {
+                    ordered.push(outcome);
+                }
+            }
+        }
+    }
+    ordered
+}
+
+/// Emits an event to the sink, if one is configured.
+fn emit(sink: Option<&dyn EventSink>, event: &EngagementEvent) {
+    if let Some(sink) = sink {
+        sink.emit(event);
+    }
+}
+
+/// Emits the terminal event for a step from its result: completed, refused
+/// (a pre-spawn guard), or failed (any other execution error).
+fn emit_step_result(
+    sink: Option<&dyn EventSink>,
+    target: &str,
+    tool: &str,
+    result: &Result<ToolExecutionReport, ToolExecutionError>,
+) {
+    let Some(sink) = sink else {
+        return;
+    };
+    let event = match result {
+        Ok(report) => EngagementEvent::StepCompleted {
+            target: target.to_string(),
+            tool: tool.to_string(),
+            exit_code: report.exit_code,
+            duration_ms: u64::try_from(report.duration.as_millis()).unwrap_or(u64::MAX),
+        },
+        Err(ToolExecutionError::Refused(reason)) => EngagementEvent::StepRefused {
+            target: target.to_string(),
+            tool: tool.to_string(),
+            reason: reason.clone(),
+        },
+        Err(other) => EngagementEvent::StepFailed {
+            target: target.to_string(),
+            tool: tool.to_string(),
+            error: other.to_string(),
+        },
+    };
+    sink.emit(&event);
 }
 
 /// Redacts any configured secret value that leaked into the tool's captured
@@ -678,6 +787,45 @@ mod tests {
 
         let refused = preflight(&ins, &[secret_ref("missing")]);
         assert!(matches!(refused, Err(ToolExecutionError::Refused(_))));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn runtime_emits_lifecycle_events() {
+        if !Path::new("/bin/true").exists() {
+            return;
+        }
+        let asset = assets(vec![tool("n", "/bin/true", ExecutionClass::ActiveNetwork)]);
+        let sched = schedule(vec![step(1, "a", "n", ExecutionClass::ActiveNetwork)]);
+        let adapters = AdapterRegistry::with_defaults();
+        let eng = EngagementContext::new();
+        let args: Vec<String> = Vec::new();
+        let sink = crate::observability::CollectingSink::new();
+        let ins = inputs(&sched, &adapters, &asset, &eng, &args).with_events(&sink);
+
+        let _ = ExecutionRuntime::default().run_with_cancel(&ins, &AtomicBool::new(false));
+
+        let events = sink.events();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, EngagementEvent::StageStarted { .. }))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, EngagementEvent::StepStarted { .. }))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, EngagementEvent::StepCompleted { .. }))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, EngagementEvent::StageCompleted { completed: 1, .. }))
+        );
     }
 
     #[test]

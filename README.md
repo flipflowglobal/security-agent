@@ -184,6 +184,7 @@ The `MobileAndroid` specialist uses a dedicated tool set for APK/DEX analysis an
 | `src/report.rs` | Engagement deliverables: SARIF 2.1.0, machine JSON summary, and Markdown report (rollups, remediation, attack-path narrative, evidence) — surfaced by `--report` |
 | `src/secrets.rs` | Credential handling for authenticated tools: redaction-safe `Secret`, a store resolving `${secret:NAME}` references from env/file, and output scrubbing (`SecretStore`) |
 | `src/scope.rs` | Pre-spawn egress scope enforcement: refuses out-of-scope IPv4/CIDR/URL targets in a tool's argv before it runs (`ScopePolicy`) |
+| `src/observability.rs` | Structured engagement events + pluggable sinks (JSON-lines/collecting/null) and a progress rollup, emitted live by the runtime (`EngagementEvent`, `EventSink`, `ProgressSummary`) |
 | `src/audit_log.rs` | Append-only on-disk persistence for the audit ledger |
 | `src/audit_db.rs` | Same role as `audit_log.rs`, backed by the zero-dependency `.sadb` embedded database instead of JSON Lines |
 | `src/findings.rs` | Unified finding model and normalized risk scorer |

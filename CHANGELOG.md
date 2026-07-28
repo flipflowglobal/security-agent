@@ -10,6 +10,16 @@ conventions. Releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## [Unreleased]
 
 ### Added
+- **`src/observability.rs` — structured engagement observability (Stage 7),
+  emitted live by the runtime.** A typed `EngagementEvent` stream
+  (stage/step started, completed, failed, refused) serializes to
+  deterministic JSON lines and flows to pluggable `EventSink`s — a
+  `WriterSink` for JSON-Lines log aggregation, a `CollectingSink` for tests,
+  or `NullSink`. Sinks are `Sync`, so `ExecutionRuntime` emits from its
+  concurrent workers (wired via `RunInputs::with_events`), giving a live
+  signal of a long run. `ProgressSummary::of` folds a set of outcomes into a
+  one-line status (succeeded / failed / refused), counting a pre-spawn
+  refusal separately from an execution failure.
 - **`src/secrets.rs` + `src/scope.rs` — secrets handling and egress scope
   enforcement (Stage 6), wired into the runtime.** Authenticated tooling can
   now be driven safely: `Secret` wraps a credential so it never renders in

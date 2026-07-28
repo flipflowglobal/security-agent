@@ -83,6 +83,7 @@ Release packaging:                  scripts/deploy.sh (make deploy)
 | Exec | `src/runtime.rs` | Concurrent runtime: class-ordered bounded concurrency, deterministic output, rate limit, cancel, guard, checkpoint/resume | `ExecutionRuntime`, `RuntimeConfig` |
 | Exec | `src/engagement_context.rs` | Discovery blackboard (hosts/services/endpoints) threaded through the pipeline | `EngagementContext` |
 | Exec | `src/pipeline.rs` | Staged, result-driven engagement: discovery feeds later stages | `run_engagement_pipeline`, `EngagementReport` |
+| Exec | `src/observability.rs` | Structured stage/step events, pluggable sinks, progress rollup | `EngagementEvent`, `EventSink`, `ProgressSummary` |
 | Exec | `src/engagement_config.rs` | Zero-dependency engagement-config parser | `load_engagement_config` |
 | Exec | `src/tagged_run.rs` | Tagged test-run metadata for audit correlation | `TaggedTestRun` |
 | Findings | `src/ingest.rs` | Real tool output (semgrep/SARIF/JSONL/nmap-XML) → scored `Finding`s | `ingest` |

@@ -32,6 +32,7 @@ pub mod mission;
 pub mod model;
 pub mod network_policy;
 pub mod nlu;
+pub mod observability;
 pub mod offensive;
 pub mod orchestrator;
 pub mod pcap;
@@ -108,6 +109,9 @@ pub use model::{
 };
 pub use network_policy::NetworkMode;
 pub use nlu::{Intent, Interpretation, interpret};
+pub use observability::{
+    CollectingSink, EngagementEvent, EventSink, NullSink, ProgressSummary, WriterSink,
+};
 pub use offensive::*;
 pub use orchestrator::{OrchestrationSchedule, OrchestrationStep, ToolOrchestrator};
 pub use pcap::{CaptureTimestamp, ProtocolCounts, WiresharkReport, run_wireshark};
