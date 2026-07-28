@@ -76,10 +76,12 @@ pub use compat::{
     envelope_to_audit_record, envelope_to_finding, finding_to_envelope,
 };
 pub use coordinator::{Coordinator, ExecutionPlan, ScanTask};
+pub use correlation::correlate;
 pub use engagement_config::{
     EngagementConfigError, load_engagement_config, parse_engagement_config,
 };
 pub use engagement_context::{Endpoint, EngagementContext, Host, Service};
+pub use evidence::{EvidenceError, EvidenceRecord, append_evidence, capture, load_evidence};
 pub use execution::{
     DEFAULT_TIMEOUT, TaskExecutionOutcome, ToolExecutionError, ToolExecutionReport, execute_plan,
     run_external_tool, run_external_tool_with_default_timeout,
@@ -106,13 +108,16 @@ pub use nlu::{Intent, Interpretation, interpret};
 pub use offensive::*;
 pub use orchestrator::{OrchestrationSchedule, OrchestrationStep, ToolOrchestrator};
 pub use pcap::{CaptureTimestamp, ProtocolCounts, WiresharkReport, run_wireshark};
+pub use pipeline::{
+    EngagementReport, StageOutcome, record_report_artifacts, run_engagement_pipeline,
+};
 pub use policy::{AuthorizationError, AuthorizationOutcome, PolicyEngine};
 pub use registry::{
     CapabilityRegistry, ExecutionClass, SpecialistCapability, ToolDefinition, ToolchainPack,
     ToolchainPackRegistry, UseCase, classify_execution,
 };
 pub use roadmap::{ROADMAP_PHASES, RoadmapPhase};
-pub use runtime::{ExecutionRuntime, RuntimeConfig};
+pub use runtime::{ExecutionRuntime, RunInputs, RuntimeConfig};
 pub use tagged_run::{TaggedTestRun, TestEnvironment, TestRunReport};
 pub use tool_adapter::{
     AdapterRegistry, InvocationContext, OutputChannel, OutputFormat, ToolAdapter, ToolInvocation,

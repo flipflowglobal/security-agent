@@ -77,9 +77,15 @@ Release packaging:                  scripts/deploy.sh (make deploy)
 | Exec | `src/coordinator.rs` | Scoped task planning, audit integration | `Coordinator`, `ExecutionPlan` |
 | Exec | `src/orchestrator.rs` | Orders a plan into a deduplicated, least-invasive-first execution schedule | `ToolOrchestrator`, `OrchestrationSchedule` |
 | Exec | `src/execution.rs` | Real external-tool execution in scheduled order, gated by `NetworkMode` | `run_external_tool`, `execute_plan` |
+| Exec | `src/tool_adapter.rs` | Per-tool invocation model: authorized step + discovered context → concrete `argv`/output format | `AdapterRegistry`, `ToolAdapter`, `ToolInvocation` |
+| Exec | `src/runtime.rs` | Concurrent runtime: class-ordered bounded concurrency, deterministic output, rate limit, cancel, guard, checkpoint/resume | `ExecutionRuntime`, `RuntimeConfig` |
+| Exec | `src/engagement_context.rs` | Discovery blackboard (hosts/services/endpoints) threaded through the pipeline | `EngagementContext` |
+| Exec | `src/pipeline.rs` | Staged, result-driven engagement: discovery feeds later stages | `run_engagement_pipeline`, `EngagementReport` |
 | Exec | `src/engagement_config.rs` | Zero-dependency engagement-config parser | `load_engagement_config` |
 | Exec | `src/tagged_run.rs` | Tagged test-run metadata for audit correlation | `TaggedTestRun` |
-| Findings | `src/ingest.rs` | Real tool output → scored `Finding`s | `ingest` |
+| Findings | `src/ingest.rs` | Real tool output (semgrep/SARIF/JSONL/nmap-XML) → scored `Finding`s | `ingest` |
+| Findings | `src/correlation.rs` | Dedup + cross-tool correlation of findings, corroboration-boosted confidence | `correlate` |
+| Findings | `src/evidence.rs` | Evidence capture / chain-of-custody (SHA-256 + provenance) | `EvidenceRecord`, `capture` |
 | Findings | `src/findings_log.rs` | Append-only on-disk findings log (single format) | `append_findings`, `load_findings` |
 | Findings | `src/findings_db.rs` | Same role as `findings_log.rs`, backed by `.sadb` (see Infra) instead of JSON Lines | `append_findings`, `load_findings` |
 | Findings | `src/memory_store.rs` | Folds the findings log into cognitive memory | `load_memory` |

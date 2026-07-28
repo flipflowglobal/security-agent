@@ -40,8 +40,12 @@ trait FindingParser {
 /// operator, it is simply not auto-ingested into scored findings yet.
 #[must_use]
 pub fn ingest(target_id: &str, report: &ToolExecutionReport) -> Vec<Finding> {
-    let parsers: [&dyn FindingParser; 3] =
-        [&SemgrepJsonParser, &SarifParser, &GenericJsonLinesParser];
+    let parsers: [&dyn FindingParser; 4] = [
+        &SemgrepJsonParser,
+        &SarifParser,
+        &GenericJsonLinesParser,
+        &NmapXmlParser,
+    ];
     let Some(parser) = parsers
         .into_iter()
         .find(|parser| parser.tool_name() == report.tool)
@@ -225,6 +229,62 @@ impl FindingParser for GenericJsonLinesParser {
     }
 }
 
+/// Parses nmap XML (`-oX`) into one informational finding per open port:
+/// an exposed service is attack surface worth recording, even when no
+/// vulnerability is asserted. Tolerant of malformed XML (skips fragments it
+/// cannot read) and bounded by [`MAX_FINDINGS_PER_REPORT`].
+struct NmapXmlParser;
+
+impl FindingParser for NmapXmlParser {
+    fn tool_name(&self) -> &'static str {
+        "nmap"
+    }
+
+    fn parse(&self, target_id: &str, report: &ToolExecutionReport) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        // "<host " avoids matching "<hosthint"/"<hostnames".
+        for host_block in report.stdout.split("<host ").skip(1) {
+            let address = xml_attr(host_block, "addr").unwrap_or(target_id);
+            for port_block in host_block.split("<port ").skip(1) {
+                if findings.len() >= MAX_FINDINGS_PER_REPORT {
+                    return findings;
+                }
+                if !port_block.contains("state=\"open\"") {
+                    continue;
+                }
+                let protocol = xml_attr(port_block, "protocol").unwrap_or("tcp");
+                let Some(port) = xml_attr(port_block, "portid") else {
+                    continue;
+                };
+                let service = port_block
+                    .split_once("<service ")
+                    .and_then(|(_, rest)| xml_attr(rest, "name"))
+                    .unwrap_or("unknown");
+                let index = findings.len();
+                findings.push(scored_finding(
+                    self.tool_name(),
+                    target_id,
+                    index,
+                    format!("open-port-{port}-{protocol} ({service})"),
+                    Severity::Informational,
+                    80,
+                    format!("{address}:{port}/{protocol}"),
+                ));
+            }
+        }
+        findings
+    }
+}
+
+/// Reads an attribute value `key="value"` out of an XML fragment, or `None`.
+fn xml_attr<'a>(fragment: &'a str, key: &str) -> Option<&'a str> {
+    let needle = format!("{key}=\"");
+    let start = fragment.find(&needle)? + needle.len();
+    let rest = &fragment[start..];
+    let end = rest.find('"')?;
+    Some(&rest[..end])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,8 +341,27 @@ mod tests {
 
     #[test]
     fn unknown_tool_returns_empty_vec() {
-        let findings = ingest("target-a", &report("nmap", "some scan output"));
+        let findings = ingest("target-a", &report("wafw00f", "some scan output"));
         assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn nmap_xml_yields_informational_findings_for_open_ports() {
+        let xml = r#"<nmaprun><host starttime="1"><address addr="10.0.0.5" addrtype="ipv4"/>
+            <ports>
+              <port protocol="tcp" portid="443"><state state="open"/><service name="https"/></port>
+              <port protocol="tcp" portid="22"><state state="closed"/><service name="ssh"/></port>
+            </ports></host></nmaprun>"#;
+        let findings = ingest("target-a", &report("nmap", xml));
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, Severity::Informational);
+        assert!(findings[0].title.contains("open-port-443-tcp"));
+        assert_eq!(findings[0].remediation_playbook, "10.0.0.5:443/tcp");
+    }
+
+    #[test]
+    fn nmap_non_xml_output_yields_nothing() {
+        assert!(ingest("target-a", &report("nmap", "some scan output")).is_empty());
     }
 
     #[test]

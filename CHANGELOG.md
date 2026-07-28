@@ -10,6 +10,39 @@ conventions. Releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## [Unreleased]
 
 ### Added
+- **Execution/data plane: a real per-tool invocation layer, a concurrent
+  runtime, a result-driven pipeline, and findings hardening.** Four stages
+  built on the merged foundation (`tool_adapter.rs`, `runtime.rs`,
+  `engagement_context.rs`) turn the orchestrated schedule into an actual
+  engagement:
+  - **`src/tool_adapter.rs` (Stage 1)** — a bespoke `ToolAdapter` per
+    cataloged tool (nmap, masscan, nuclei, gobuster, feroxbuster, ffuf,
+    nikto, whatweb, wpscan, subfinder, sqlmap, hydra, semgrep, jadx) that
+    builds a correct, tool-specific `argv` + `OutputFormat` from the
+    authorized step, maps `TestIntensity` onto each tool's aggressiveness
+    knobs, targets discovered endpoints/services from the engagement
+    context, and appends operator overrides last. Un-adapted tools keep the
+    conservative fallback.
+  - **`src/runtime.rs` (Stage 3)** — `ExecutionRuntime` executes a schedule
+    one execution class at a time (a class fully completes before the next
+    starts) with bounded concurrency *within* a class via
+    `std::thread::scope`, returns outcomes in deterministic execution order,
+    and adds rate limiting, an `AtomicBool` cancellation kill-switch, a
+    mid-run authorization guard, and checkpoint/resume.
+  - **`src/pipeline.rs` (Stage 2)** — `run_engagement_pipeline` runs the
+    schedule class-by-class and folds each stage's tool output
+    (nmap/masscan XML → hosts/services, URL/subdomain JSON-lines →
+    endpoints/hosts) into the shared `EngagementContext`, so later stages
+    scan what discovery actually found.
+  - **`src/correlation.rs` + `src/evidence.rs` (Stage 4)** — `correlate`
+    deduplicates findings by normalized identity and boosts confidence on
+    independent cross-tool corroboration; `capture` records a SHA-256 +
+    provenance `EvidenceRecord` per tool run for chain-of-custody. An nmap
+    XML parser was also added to `ingest.rs`.
+
+  All modules are zero-dependency, total/bounded over untrusted tool output,
+  and pass the full `clippy::pedantic` + `clippy::nursery` gate with unit
+  tests.
 - **`src/orchestrator.rs` — a tool orchestrator that turns an
   `ExecutionPlan` into an ordered, deduplicated `OrchestrationSchedule`.**
   The coordinator's plan says *what is authorized* but not *what order to
