@@ -86,6 +86,7 @@ Release packaging:                  scripts/deploy.sh (make deploy)
 | Findings | `src/ingest.rs` | Real tool output (semgrep/SARIF/JSONL/nmap-XML) → scored `Finding`s | `ingest` |
 | Findings | `src/correlation.rs` | Dedup + cross-tool correlation of findings, corroboration-boosted confidence | `correlate` |
 | Findings | `src/evidence.rs` | Evidence capture / chain-of-custody (SHA-256 + provenance) | `EvidenceRecord`, `capture` |
+| Findings | `src/report.rs` | Engagement deliverables: SARIF 2.1.0, JSON summary, Markdown report | `render_sarif`, `render_markdown`, `ReportInputs` |
 | Findings | `src/findings_log.rs` | Append-only on-disk findings log (single format) | `append_findings`, `load_findings` |
 | Findings | `src/findings_db.rs` | Same role as `findings_log.rs`, backed by `.sadb` (see Infra) instead of JSON Lines | `append_findings`, `load_findings` |
 | Findings | `src/memory_store.rs` | Folds the findings log into cognitive memory | `load_memory` |

@@ -10,6 +10,20 @@ conventions. Releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## [Unreleased]
 
 ### Added
+- **`src/report.rs` — engagement reporting and deliverables (Stage 5).**
+  Renders scored, correlated findings and their evidence into the documents
+  an engagement is judged by: a **SARIF 2.1.0** file for scanners/CI/
+  dashboards, a machine-readable **JSON summary**, and a human **Markdown
+  report** (executive summary, severity rollup, ranked findings with
+  remediation, the attack-path narrative from `advanced.rs`, and the
+  evidence chain-of-custody table). Every renderer is deterministic for a
+  given input — findings ordered by descending risk then id, timestamp
+  supplied by the caller — so a report is byte-identical across runs.
+  Serialization is in-house (an escaping JSON value writer plus an epoch→UTC
+  formatter; no date/JSON dependency). Surfaced end to end via the new
+  `--report <findings-log> [--format sarif|json|markdown] [--evidence
+  <path>] [--engagement <id>]` CLI command, which loads a findings log,
+  correlates it, and writes the chosen deliverable.
 - **Execution/data plane: a real per-tool invocation layer, a concurrent
   runtime, a result-driven pipeline, and findings hardening.** Four stages
   built on the merged foundation (`tool_adapter.rs`, `runtime.rs`,

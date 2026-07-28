@@ -181,6 +181,7 @@ The `MobileAndroid` specialist uses a dedicated tool set for APK/DEX analysis an
 | `src/pipeline.rs` | Result-driven staged engagement: runs the schedule class-by-class, folding each stage's discoveries forward (`run_engagement_pipeline`) |
 | `src/correlation.rs` | Deduplicates and cross-tool-correlates findings, boosting confidence on independent corroboration (`correlate`) |
 | `src/evidence.rs` | Evidence capture / chain-of-custody: SHA-256 of each tool's output plus provenance (`EvidenceRecord`, `capture`) |
+| `src/report.rs` | Engagement deliverables: SARIF 2.1.0, machine JSON summary, and Markdown report (rollups, remediation, attack-path narrative, evidence) — surfaced by `--report` |
 | `src/audit_log.rs` | Append-only on-disk persistence for the audit ledger |
 | `src/audit_db.rs` | Same role as `audit_log.rs`, backed by the zero-dependency `.sadb` embedded database instead of JSON Lines |
 | `src/findings.rs` | Unified finding model and normalized risk scorer |
