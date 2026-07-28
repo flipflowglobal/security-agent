@@ -413,7 +413,7 @@ fn tui_menu_option_view_audit_database_prompts_for_and_reads_a_path() {
     // A fresh path is a valid, empty database (see crate::audit_db's
     // module docs) -- this proves the real --tui process reaches
     // view_audit_db_command end to end, not just that it compiles.
-    let output = run_with_stdin(&["--tui"], &format!("14\n{}\nq\n", path.display()));
+    let output = run_with_stdin(&["--tui"], &format!("15\n{}\nq\n", path.display()));
     let _ = std::fs::remove_file(&path);
 
     assert!(output.status.success());
