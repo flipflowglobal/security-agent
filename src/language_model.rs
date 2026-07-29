@@ -145,6 +145,19 @@ const EOS: &str = "</s>";
 /// dropped before scoring.
 const ALPHABET: &str = "abcdefghijklmnopqrstuvwxyz0123456789";
 
+/// How many log-space standard deviations above the model's typical in-domain
+/// perplexity the self-calibrated anomaly threshold sits (see
+/// [`NeuralLanguageModel::calibrate_anomaly_threshold`]). Larger is more
+/// conservative (fewer false positives). Chosen so the threshold lands in the
+/// wide gap between in-domain finding text and out-of-vocabulary gibberish.
+const ANOMALY_CALIBRATION_SIGMAS: f32 = 4.0;
+/// Lower bound for the calibrated threshold, so a degenerate corpus can never
+/// drive it low enough to flag ordinary text.
+const ANOMALY_THRESHOLD_FLOOR: f32 = 100.0;
+/// Threshold used before calibration runs (or when there is nothing to
+/// calibrate on). Matches the historical hand-tuned default.
+const ANOMALY_THRESHOLD_FALLBACK: f32 = 1000.0;
+
 /// In-domain training text, compiled into the binary. Larger than a bare
 /// minimum on purpose — broad enough to cover the agent's own vocabulary
 /// (recon, web, cloud, mobile, network, social engineering, governance,
@@ -479,6 +492,11 @@ pub struct NeuralLanguageModel {
     b1: Vec<f32>,             // HIDDEN
     w2: Vec<f32>,             // vocab_len * HIDDEN
     b2: Vec<f32>,             // vocab_len
+    /// Self-calibrated anomaly threshold: the perplexity above which text is
+    /// treated as out-of-domain, derived from this model's own in-domain
+    /// perplexity distribution (see [`Self::calibrate_anomaly_threshold`])
+    /// rather than a hand-tuned constant. Set after training.
+    anomaly_threshold: f32,
 }
 
 impl Default for NeuralLanguageModel {
@@ -513,6 +531,9 @@ impl NeuralLanguageModel {
                 let corpus = bundled_corpus();
                 let mut model = Self::trained_on(&corpus, EPOCHS);
                 model.lm_refine_attention(&corpus);
+                // Re-calibrate after refinement, since the LM pass shifts the
+                // perplexity distribution the threshold is derived from.
+                model.anomaly_threshold = model.calibrate_anomaly_threshold(&corpus);
                 model
             })
             .clone()
@@ -549,6 +570,7 @@ impl NeuralLanguageModel {
             w2: init(vocab_len * HIDDEN, 0.3, &mut rng),
             b2: vec![0.0; vocab_len],
             vocab,
+            anomaly_threshold: ANOMALY_THRESHOLD_FALLBACK,
         };
 
         let sentences = encode_sentences(&model.vocab, corpus);
@@ -561,6 +583,9 @@ impl NeuralLanguageModel {
                 }
             }
         }
+        // Calibrate the anomaly threshold against the trained model's own
+        // in-domain perplexity distribution.
+        model.anomaly_threshold = model.calibrate_anomaly_threshold(corpus);
         model
     }
 
@@ -601,6 +626,52 @@ impl NeuralLanguageModel {
     #[must_use]
     pub fn knows_word(&self, word: &str) -> bool {
         normalize(word).is_some_and(|w| self.vocab.knows_word(&w))
+    }
+
+    /// The self-calibrated anomaly threshold: perplexity at or above which a
+    /// string is out-of-domain enough to flag (see [`crate::anomaly`]).
+    ///
+    /// Derived from this model's own in-domain perplexity distribution rather
+    /// than a hand-tuned constant, so it tracks the model automatically —
+    /// corpus, tokenizer, or training changes that shift the perplexity scale
+    /// no longer require re-tuning a magic number.
+    #[must_use]
+    pub const fn anomaly_threshold(&self) -> f32 {
+        self.anomaly_threshold
+    }
+
+    /// Computes the anomaly threshold from the model's per-sentence perplexity
+    /// over `corpus`, its notion of "normal" in-domain text.
+    ///
+    /// Perplexity is the exponential of mean per-token surprise, so it is
+    /// multiplicative and heavy-tailed; its in-domain distribution is modeled
+    /// as log-normal. The threshold is `exp(mu + K*sigma)` of the per-sentence
+    /// log-perplexities — the point [`ANOMALY_CALIBRATION_SIGMAS`] standard
+    /// deviations above typical in-domain surprise *in log space*. Text above
+    /// it is surprising at a level the model rarely produces for in-domain
+    /// content. Floored by [`ANOMALY_THRESHOLD_FLOOR`] and falling back to
+    /// [`ANOMALY_THRESHOLD_FALLBACK`] when the corpus yields no finite score.
+    fn calibrate_anomaly_threshold(&self, corpus: &str) -> f32 {
+        let logs: Vec<f32> = corpus
+            .split('.')
+            .map(str::trim)
+            .filter(|sentence| !sentence.is_empty())
+            .map(|sentence| self.perplexity(sentence))
+            .filter(|p| p.is_finite() && *p > 0.0)
+            .map(f32::ln)
+            .collect();
+
+        if logs.is_empty() {
+            return ANOMALY_THRESHOLD_FALLBACK;
+        }
+
+        let n = count(logs.len());
+        let mean_log = logs.iter().sum::<f32>() / n;
+        let variance = logs.iter().map(|log| (log - mean_log).powi(2)).sum::<f32>() / n;
+        let threshold = ANOMALY_CALIBRATION_SIGMAS
+            .mul_add(variance.sqrt(), mean_log)
+            .exp();
+        threshold.max(ANOMALY_THRESHOLD_FLOOR)
     }
 
     /// Looks up the raw per-position token embeddings for `context`,
@@ -1938,6 +2009,33 @@ mod tests {
             "in-domain text should be less surprising: in_domain={in_domain:.2} gibberish={gibberish:.2}"
         );
         assert!(in_domain.is_finite());
+    }
+
+    #[test]
+    fn calibrated_anomaly_threshold_separates_in_domain_from_gibberish() {
+        let model = NeuralLanguageModel::bundled();
+        let threshold = model.anomaly_threshold();
+
+        assert!(
+            threshold >= ANOMALY_THRESHOLD_FLOOR,
+            "threshold {threshold:.1} must respect the floor {ANOMALY_THRESHOLD_FLOOR:.1}",
+        );
+        for text in [
+            "the policy engine denies out of scope targets",
+            "static analysis surfaces injection and unsafe deserialization bugs",
+            "the audit ledger records every authorized action",
+        ] {
+            assert!(
+                model.perplexity(text) < threshold,
+                "in-domain text should sit below the calibrated threshold ({threshold:.1}): {text}",
+            );
+        }
+        for text in ["zzq xqv vfrb qwx ncbz", "qwph jklzx mbvpre ttghre plfwqz"] {
+            assert!(
+                model.perplexity(text) >= threshold,
+                "gibberish should sit at or above the calibrated threshold ({threshold:.1}): {text}",
+            );
+        }
     }
 
     #[test]

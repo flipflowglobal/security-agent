@@ -406,11 +406,8 @@ fn scan_prior_findings(
         return Vec::new();
     }
     let model = security_agent::NeuralLanguageModel::bundled();
-    security_agent::scan_findings(
-        prior_findings,
-        &model,
-        security_agent::DEFAULT_ANOMALY_THRESHOLD,
-    )
+    let threshold = model.anomaly_threshold();
+    security_agent::scan_findings(prior_findings, &model, threshold)
 }
 
 /// The parsed optional flags of a `--plan-scan` invocation, in the order they
@@ -1100,12 +1097,11 @@ fn ask_anomaly(model: &security_agent::NeuralLanguageModel, text: Option<&str>) 
         return ExitCode::SUCCESS;
     }
     let perplexity = model.perplexity(text);
-    let verdict =
-        if !perplexity.is_finite() || perplexity >= security_agent::DEFAULT_ANOMALY_THRESHOLD {
-            "ANOMALOUS (out-of-domain)"
-        } else {
-            "looks in-domain"
-        };
+    let verdict = if !perplexity.is_finite() || perplexity >= model.anomaly_threshold() {
+        "ANOMALOUS (out-of-domain)"
+    } else {
+        "looks in-domain"
+    };
     println!();
     if perplexity.is_finite() {
         println!("perplexity={perplexity:.3} — {verdict}");
