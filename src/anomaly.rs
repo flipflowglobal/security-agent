@@ -16,10 +16,17 @@
 use crate::findings::Finding;
 use crate::language_model::LanguageModel;
 
-/// Default perplexity above which a string is treated as anomalous. The
-/// bundled corpus is small, so this is set high to flag only clearly
-/// out-of-domain text rather than merely unusual phrasing.
-pub const DEFAULT_ANOMALY_THRESHOLD: f32 = 60.0;
+/// Default perplexity above which a string is treated as anomalous.
+///
+/// Chosen to sit in the wide gap between the bundled model's in-domain
+/// finding text (perplexity up to ~130) and out-of-vocabulary gibberish
+/// (thousands): with the byte-fallback tokenizer, unfamiliar text is scored
+/// as genuinely surprising instead of dropped, so the two populations are
+/// cleanly separated and this threshold has roughly 7x headroom on each side.
+/// It is a fixed constant tied to the current model scale; deriving it from
+/// the model's own perplexity distribution (so it survives model changes
+/// without re-tuning) is the calibrated-threshold work tracked separately.
+pub const DEFAULT_ANOMALY_THRESHOLD: f32 = 1000.0;
 
 /// One finding's text scored for language-model surprise.
 #[derive(Debug, Clone, PartialEq)]

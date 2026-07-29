@@ -11,6 +11,7 @@ pub mod cognition;
 pub mod cognitive_engine;
 pub mod compat;
 pub mod coordinator;
+pub mod corpus_gen;
 pub mod correlation;
 pub mod engagement_config;
 pub mod engagement_context;

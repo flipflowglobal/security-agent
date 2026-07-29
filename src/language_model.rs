@@ -92,10 +92,13 @@ const CODES: usize = 56;
 const VQ_STAGES: usize = 2;
 /// Hidden-layer width of the prediction head.
 const HIDDEN: usize = 28;
-/// Training passes over the corpus. The larger corpus gives more windows
-/// per epoch than before, so fewer epochs are needed for at least as much
-/// total gradient exposure as the smaller corpus got at 150.
-const EPOCHS: usize = 55;
+/// Training passes over the corpus. The bundled model now trains on the
+/// hand-written corpus plus the generated catalog corpus (one sentence per
+/// cataloged tool), which roughly triples the windows per epoch, so fewer
+/// epochs reach comparable total gradient exposure while keeping training
+/// fast. Held-out perplexity discrimination and routing accuracy (see
+/// `crate::lm_eval`) stay well above their floors at this count.
+const EPOCHS: usize = 35;
 /// SGD learning rate.
 const LEARNING_RATE: f32 = 0.05;
 /// Weight of the VQ commitment/codebook penalties.
@@ -135,6 +138,12 @@ const LM_WINDOW_STRIDE: usize = 12;
 const BOS: &str = "<s>";
 /// End-of-sentence token; generation stops when it is produced.
 const EOS: &str = "</s>";
+/// The single-character byte-fallback alphabet: every character
+/// [`normalize`] can emit (ASCII lowercase letters and digits). Seeding
+/// these into the vocabulary makes every normalized word representable, so
+/// an out-of-vocabulary word decomposes into its characters instead of being
+/// dropped before scoring.
+const ALPHABET: &str = "abcdefghijklmnopqrstuvwxyz0123456789";
 
 /// In-domain training text, compiled into the binary. Larger than a bare
 /// minimum on purpose — broad enough to cover the agent's own vocabulary
@@ -197,6 +206,19 @@ a deny listed target is refused before any scan begins.
 network policy keeps the agent offline until the operator opts in.
 compliance reporting maps findings to a recognized control framework.
 the retest confirms whether a remediated finding has actually been fixed.";
+
+/// The full training corpus for the bundled model: the hand-written
+/// [`SECURITY_CORPUS`] followed by the generated catalog corpus (one sentence
+/// per cataloged tool, see [`crate::corpus_gen`]). Concatenated at runtime so
+/// the two sources stay separately editable; the result is deterministic.
+fn bundled_corpus() -> String {
+    let mut corpus =
+        String::with_capacity(SECURITY_CORPUS.len() + crate::corpus_gen::CATALOG_CORPUS.len() + 1);
+    corpus.push_str(SECURITY_CORPUS);
+    corpus.push('\n');
+    corpus.push_str(crate::corpus_gen::CATALOG_CORPUS);
+    corpus
+}
 
 /// A fast, fully-deterministic pseudo-random generator (`SplitMix64`), used
 /// for reproducible weight initialization — no external RNG crate.
@@ -271,21 +293,55 @@ fn dct_matrix() -> Vec<f32> {
 struct Vocabulary {
     tokens: Vec<String>,
     ids: std::collections::HashMap<String, usize>,
+    /// Per-id flag: whether the token is valid *generation output*. True for
+    /// whole corpus words and [`EOS`]; false for [`BOS`] and the single
+    /// character byte-fallback tokens, which exist only to encode unknown
+    /// *input* and should never be emitted as raw characters. A character
+    /// that also occurs as a standalone corpus word (e.g. `a`) is upgraded to
+    /// emittable.
+    emittable: Vec<bool>,
 }
 
 impl Vocabulary {
     fn from_corpus(corpus: &str) -> Self {
+        // BOS is padding-only (never emitted); EOS is emittable so generation
+        // can stop.
         let mut tokens = vec![BOS.to_string(), EOS.to_string()];
+        let mut emittable = vec![false, true];
         let mut ids = std::collections::HashMap::new();
         ids.insert(BOS.to_string(), 0);
         ids.insert(EOS.to_string(), 1);
-        for token in corpus.split_whitespace().filter_map(normalize) {
+        // Seed the single-character byte-fallback alphabet before any corpus
+        // word, so every character `normalize` can emit has a token. This is
+        // what lets an out-of-vocabulary word decompose into characters
+        // rather than being dropped (see [`Self::tokenize_word`]). The
+        // alphabet is fixed and corpus-independent, so these ids are stable
+        // across corpora. Characters are input-side fallback only, so they
+        // start non-emittable.
+        for ch in ALPHABET.chars() {
+            let token = ch.to_string();
             if !ids.contains_key(&token) {
                 ids.insert(token.clone(), tokens.len());
                 tokens.push(token);
+                emittable.push(false);
             }
         }
-        Self { tokens, ids }
+        for token in corpus.split_whitespace().filter_map(normalize) {
+            if let Some(&id) = ids.get(&token) {
+                // A character that also appears as a standalone word (e.g.
+                // `a`) becomes a valid generation output.
+                emittable[id] = true;
+            } else {
+                ids.insert(token.clone(), tokens.len());
+                tokens.push(token);
+                emittable.push(true);
+            }
+        }
+        Self {
+            tokens,
+            ids,
+            emittable,
+        }
     }
 
     fn len(&self) -> usize {
@@ -298,6 +354,35 @@ impl Vocabulary {
 
     fn token(&self, id: usize) -> &str {
         &self.tokens[id]
+    }
+
+    /// Tokenizes one already-[`normalize`]d word: the word itself when the
+    /// vocabulary knows it as a whole, otherwise its character byte-fallback.
+    /// Because [`from_corpus`](Self::from_corpus) seeds every character
+    /// [`normalize`] can produce, the fallback never drops anything — an
+    /// unknown word always yields at least one token. An empty input yields
+    /// no tokens.
+    fn tokenize_word(&self, word: &str) -> Vec<usize> {
+        if let Some(id) = self.id(word) {
+            return vec![id];
+        }
+        word.chars()
+            .filter_map(|ch| self.id(&ch.to_string()))
+            .collect()
+    }
+
+    /// Whether `word` is a first-class whole-word token (as opposed to one
+    /// that must fall back to characters). Used by the evaluation harness to
+    /// measure word-level vocabulary coverage separately from the byte-level
+    /// representability the fallback guarantees.
+    fn knows_word(&self, word: &str) -> bool {
+        self.id(word).is_some()
+    }
+
+    /// Whether the token `id` may be produced as generation output. Character
+    /// byte-fallback tokens and [`BOS`] are input-only and return false.
+    fn is_emittable(&self, id: usize) -> bool {
+        self.emittable.get(id).copied().unwrap_or(false)
     }
 }
 
@@ -317,20 +402,19 @@ fn normalize(raw: &str) -> Option<String> {
 }
 
 /// Splits `text` into sentences (on `.`), each a token-id sequence padded
-/// with `CONTEXT` leading [`BOS`] ids and a trailing [`EOS`] id. Unknown
-/// words are dropped.
+/// with `CONTEXT` leading [`BOS`] ids and a trailing [`EOS`] id. Words the
+/// vocabulary does not know as a whole are decomposed into character tokens
+/// by [`Vocabulary::tokenize_word`] rather than dropped, so no content is
+/// silently lost before scoring or training.
 fn encode_sentences(vocab: &Vocabulary, text: &str) -> Vec<Vec<usize>> {
     let bos = vocab.id(BOS).unwrap_or(0);
     let eos = vocab.id(EOS).unwrap_or(1);
     text.split('.')
         .filter_map(|sentence| {
             let mut ids: Vec<usize> = vec![bos; CONTEXT];
-            ids.extend(
-                sentence
-                    .split_whitespace()
-                    .filter_map(normalize)
-                    .filter_map(|token| vocab.id(&token)),
-            );
+            for word in sentence.split_whitespace().filter_map(normalize) {
+                ids.extend(vocab.tokenize_word(&word));
+            }
             if ids.len() == CONTEXT {
                 return None; // empty sentence
             }
@@ -404,10 +488,17 @@ impl Default for NeuralLanguageModel {
 }
 
 impl NeuralLanguageModel {
-    /// Builds and trains the default model on the bundled security corpus,
-    /// then polishes its self-attention projections with a Levenberg-
-    /// Marquardt refinement pass (see [`Self::lm_refine_attention`]).
-    /// Deterministic: the same binary always yields the same model.
+    /// Builds and trains the default model on the bundled security corpus
+    /// augmented with the catalog corpus, then polishes its self-attention
+    /// projections with a Levenberg-Marquardt refinement pass (see
+    /// [`Self::lm_refine_attention`]). Deterministic: the same binary always
+    /// yields the same model.
+    ///
+    /// The catalog corpus ([`crate::corpus_gen::CATALOG_CORPUS`]) contributes
+    /// one sentence per cataloged tool, so every tool name enters the model's
+    /// vocabulary and the execution-class language is reinforced. It is
+    /// appended only here; the `trained_*` constructors train on exactly the
+    /// corpus they are given, keeping test baselines pure.
     ///
     /// Training is memoized in a process-wide [`std::sync::OnceLock`] and
     /// subsequent calls return a clone, so repeated use (tests, multiple CLI
@@ -419,8 +510,9 @@ impl NeuralLanguageModel {
         static CACHED: std::sync::OnceLock<NeuralLanguageModel> = std::sync::OnceLock::new();
         CACHED
             .get_or_init(|| {
-                let mut model = Self::trained_on(SECURITY_CORPUS, EPOCHS);
-                model.lm_refine_attention(SECURITY_CORPUS);
+                let corpus = bundled_corpus();
+                let mut model = Self::trained_on(&corpus, EPOCHS);
+                model.lm_refine_attention(&corpus);
                 model
             })
             .clone()
@@ -472,17 +564,21 @@ impl NeuralLanguageModel {
         model
     }
 
-    /// Mean-pooled embedding of `text` over its in-vocabulary tokens (a
-    /// bag-of-embeddings sentence vector), length [`EMBED`]. Zero vector when
-    /// no token is known. Used by the natural-language intent router to
+    /// Mean-pooled embedding of `text` (a bag-of-embeddings sentence vector),
+    /// length [`EMBED`]. Every word contributes: a known word through its
+    /// whole-word embedding, an unknown word through the mean of its
+    /// character embeddings (byte-fallback, see
+    /// [`Vocabulary::tokenize_word`]), so out-of-vocabulary terms are no
+    /// longer silently ignored. Zero vector only for empty or
+    /// non-alphanumeric input. Used by the natural-language intent router to
     /// compare an instruction against capability descriptions in the model's
     /// learned semantic space.
     #[must_use]
     pub fn embed_text(&self, text: &str) -> Vec<f32> {
         let mut sum = vec![0.0_f32; EMBED];
         let mut n = 0usize;
-        for token in text.split_whitespace().filter_map(normalize) {
-            if let Some(id) = self.vocab.id(&token) {
+        for word in text.split_whitespace().filter_map(normalize) {
+            for id in self.vocab.tokenize_word(&word) {
                 let base = id * EMBED;
                 for (acc, &value) in sum.iter_mut().zip(&self.embed[base..base + EMBED]) {
                     *acc += value;
@@ -497,6 +593,14 @@ impl NeuralLanguageModel {
             }
         }
         sum
+    }
+
+    /// Whether `word` is a first-class whole-word vocabulary token rather
+    /// than one that falls back to characters. Exposed for the evaluation
+    /// harness's word-level coverage metric.
+    #[must_use]
+    pub fn knows_word(&self, word: &str) -> bool {
+        normalize(word).is_some_and(|w| self.vocab.knows_word(&w))
     }
 
     /// Looks up the raw per-position token embeddings for `context`,
@@ -834,10 +938,15 @@ impl NeuralLanguageModel {
     fn sample_next(&self, context: [usize; CONTEXT], rng: &mut Rng) -> usize {
         let pass = self.forward(context);
 
+        // Restrict sampling to emittable tokens: whole words and EOS. The
+        // character byte-fallback tokens exist only to encode unknown input
+        // and must never be generated as raw characters, which would derail
+        // the continuation.
         let mut candidates: Vec<(usize, f32)> = pass
             .probs
             .iter()
             .enumerate()
+            .filter(|&(id, _)| self.vocab.is_emittable(id))
             .map(|(id, &p)| (id, p.max(f32::MIN_POSITIVE).powf(1.0 / TEMPERATURE)))
             .collect();
         candidates.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
@@ -855,14 +964,16 @@ impl NeuralLanguageModel {
     }
 
     /// Encodes `prompt` into an initial context of the last [`CONTEXT`]
-    /// known token ids, padding with [`BOS`] when the prompt is short or its
-    /// words are out of vocabulary.
+    /// token ids, padding with [`BOS`] when the prompt is short. Unknown
+    /// words fall back to character tokens (see
+    /// [`Vocabulary::tokenize_word`]) rather than being dropped, so a prompt
+    /// made only of out-of-vocabulary words still seeds a real context.
     fn seed_context(&self, prompt: &str) -> [usize; CONTEXT] {
         let bos = self.vocab.id(BOS).unwrap_or(0);
         let known: Vec<usize> = prompt
             .split_whitespace()
             .filter_map(normalize)
-            .filter_map(|token| self.vocab.id(&token))
+            .flat_map(|word| self.vocab.tokenize_word(&word))
             .collect();
         let mut context = [bos; CONTEXT];
         for (slot, &id) in context

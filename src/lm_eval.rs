@@ -58,9 +58,8 @@ const IN_DOMAIN_HELDOUT: &[&str] = &[
 
 /// Realistic finding-title text of the kind the anomaly detector scores in
 /// production: tool names, identifiers, versions, and hostnames the
-/// word-level vocabulary largely does not contain. Used only to measure
-/// vocabulary coverage (the out-of-vocabulary drop rate), never for
-/// perplexity floors.
+/// word-level vocabulary largely does not contain. Used to measure
+/// word-level vocabulary coverage, never for perplexity floors.
 const REALISTIC_FINDINGS: &[&str] = &[
     "nmap detected openssh 8.2p1 on port 22",
     "sqlmap confirmed a boolean based blind injection in login.php",
@@ -70,6 +69,20 @@ const REALISTIC_FINDINGS: &[&str] = &[
     "wpscan flagged an outdated woocommerce plugin version",
     "the s3 bucket acme-backups is publicly listable",
     "feroxbuster found /admin returning http 200 without auth",
+];
+
+/// Alphanumeric non-words: they survive `normalize` (so they are not blank)
+/// but appear in no corpus, so every one is out-of-vocabulary. Before the
+/// byte-fallback tokenizer these were silently dropped, leaving an empty
+/// sentence the model could not score as surprising; with byte-fallback they
+/// decompose into characters and are scored as the improbable text they are.
+/// Used for the OOV-surprise metric — a direct check that anomalous,
+/// unfamiliar finding text no longer slips past the detector.
+const OOV_GIBBERISH: &[&str] = &[
+    "xqzk vprmn blorptwig zznk qwphble",
+    "jkxvmb ttghre plfwqz mbvxae nnrkdt",
+    "zzqwx frbltn vmpkgh sdrlwe kxptbz",
+    "wgblmr xtqvn pplzkd nnbvhc jjrwqe",
 ];
 
 /// One held-out routing case: a paraphrase and the intent it should reach.
@@ -90,12 +103,14 @@ const ROUTING_CASES: &[(&str, Intent)] = &[
 ];
 
 /// Prompts fed to the generator when checking that its continuations stay
-/// in-distribution and that decoding is deterministic.
+/// in-distribution and that decoding is deterministic. Each is a strict
+/// mid-sentence prefix (never a sentence ending), so a healthy model is
+/// expected to continue rather than immediately emit end-of-sentence.
 const GENERATION_PROMPTS: &[&str] = &[
-    "the coordinator plans",
-    "a critical finding",
+    "the coordinator plans an",
     "static analysis surfaces",
-    "the audit ledger records",
+    "passive recon precedes active",
+    "the attacker pivots from a",
 ];
 
 /// Perplexity-discrimination results (anomaly-detection quality).
@@ -116,6 +131,11 @@ pub struct PerplexityEval {
     pub ranking_auc: f32,
     /// Number of sentence pairs compared.
     pub pairs: usize,
+    /// `mean_oov_gibberish_perplexity / mean_in_domain`. Out-of-vocabulary
+    /// gibberish should be *more* surprising than coherent text; above 1
+    /// confirms the byte-fallback tokenizer lets the detector see it at all
+    /// (before byte-fallback such text was dropped and scored nothing).
+    pub oov_surprise_ratio: f32,
 }
 
 /// Intent-routing results (NLU quality).
@@ -154,13 +174,18 @@ pub struct GenerationEval {
     pub in_distribution: bool,
 }
 
-/// Vocabulary-coverage results (the out-of-vocabulary drop rate).
+/// Vocabulary-coverage results: the *word-level* hit rate, distinct from the
+/// byte-level representability the fallback tokenizer now guarantees for all
+/// input.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CoverageEval {
-    /// In-vocabulary fraction over the coherent held-out set (expected high).
+    /// Fraction of coherent held-out words known as whole-word tokens
+    /// (expected high).
     pub in_domain_coverage: f32,
-    /// In-vocabulary fraction over realistic finding text (expected low —
-    /// this is the out-of-vocabulary hole a sub-word tokenizer would close).
+    /// Fraction of realistic finding words known as whole-word tokens
+    /// (expected low — the residual gap a sub-word merge step, not just
+    /// character fallback, would close). Byte-fallback already makes these
+    /// words *representable*; this measures how many are first-class tokens.
     pub realistic_coverage: f32,
 }
 
@@ -186,10 +211,16 @@ pub mod floors {
     pub const MIN_SEPARATION_RATIO: f32 = 1.05;
     /// Pairwise ranking must beat this. 0.5 is chance.
     pub const MIN_RANKING_AUC: f32 = 0.70;
-    /// Held-out routing accuracy floor. Set one case below the current 9/12
-    /// baseline so the gate passes with headroom yet still fails if any
-    /// single paraphrase starts misrouting (8/12 = 0.667 < floor).
-    pub const MIN_ROUTING_ACCURACY: f32 = 0.70;
+    /// Held-out routing accuracy floor. Set below the current 10/12 baseline
+    /// so the gate passes with headroom yet still fails if routing regresses
+    /// by more than one case.
+    pub const MIN_ROUTING_ACCURACY: f32 = 0.75;
+    /// Out-of-vocabulary gibberish must be at least this many times as
+    /// perplexing as coherent in-domain text.
+    ///
+    /// This is the byte-fallback tokenizer's guarantee that unfamiliar finding
+    /// text is scored as surprising rather than silently dropped.
+    pub const MIN_OOV_SURPRISE_RATIO: f32 = 1.50;
 }
 
 impl LmEvalReport {
@@ -203,6 +234,7 @@ impl LmEvalReport {
             && self.generation.in_distribution
             && self.perplexity.separation_ratio >= floors::MIN_SEPARATION_RATIO
             && self.perplexity.ranking_auc >= floors::MIN_RANKING_AUC
+            && self.perplexity.oov_surprise_ratio >= floors::MIN_OOV_SURPRISE_RATIO
             && self.routing.accuracy() >= floors::MIN_ROUTING_ACCURACY
     }
 
@@ -237,6 +269,12 @@ impl LmEvalReport {
             "  ranking AUC",
             self.perplexity.ranking_auc,
             Some(floors::MIN_RANKING_AUC),
+        );
+        push_metric(
+            &mut out,
+            "  OOV-surprise ratio",
+            self.perplexity.oov_surprise_ratio,
+            Some(floors::MIN_OOV_SURPRISE_RATIO),
         );
 
         out.push_str("\nIntent routing (NLU)\n");
@@ -273,16 +311,16 @@ impl LmEvalReport {
             None,
         );
 
-        out.push_str("\nVocabulary coverage (diagnostic, not gated)\n");
+        out.push_str("\nWord-level vocabulary coverage (diagnostic, not gated)\n");
         push_metric(
             &mut out,
-            "  in-domain token coverage",
+            "  in-domain word coverage",
             self.coverage.in_domain_coverage,
             None,
         );
         push_metric(
             &mut out,
-            "  realistic-finding coverage",
+            "  realistic-finding word coverage",
             self.coverage.realistic_coverage,
             None,
         );
@@ -349,12 +387,25 @@ fn evaluate_perplexity(model: &NeuralLanguageModel) -> PerplexityEval {
         0.0
     };
 
+    let oov_gibberish: Vec<f32> = OOV_GIBBERISH
+        .iter()
+        .map(|s| model.perplexity(s))
+        .filter(|p| p.is_finite())
+        .collect();
+    let mean_oov = mean(&oov_gibberish);
+    let oov_surprise_ratio = if mean_in_domain > 0.0 {
+        mean_oov / mean_in_domain
+    } else {
+        0.0
+    };
+
     PerplexityEval {
         mean_in_domain,
         mean_scrambled,
         separation_ratio,
         ranking_auc,
         pairs,
+        oov_surprise_ratio,
     }
 }
 
@@ -420,18 +471,18 @@ fn evaluate_coverage(model: &NeuralLanguageModel) -> CoverageEval {
     }
 }
 
-/// Mean in-vocabulary token fraction over `texts`, using the model's own
-/// embedding lookup: a token counts as covered when it contributes a nonzero
-/// vector (the model knows it). The embedding of a single unknown token is
-/// the zero vector, so this measures exactly what `encode_sentences` would
-/// keep versus drop.
+/// Mean word-level coverage over `texts`: the fraction of words the model
+/// knows as first-class whole-word tokens (`knows_word`). This is distinct
+/// from representability — byte-fallback makes every word representable — and
+/// is the honest measure of how much realistic finding text still relies on
+/// character fallback rather than dedicated tokens.
 fn mean_coverage(model: &NeuralLanguageModel, texts: &[&str]) -> f32 {
     let mut covered = 0usize;
     let mut total = 0usize;
     for text in texts {
         for word in text.split_whitespace() {
             total += 1;
-            if model.embed_text(word).iter().any(|v| *v != 0.0) {
+            if model.knows_word(word) {
                 covered += 1;
             }
         }
@@ -550,6 +601,38 @@ mod tests {
     }
 
     #[test]
+    fn oov_gibberish_is_scored_as_surprising() {
+        // The byte-fallback tokenizer's headline guarantee: out-of-vocabulary
+        // text is decomposed into characters and scored as surprising rather
+        // than dropped. Before byte-fallback these strings reduced to empty
+        // sentences and could not be flagged at all.
+        let p = report().perplexity;
+        assert!(
+            p.oov_surprise_ratio >= floors::MIN_OOV_SURPRISE_RATIO,
+            "OOV gibberish should be far more perplexing than in-domain text: ratio {:.3} < floor {:.3}",
+            p.oov_surprise_ratio,
+            floors::MIN_OOV_SURPRISE_RATIO,
+        );
+    }
+
+    #[test]
+    fn byte_fallback_leaves_no_word_unrepresented() {
+        // Every realistic finding word — including tool names, versions, and
+        // identifiers absent from the vocabulary — must produce a nonzero
+        // embedding, proving nothing is silently dropped.
+        let model = NeuralLanguageModel::bundled();
+        for text in REALISTIC_FINDINGS {
+            for word in text.split_whitespace() {
+                let embedding = model.embed_text(word);
+                assert!(
+                    embedding.iter().any(|v| *v != 0.0),
+                    "word '{word}' produced a zero embedding — byte-fallback dropped it",
+                );
+            }
+        }
+    }
+
+    #[test]
     fn routing_meets_accuracy_floor_on_held_out_paraphrases() {
         let r = report().routing;
         assert!(
@@ -583,15 +666,17 @@ mod tests {
     }
 
     #[test]
-    fn coverage_diagnostic_exposes_the_oov_gap() {
+    fn word_level_coverage_gap_motivates_subword_merges() {
         // Not a quality gate — a recorded observation that in-domain text is
-        // well covered while realistic finding text is not, which is the
-        // motivation for a sub-word tokenizer. If a future tokenizer closes
-        // the gap this test's expectation is meant to be revised upward.
+        // well covered at the whole-word level while realistic finding text
+        // is not. Byte-fallback already makes every word representable (see
+        // `byte_fallback_leaves_no_word_unrepresented`); the residual gap
+        // here is what a sub-word merge step, not just character fallback,
+        // would close. Revise upward if such a step lands.
         let c = report().coverage;
         assert!(
             c.in_domain_coverage > c.realistic_coverage,
-            "in-domain coverage ({:.3}) should exceed realistic coverage ({:.3})",
+            "in-domain word coverage ({:.3}) should exceed realistic word coverage ({:.3})",
             c.in_domain_coverage,
             c.realistic_coverage,
         );
