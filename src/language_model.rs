@@ -1619,7 +1619,9 @@ mod tests {
         let second = model.generate("the coordinator plans an", 8);
         assert_eq!(first, second, "sampling must be deterministic per prompt");
 
-        let vocab = Vocabulary::from_corpus(SECURITY_CORPUS);
+        // The bundled model trains on the combined corpus, so its vocabulary
+        // (and therefore its emittable tokens) includes catalog tool names.
+        let vocab = Vocabulary::from_corpus(&bundled_corpus());
         for token in first.split_whitespace() {
             assert!(
                 vocab.id(token).is_some(),
@@ -1648,16 +1650,24 @@ mod tests {
     #[test]
     fn sample_next_can_diverge_from_the_greedy_pick() {
         let model = NeuralLanguageModel::bundled();
-        let context = model.seed_context("the coordinator plans an");
+        // A sentence-start context (all padding) spreads probability across
+        // many sentence openers, so the next-token distribution is flat enough
+        // that sampling reliably diverges from the top pick on every platform.
+        // A peaked mid-sentence context can, under different float rounding,
+        // leave the top token dominant enough that no seed diverges.
+        let context = model.seed_context("");
         let pass = model.forward(context);
+        // Greedy over the tokens `sample_next` can actually emit, so the
+        // comparison matches the candidate set sampling draws from.
         let greedy = pass
             .probs
             .iter()
             .enumerate()
+            .filter(|&(id, _)| model.vocab.is_emittable(id))
             .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
             .map_or(0, |(id, _)| id);
 
-        let diverged = (0..64u64).any(|seed| {
+        let diverged = (0..256u64).any(|seed| {
             let mut rng = Rng::new(seed);
             model.sample_next(context, &mut rng) != greedy
         });
@@ -1909,7 +1919,9 @@ mod tests {
     fn generation_handles_unknown_and_empty_prompts() {
         let model = NeuralLanguageModel::bundled();
         let out = model.generate("qqqq zzzz", 6);
-        let vocab = Vocabulary::from_corpus(SECURITY_CORPUS);
+        // Compare against the model's actual training vocabulary (the combined
+        // corpus), which includes catalog tool names the model may emit.
+        let vocab = Vocabulary::from_corpus(&bundled_corpus());
         for token in out.split_whitespace() {
             assert!(vocab.id(token).is_some());
         }
