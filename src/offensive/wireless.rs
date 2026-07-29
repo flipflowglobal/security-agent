@@ -41,9 +41,11 @@ impl fmt::Display for WpaHandshakeInfo {
 }
 
 /// Analyze raw EAPOL frame data to determine handshake completeness.
+#[must_use]
+#[allow(clippy::similar_names)]
 pub fn analyze_eapol_frames(frames: &[Vec<u8>]) -> WpaHandshakeInfo {
-    let mut has_anonce = false;
-    let mut has_snonce = false;
+    let mut found_anonce = false;
+    let mut found_snonce = false;
     let mut has_mic = false;
     let mut has_pmkid = false;
     let mut pmkid_value = None;
@@ -67,18 +69,17 @@ pub fn analyze_eapol_frames(frames: &[Vec<u8>]) -> WpaHandshakeInfo {
         let is_install = (key_info & 0x0040) != 0;
         let is_ack = (key_info & 0x0080) != 0;
         let is_mic = (key_info & 0x0100) != 0;
-        let _key_descriptor_version = key_info & 0x0007;
 
         // Message 1: ANonce (ACK=1, MIC=0, Install=0)
         if is_ack && !is_mic && !is_install && is_pairwise {
-            has_anonce = true;
+            found_anonce = true;
             if frame.len() >= 115 {
                 anonce_value = Some(hex_encode(&frame[99..131]));
             }
         }
         // Message 2: SNonce (ACK=0, MIC=1, Install=0)
         if !is_ack && is_mic && !is_install && is_pairwise {
-            has_snonce = true;
+            found_snonce = true;
             has_mic = true;
             if frame.len() >= 115 {
                 snonce_value = Some(hex_encode(&frame[99..131]));
@@ -87,7 +88,7 @@ pub fn analyze_eapol_frames(frames: &[Vec<u8>]) -> WpaHandshakeInfo {
         }
         // Message 3: (ACK=1, MIC=1, Install=1)
         if is_ack && is_mic && is_install {
-            has_anonce = true; // ANonce resent in msg 3
+            found_anonce = true; // ANonce resent in msg 3
         }
 
         // Check for PMKID in Key Data (AKM type 0x004F for PMKID)
@@ -114,7 +115,7 @@ pub fn analyze_eapol_frames(frames: &[Vec<u8>]) -> WpaHandshakeInfo {
     }
 
     let eapol_count = frames.len();
-    let crackable = (has_anonce && has_snonce && has_mic) || has_pmkid;
+    let crackable = (found_anonce && found_snonce && has_mic) || has_pmkid;
 
     let handshake_version = match frames.first().and_then(|f| f.get(99)).copied() {
         Some(2) => "WPA2 (RSN)".to_string(),
@@ -124,10 +125,13 @@ pub fn analyze_eapol_frames(frames: &[Vec<u8>]) -> WpaHandshakeInfo {
 
     let recommended_attack = if has_pmkid {
         "PMKID attack — offline crack without client".to_string()
-    } else if has_anonce && has_snonce && has_mic {
+    } else if found_anonce && found_snonce && has_mic {
         "4-way handshake capture — offline dictionary/brute-force crack".to_string()
     } else {
-        format!("Incomplete handshake — need {} more EAPOL frames", 4usize.saturating_sub(eapol_count))
+        format!(
+            "Incomplete handshake — need {} more EAPOL frames",
+            4usize.saturating_sub(eapol_count)
+        )
     };
 
     WpaHandshakeInfo {
@@ -146,7 +150,13 @@ pub fn analyze_eapol_frames(frames: &[Vec<u8>]) -> WpaHandshakeInfo {
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    use std::fmt::Write as _;
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
 }
 
 // ─── WPS PIN Analysis ────────────────────────────────────────────────────────
@@ -175,21 +185,50 @@ impl fmt::Display for WpsPinInfo {
 
 /// List of known default WPS PINs from common routers.
 const KNOWN_DEFAULT_PINS: &[&str] = &[
-    "12345670", "00000000", "11111111", "12345678",
-    "22222222", "87654321", "12121212", "01234567",
-    "99999999", "10000000", "20011974", "31266831",
-    "88888888", "77777777", "66666666", "55555555",
-    "33333333", "24682468", "13572468", "11223344",
-    "password", "admin123", "12341234",
+    "12345670",
+    "00000000",
+    "11111111",
+    "12345678",
+    "22222222",
+    "87654321",
+    "12121212",
+    "01234567",
+    "99999999",
+    "10000000",
+    "20011974",
+    "31266831",
+    "88888888",
+    "77777777",
+    "66666666",
+    "55555555",
+    "33333333",
+    "24682468",
+    "13572468",
+    "11223344",
+    "password",
+    "admin123",
+    "12341234",
     // Common ISP defaults
-    "1234567890", "123456789", "0987654321", "1122334455",
+    "1234567890",
+    "123456789",
+    "0987654321",
+    "1122334455",
     // Vendor-specific defaults
-    "10010010", "00100100", "11001100", "20020020", // D-Link
-    "525441", "52544D", "20062006", "19891989",     // Netgear
-    "12345678", "admin", "passw0rd",                 // TP-Link
+    "10010010",
+    "00100100",
+    "11001100",
+    "20020020", // D-Link
+    "525441",
+    "52544D",
+    "20062006",
+    "19891989", // Netgear
+    "12345678",
+    "admin",
+    "passw0rd", // TP-Link
 ];
 
 /// Analyze a WPS PIN for known vulnerabilities.
+#[must_use]
 pub fn analyze_wps_pin(pin: &str) -> WpsPinInfo {
     let is_default = KNOWN_DEFAULT_PINS.contains(&pin);
 
@@ -244,13 +283,18 @@ impl fmt::Display for DeauthAnalysis {
         writeln!(f, "Source : {}", self.source_mac)?;
         writeln!(f, "Dest   : {}", self.dest_mac)?;
         writeln!(f, "BSSID  : {}", self.bssid)?;
-        writeln!(f, "Reason : {} ({})", self.reason_description, self.reason_code)?;
+        writeln!(
+            f,
+            "Reason : {} ({})",
+            self.reason_description, self.reason_code
+        )?;
         writeln!(f, "Threat : {}", self.threat_level)?;
         Ok(())
     }
 }
 
 /// Analyze a raw 802.11 deauthentication/disassociation frame.
+#[must_use]
 pub fn analyze_deauth_frame(frame: &[u8]) -> Option<DeauthAnalysis> {
     if frame.len() < 26 {
         return None;
@@ -378,6 +422,7 @@ impl fmt::Display for WirelessSecurityAudit {
 }
 
 /// Generate a wireless security audit report from beacon frame data.
+#[must_use]
 pub fn audit_wireless_security(
     essid: &str,
     security_protocol: &str,
@@ -392,27 +437,38 @@ pub fn audit_wireless_security(
         "open" | "none" => {
             issues.push("Network is OPEN — no authentication required".to_string());
             risk_score += 80;
-            recommendations.push("Implement WPA3-Personal minimum; use WPA3-Enterprise where possible".to_string());
+            recommendations.push(
+                "Implement WPA3-Personal minimum; use WPA3-Enterprise where possible".to_string(),
+            );
         }
         "wep" => {
             issues.push("WEP encryption — can be cracked in minutes with aircrack-ng".to_string());
             risk_score += 90;
-            recommendations.push("Migrate to WPA3 immediately — WEP is cryptographically broken".to_string());
+            recommendations
+                .push("Migrate to WPA3 immediately — WEP is cryptographically broken".to_string());
         }
         "wpa" => {
-            issues.push("WPA (TKIP) — deprecated, vulnerable to Beck-Tews and Ohigashi-Morii attacks".to_string());
+            issues.push(
+                "WPA (TKIP) — deprecated, vulnerable to Beck-Tews and Ohigashi-Morii attacks"
+                    .to_string(),
+            );
             risk_score += 50;
-            recommendations.push("Upgrade to WPA3-Personal (SAE) or at minimum WPA2-AES (CCMP)".to_string());
+            recommendations
+                .push("Upgrade to WPA3-Personal (SAE) or at minimum WPA2-AES (CCMP)".to_string());
         }
         "wpa2" => {
             if encryption.to_uppercase() == "TKIP" {
-                issues.push("WPA2 with TKIP — deprecated, vulnerable to fragmentation attacks".to_string());
+                issues.push(
+                    "WPA2 with TKIP — deprecated, vulnerable to fragmentation attacks".to_string(),
+                );
                 risk_score += 40;
                 recommendations.push("Switch to WPA2-AES (CCMP) or upgrade to WPA3".to_string());
             }
-            issues.push("WPA2-PSK — vulnerable to PMKID and offline dictionary attacks".to_string());
+            issues
+                .push("WPA2-PSK — vulnerable to PMKID and offline dictionary attacks".to_string());
             risk_score += 30;
-            recommendations.push("Consider WPA3-Enterprise for stronger authentication".to_string());
+            recommendations
+                .push("Consider WPA3-Enterprise for stronger authentication".to_string());
         }
         "wpa2-enterprise" => {
             issues.push("WPA2-Enterprise without certificate validation — vulnerable to Evil Twin/RADIUS impersonation".to_string());
@@ -422,7 +478,8 @@ pub fn audit_wireless_security(
         "wpa3" => {
             issues.push("WPA3 — strongest consumer standard, but check for Dragonblood side-channel vulnerabilities (CVE-2019-15126)".to_string());
             risk_score += 5;
-            recommendations.push("Ensure firmware is up-to-date to patch Dragonblood variants".to_string());
+            recommendations
+                .push("Ensure firmware is up-to-date to patch Dragonblood variants".to_string());
         }
         _ => {
             issues.push(format!("Unknown security protocol: {security_protocol}"));
@@ -440,7 +497,9 @@ pub fn audit_wireless_security(
     if generic.iter().any(|g| essid.to_lowercase().contains(g)) {
         issues.push("Generic/default ESSID — indicates router may be unconfigured".to_string());
         risk_score += 10;
-        recommendations.push("Set a unique, non-identifying ESSID that doesn't reveal router vendor".to_string());
+        recommendations.push(
+            "Set a unique, non-identifying ESSID that doesn't reveal router vendor".to_string(),
+        );
     }
 
     WirelessSecurityAudit {

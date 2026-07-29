@@ -11,7 +11,11 @@ pub mod cognition;
 pub mod cognitive_engine;
 pub mod compat;
 pub mod coordinator;
+pub mod corpus_gen;
+pub mod correlation;
 pub mod engagement_config;
+pub mod engagement_context;
+pub mod evidence;
 pub mod execution;
 pub mod findings;
 pub mod findings_db;
@@ -22,6 +26,7 @@ pub mod integrity;
 pub mod intensity_guard;
 mod json;
 pub mod language_model;
+pub mod lm_eval;
 pub mod local_analyzers;
 pub mod local_assets;
 pub mod memory_store;
@@ -29,14 +34,22 @@ pub mod mission;
 pub mod model;
 pub mod network_policy;
 pub mod nlu;
+pub mod observability;
 pub mod offensive;
+pub mod orchestrator;
 pub mod pcap;
+pub mod pipeline;
 pub mod policy;
 pub mod reasoning_log_db;
 pub mod registry;
+pub mod report;
 pub mod roadmap;
+pub mod runtime;
 pub mod sadb;
+pub mod scope;
+pub mod secrets;
 pub mod tagged_run;
+pub mod tool_adapter;
 pub mod workflow;
 
 pub use advanced::{
@@ -69,9 +82,12 @@ pub use compat::{
     envelope_to_audit_record, envelope_to_finding, finding_to_envelope,
 };
 pub use coordinator::{Coordinator, ExecutionPlan, ScanTask};
+pub use correlation::correlate;
 pub use engagement_config::{
     EngagementConfigError, load_engagement_config, parse_engagement_config,
 };
+pub use engagement_context::{Endpoint, EngagementContext, Host, Service};
+pub use evidence::{EvidenceError, EvidenceRecord, append_evidence, capture, load_evidence};
 pub use execution::{
     DEFAULT_TIMEOUT, TaskExecutionOutcome, ToolExecutionError, ToolExecutionReport, execute_plan,
     run_external_tool, run_external_tool_with_default_timeout,
@@ -82,6 +98,9 @@ pub use governance::{AuditLedger, AuditRecord, Role};
 pub use integrity::{IntegrityManifest, IntegrityStatus, verify};
 pub use intensity_guard::{IntensityAdvisory, advise};
 pub use language_model::{LanguageModel, NeuralLanguageModel};
+pub use lm_eval::{
+    CoverageEval, GenerationEval, LmEvalReport, PerplexityEval, RoutingEval, evaluate,
+};
 pub use local_analyzers::{
     BinwalkReport, CarvedFile, EntropyRegion, FeatureGroup, FeatureReport, ForemostReport,
     HashdeepReport, HashedFile, SignatureHit, run_binwalk, run_bulk_extractor, run_foremost,
@@ -95,15 +114,31 @@ pub use model::{
 };
 pub use network_policy::NetworkMode;
 pub use nlu::{Intent, Interpretation, interpret};
+pub use observability::{
+    CollectingSink, EngagementEvent, EventSink, NullSink, ProgressSummary, WriterSink,
+};
 pub use offensive::*;
+pub use orchestrator::{OrchestrationSchedule, OrchestrationStep, ToolOrchestrator};
 pub use pcap::{CaptureTimestamp, ProtocolCounts, WiresharkReport, run_wireshark};
+pub use pipeline::{
+    EngagementReport, StageOutcome, record_report_artifacts, run_engagement_pipeline,
+};
 pub use policy::{AuthorizationError, AuthorizationOutcome, PolicyEngine};
 pub use registry::{
     CapabilityRegistry, ExecutionClass, SpecialistCapability, ToolDefinition, ToolchainPack,
-    ToolchainPackRegistry, UseCase,
+    ToolchainPackRegistry, UseCase, cataloged_tool_names, classify_execution,
+};
+pub use report::{
+    ReportInputs, SeverityRollup, render_json as render_report_json, render_markdown, render_sarif,
 };
 pub use roadmap::{ROADMAP_PHASES, RoadmapPhase};
+pub use runtime::{ExecutionRuntime, RunInputs, RuntimeConfig};
+pub use scope::{ScopePolicy, ScopeViolation};
+pub use secrets::{Secret, SecretError, SecretStore};
 pub use tagged_run::{TaggedTestRun, TestEnvironment, TestRunReport};
+pub use tool_adapter::{
+    AdapterRegistry, InvocationContext, OutputChannel, OutputFormat, ToolAdapter, ToolInvocation,
+};
 pub use workflow::WorkflowStage;
 
 #[cfg(test)]

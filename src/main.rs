@@ -36,6 +36,8 @@ fn main() -> ExitCode {
         Some("--view-calibration-db") => view_calibration_db_command(&mut arguments),
         Some("--view-reasoning-log-db") => view_reasoning_log_db_command(&mut arguments),
         Some("--schedule-retest") => schedule_retest_command(&mut arguments),
+        Some("--report") => report_command(&mut arguments),
+        Some("--lm-eval") => lm_eval_command(),
         Some("--llm-generate") => llm_generate_command(&mut arguments),
         Some("--llm-perplexity") => llm_perplexity_command(&mut arguments),
         Some("--ask") => ask_command(&assets, &mut arguments),
@@ -53,11 +55,7 @@ fn main() -> ExitCode {
         Some("--analyze-passwd") => analyze_passwd_command(&mut arguments),
         Some("--analyze-sudoers") => analyze_sudoers_command(&mut arguments),
         Some("--analyze-keys") => analyze_keys_command(&mut arguments),
-        Some("--active-scan") => active_scan_command(&mut arguments),
-        Some("--tcp-scan-parallel") => tcp_scan_parallel_command(&mut arguments),
-        Some("--dir-enum") => dir_enum_command(&mut arguments),
-        Some("--scan-supply-chain") => scan_supply_chain_command(&mut arguments),
-        Some("--scan-cloud") => scan_cloud_command(&mut arguments),
+        Some("--listen") => listen_command(&mut arguments),
         Some(command) => {
             eprintln!("unknown command: {command}");
             ExitCode::from(2)
@@ -408,11 +406,8 @@ fn scan_prior_findings(
         return Vec::new();
     }
     let model = security_agent::NeuralLanguageModel::bundled();
-    security_agent::scan_findings(
-        prior_findings,
-        &model,
-        security_agent::DEFAULT_ANOMALY_THRESHOLD,
-    )
+    let threshold = model.anomaly_threshold();
+    security_agent::scan_findings(prior_findings, &model, threshold)
 }
 
 /// The parsed optional flags of a `--plan-scan` invocation, in the order they
@@ -759,6 +754,12 @@ fn plan_scan_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
     match plan_scan(arguments) {
         Ok((plan, cognitive_output, outcomes, findings)) => {
             print!("{plan}");
+            // The orchestrated schedule shows the deterministic,
+            // least-invasive-first order execution will follow (and that
+            // `--execute` actually runs), deduplicated per (target, tool).
+            let schedule = security_agent::ToolOrchestrator::new().schedule(&plan);
+            println!();
+            print!("{schedule}");
             if let Some((assessment, deliberation, anomalies)) = cognitive_output {
                 println!();
                 print!("{assessment}");
@@ -946,6 +947,24 @@ fn llm_generate_command(arguments: &mut impl Iterator<Item = String>) -> ExitCod
     ExitCode::SUCCESS
 }
 
+/// Runs the held-out evaluation of the built-in language model and prints
+/// the report (`--lm-eval`). Measures the model's three production jobs —
+/// perplexity-based anomaly discrimination, intent routing, and generation —
+/// against fixed quality floors, plus a vocabulary-coverage diagnostic.
+/// Exits non-zero when a gated floor is not met, so the command doubles as a
+/// regression check outside the test suite.
+fn lm_eval_command() -> ExitCode {
+    let assets = security_agent::LocalAgentAssets::bundled();
+    let model = security_agent::NeuralLanguageModel::bundled();
+    let report = security_agent::evaluate(&assets, &model);
+    print!("{}", report.summary());
+    if report.passes() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
 /// Scores how surprising text is to the built-in language model
 /// (`--llm-perplexity <text words...>`). Lower perplexity means the text
 /// reads more like the security-domain corpus the model learned.
@@ -1078,12 +1097,11 @@ fn ask_anomaly(model: &security_agent::NeuralLanguageModel, text: Option<&str>) 
         return ExitCode::SUCCESS;
     }
     let perplexity = model.perplexity(text);
-    let verdict =
-        if !perplexity.is_finite() || perplexity >= security_agent::DEFAULT_ANOMALY_THRESHOLD {
-            "ANOMALOUS (out-of-domain)"
-        } else {
-            "looks in-domain"
-        };
+    let verdict = if !perplexity.is_finite() || perplexity >= model.anomaly_threshold() {
+        "ANOMALOUS (out-of-domain)"
+    } else {
+        "looks in-domain"
+    };
     println!();
     if perplexity.is_finite() {
         println!("perplexity={perplexity:.3} — {verdict}");
@@ -1200,79 +1218,21 @@ fn dispatch_tui_choice(
             }
             let _ = llm_perplexity_command(&mut std::iter::once(text));
         }
-        "14" => tui_run_with_prompted_path(lines, "audit database path: ", view_audit_db_command),
-        "15" => {
+        "14" => tui_listen(lines),
+        "15" => tui_run_with_prompted_path(lines, "audit database path: ", view_audit_db_command),
+        "16" => {
             tui_run_with_prompted_path(lines, "findings database path: ", view_findings_db_command);
         }
-        "16" => tui_run_with_prompted_path(
+        "17" => tui_run_with_prompted_path(
             lines,
             "calibration database path: ",
             view_calibration_db_command,
         ),
-        "17" => tui_run_with_prompted_path(
+        "18" => tui_run_with_prompted_path(
             lines,
             "reasoning log database path: ",
             view_reasoning_log_db_command,
         ),
-        "18" => {
-            let Some(url) = tui_prompt(lines, "target URL: ") else {
-                return;
-            };
-            if url.trim().is_empty() {
-                println!("cancelled.");
-                return;
-            }
-            let _ = active_scan_command(&mut std::iter::once(url));
-        }
-        "19" => {
-            let Some(target) = tui_prompt(lines, "target host: ") else {
-                return;
-            };
-            if target.trim().is_empty() {
-                println!("cancelled.");
-                return;
-            }
-            let Some(ports) = tui_prompt(lines, "ports (e.g. 22,80,443): ") else {
-                return;
-            };
-            if ports.trim().is_empty() {
-                println!("cancelled.");
-                return;
-            }
-            let _ = tcp_scan_parallel_command(
-                &mut [target, ports].into_iter().map(String::from),
-            );
-        }
-        "20" => {
-            let Some(url) = tui_prompt(lines, "base URL: ") else {
-                return;
-            };
-            if url.trim().is_empty() {
-                println!("cancelled.");
-                return;
-            }
-            let _ = dir_enum_command(&mut std::iter::once(url));
-        }
-        "21" => {
-            let Some(path) = tui_prompt(lines, "manifest file path: ") else {
-                return;
-            };
-            if path.trim().is_empty() {
-                println!("cancelled.");
-                return;
-            }
-            let _ = scan_supply_chain_command(&mut std::iter::once(path));
-        }
-        "22" => {
-            let Some(path) = tui_prompt(lines, "cloud policy JSON file: ") else {
-                return;
-            };
-            if path.trim().is_empty() {
-                println!("cancelled.");
-                return;
-            }
-            let _ = scan_cloud_command(&mut std::iter::once(path));
-        }
         // The chat bar: anything else typed is a plain-English instruction,
         // routed through the same grounded router as `--ask`. Passed as one
         // already-trimmed line (not split into words) — `ask_command` joins
@@ -1532,6 +1492,26 @@ fn tui_record_findings(lines: &mut impl Iterator<Item = io::Result<String>>) {
     let _ = record_findings_command(&mut vec![dest, src].into_iter());
 }
 
+fn tui_listen(lines: &mut impl Iterator<Item = io::Result<String>>) {
+    let Some(port_str) = tui_prompt(lines, "port to listen on: ") else {
+        return;
+    };
+    let port_str = port_str.trim().to_string();
+    if port_str.is_empty() {
+        println!("cancelled.");
+        return;
+    }
+    let max_str = tui_prompt(lines, "max connections (empty for unlimited): ");
+    let mut args = vec!["--listen".to_string(), port_str];
+    if let Some(max) = max_str {
+        let max = max.trim().to_string();
+        if !max.is_empty() {
+            args.push(max);
+        }
+    }
+    let _ = listen_command(&mut args.into_iter());
+}
+
 fn tui_banner() -> String {
     "Security-Agent — Interactive Terminal UI\n\
      =========================================\n\
@@ -1552,11 +1532,9 @@ fn tui_menu() -> String {
      [7]  Run a real external tool    [8]  Plan a scan (engagement config)\n\
      [9]  Record findings (merge)     [10] View audit log\n\
      [11] Schedule retest             [12] Generate text (LLM)\n\
-     [13] Score text for anomaly (LLM) [14] View audit database\n\
-     [15] View findings database      [16] View calibration database\n\
-     [17] View reasoning log database [18] Active web scan\n\
-     [19] Parallel TCP scan           [20] Directory enumeration\n\
-     [21] Supply chain analysis       [22] Cloud security analysis\n\
+     [13] Score text for anomaly (LLM) [14] Reverse shell listener\n\
+     [15] View audit database          [16] View findings database\n\
+     [17] View calibration database    [18] View reasoning log database\n\
      [0]  Help / full capability summary          [q] Quit"
         .to_string()
 }
@@ -1646,34 +1624,14 @@ const CAPABILITY_ROWS: &[(&str, &str, &str)] = &[
         "not routed through the chat bar; use the menu or CLI",
     ),
     (
+        "Start reverse shell listener",
+        "--listen <port> [max-connections] [bind-address]",
+        "not routed through the chat bar; use the menu or CLI",
+    ),
+    (
         "Plain-English router",
         "--ask <instruction>",
         "any of the above, in your own words",
-    ),
-    (
-        "Active web scan",
-        "--active-scan <url>",
-        "\"scan http://example.com/page?id=1 for vulnerabilities\"",
-    ),
-    (
-        "Parallel TCP port scan",
-        "--tcp-scan-parallel <target> <ports>",
-        "\"scan 192.168.1.1 ports 22,80,443 in parallel\"",
-    ),
-    (
-        "Directory enumeration",
-        "--dir-enum <url>",
-        "\"enumerate http://example.com for hidden paths\"",
-    ),
-    (
-        "Supply chain analysis",
-        "--scan-supply-chain <file>",
-        "\"check package.json for vulnerable dependencies\"",
-    ),
-    (
-        "Cloud security analysis",
-        "--scan-cloud <file> [type]",
-        "\"analyze my AWS IAM policy for misconfigurations\"",
     ),
 ];
 
@@ -1792,6 +1750,81 @@ fn schedule_retest_command(arguments: &mut impl Iterator<Item = String>) -> Exit
             ExitCode::from(1)
         }
     }
+}
+
+/// Renders an engagement report from a persisted findings log.
+///
+/// `--report <findings-log> [--format sarif|json|markdown] [--evidence
+/// <path>] [--engagement <id>]`. Loads the findings, correlates them
+/// (dedup + cross-tool corroboration), optionally attaches an evidence log,
+/// and writes the chosen deliverable to stdout (Markdown by default). See
+/// [`security_agent::report`].
+fn report_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    let Some(findings_path) = arguments.next() else {
+        eprintln!(
+            "usage: --report <findings-log> [--format sarif|json|markdown] \
+             [--evidence <path>] [--engagement <id>]"
+        );
+        return ExitCode::from(2);
+    };
+
+    let mut format = "markdown".to_string();
+    let mut evidence_path: Option<String> = None;
+    let mut engagement_id = "engagement".to_string();
+    while let Some(flag) = arguments.next() {
+        let Some(value) = arguments.next() else {
+            eprintln!("{flag} requires a value");
+            return ExitCode::from(2);
+        };
+        match flag.as_str() {
+            "--format" => format = value,
+            "--evidence" => evidence_path = Some(value),
+            "--engagement" => engagement_id = value,
+            other => {
+                eprintln!("unknown --report option: {other}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    let findings = match security_agent::load_findings(Path::new(&findings_path)) {
+        Ok(findings) => findings,
+        Err(error) => {
+            eprintln!("failed to read findings log: {error}");
+            return ExitCode::from(1);
+        }
+    };
+    let correlated = security_agent::correlate(&findings);
+
+    let evidence = match &evidence_path {
+        Some(path) => match security_agent::load_evidence(Path::new(path)) {
+            Ok(records) => records,
+            Err(error) => {
+                eprintln!("failed to read evidence log: {error}");
+                return ExitCode::from(1);
+            }
+        },
+        None => Vec::new(),
+    };
+
+    let inputs = security_agent::ReportInputs {
+        engagement_id: &engagement_id,
+        findings: &correlated,
+        evidence: &evidence,
+        generated_at_epoch: current_epoch_seconds(),
+    };
+
+    let output = match format.as_str() {
+        "sarif" => security_agent::render_sarif(&correlated),
+        "json" => security_agent::render_report_json(&inputs),
+        "markdown" | "md" => security_agent::render_markdown(&inputs),
+        other => {
+            eprintln!("unknown format: {other} (want sarif|json|markdown)");
+            return ExitCode::from(2);
+        }
+    };
+    print!("{output}");
+    ExitCode::SUCCESS
 }
 
 /// Read-only view of a persisted `.sadb` audit database
@@ -2039,7 +2072,8 @@ fn password_strength_command(arguments: &mut impl Iterator<Item = String>) -> Ex
         eprintln!("unexpected argument: {extra}");
         return ExitCode::from(2);
     }
-    let analysis = security_agent::offensive::credential_attack::analyze_password_strength(&password);
+    let analysis =
+        security_agent::offensive::credential_attack::analyze_password_strength(&password);
     println!("{analysis}");
     ExitCode::SUCCESS
 }
@@ -2103,12 +2137,11 @@ fn gen_shell_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
         eprintln!("unexpected argument: {extra}");
         return ExitCode::from(2);
     }
-    let lport: u16 = match lport_str.parse() {
-        Ok(p) => p,
-        Err(_) => {
-            eprintln!("invalid lport: {lport_str}");
-            return ExitCode::from(2);
-        }
+    let lport: u16 = if let Ok(p) = lport_str.parse() {
+        p
+    } else {
+        eprintln!("invalid lport: {lport_str}");
+        return ExitCode::from(2);
     };
 
     let st = match shell_type.as_str() {
@@ -2155,7 +2188,7 @@ fn analyze_payload_command(arguments: &mut impl Iterator<Item = String>) -> Exit
     ExitCode::SUCCESS
 }
 
-/// `--obfuscate-ps <command>` — apply PowerShell obfuscation techniques.
+/// `--obfuscate-ps <command>` — apply `PowerShell` obfuscation techniques.
 fn obfuscate_ps_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
     let Some(command) = arguments.next() else {
         eprintln!("usage: --obfuscate-ps <command>");
@@ -2180,20 +2213,67 @@ fn gen_decoys_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode 
         eprintln!("usage: --gen-decoys <real-ip> [count]");
         return ExitCode::from(2);
     };
-    let count: usize = arguments
-        .next()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(5);
+    let count: usize = arguments.next().and_then(|s| s.parse().ok()).unwrap_or(5);
     let decoys = security_agent::offensive::evasion::generate_decoys(&real_ip, count);
     println!("{decoys}");
     ExitCode::SUCCESS
 }
 
+/// `--listen <port> [max-connections] [bind-address]` — start a reverse shell listener.
+fn listen_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    use security_agent::offensive::listener::{ListenerConfig, start_listener};
+
+    let Some(port_str) = arguments.next() else {
+        eprintln!("usage: --listen <port> [max-connections] [bind-address]");
+        eprintln!();
+        eprintln!("Starts a TCP reverse shell listener that catches inbound connections");
+        eprintln!("from targets where a payload (generated by --gen-shell) has been executed.");
+        eprintln!();
+        eprintln!("examples:");
+        eprintln!(
+            "  --listen 4444                        # listen on port 4444, unlimited connections"
+        );
+        eprintln!("  --listen 4444 5                      # accept at most 5 connections");
+        eprintln!("  --listen 4444 5 192.168.1.100         # bind to a specific interface");
+        eprintln!();
+        eprintln!("requires --allow-network (opens a listening socket)");
+        return ExitCode::from(2);
+    };
+    let port: u16 = if let Ok(p) = port_str.parse() {
+        p
+    } else {
+        eprintln!("invalid port: {port_str}");
+        return ExitCode::from(2);
+    };
+
+    let max_conn: Option<u32> = arguments.next().and_then(|s| s.parse().ok());
+
+    let bind_addr = arguments.next().unwrap_or_else(|| "0.0.0.0".to_string());
+
+    if let Some(extra) = arguments.next() {
+        eprintln!("unexpected argument: {extra}");
+        return ExitCode::from(2);
+    }
+
+    let config = ListenerConfig {
+        bind_address: bind_addr,
+        port,
+        max_connections: max_conn,
+        io_timeout: Some(std::time::Duration::from_secs(300)),
+    };
+
+    match start_listener(&config) {
+        Ok(_summary) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("{e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
 /// `--analyze-handshake <eapol-hex...>` — analyze EAPOL frames for WPA handshake completeness.
 fn analyze_handshake_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
-    let frames: Vec<Vec<u8>> = arguments
-        .map(|hex_str| hex_to_bytes(&hex_str))
-        .collect();
+    let frames: Vec<Vec<u8>> = arguments.map(|hex_str| hex_to_bytes(&hex_str)).collect();
     if frames.is_empty() {
         eprintln!("usage: --analyze-handshake <eapol-hex-frame1> [frame2] ...");
         eprintln!("pass raw EAPOL frames as hex strings");
@@ -2208,7 +2288,10 @@ fn hex_to_bytes(hex: &str) -> Vec<u8> {
     let hex = hex.trim().trim_start_matches("0x");
     (0..hex.len())
         .step_by(2)
-        .filter_map(|i| hex.get(i..i + 2).and_then(|h| u8::from_str_radix(h, 16).ok()))
+        .filter_map(|i| {
+            hex.get(i..i + 2)
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+        })
         .collect()
 }
 
@@ -2246,7 +2329,11 @@ fn audit_wifi_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode 
         eprintln!("unexpected argument: {extra}");
         return ExitCode::from(2);
     }
-    let audit = security_agent::offensive::wireless::audit_wireless_security(&essid, &security, &encryption);
+    let audit = security_agent::offensive::wireless::audit_wireless_security(
+        &essid,
+        &security,
+        &encryption,
+    );
     println!("{audit}");
     ExitCode::SUCCESS
 }
@@ -2307,7 +2394,7 @@ fn analyze_sudoers_command(arguments: &mut impl Iterator<Item = String>) -> Exit
     ExitCode::SUCCESS
 }
 
-/// `--analyze-keys <content>` — analyze SSH authorized_keys for lateral movement indicators.
+/// `--analyze-keys <content>` — analyze SSH `authorized_keys` for lateral movement indicators.
 fn analyze_keys_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
     let Some(path_or_content) = arguments.next() else {
         eprintln!("usage: --analyze-keys <path-to-authorized_keys-or-content>");
@@ -2331,687 +2418,6 @@ fn analyze_keys_command(arguments: &mut impl Iterator<Item = String>) -> ExitCod
         for ind in &indicators {
             println!("{ind}");
         }
-    }
-    ExitCode::SUCCESS
-}
-
-/// `--active-scan <url>` — runs a full active web vulnerability scan against a
-/// target URL using the built-in HTTP client. Tests for SQL injection, XSS,
-/// directory traversal, and security header misconfigurations.
-fn active_scan_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
-    let Some(url) = arguments.next() else {
-        eprintln!("usage: --active-scan <url>");
-        eprintln!("example: --active-scan http://example.com/page?id=1");
-        return ExitCode::from(2);
-    };
-    let mut timeout: u64 = 10;
-    while let Some(arg) = arguments.next() {
-        match arg.as_str() {
-            "--timeout" => {
-                let Some(val) = arguments.next() else {
-                    eprintln!("missing value for --timeout");
-                    return ExitCode::from(2);
-                };
-                match val.parse::<u64>() {
-                    Ok(t) => timeout = t,
-                    Err(_) => {
-                        eprintln!("invalid timeout value: {val}");
-                        return ExitCode::from(2);
-                    }
-                }
-            }
-            other => {
-                eprintln!("unexpected argument: {other}");
-                return ExitCode::from(2);
-            }
-        }
-    }
-
-    eprintln!("Starting active scan against {url} (timeout: {timeout}s)...");
-    let config = security_agent::ActiveScanConfig {
-        target_url: url,
-        timeout_secs: timeout,
-        test_sqli: true,
-        test_xss: true,
-        test_headers: true,
-        test_traversal: true,
-    };
-    match security_agent::run_active_scan(&config) {
-        Ok(result) => {
-            println!("Active Scan Report");
-            println!("==================");
-            println!("Target: {}", result.url);
-            println!();
-
-            if !result.header_findings.is_empty() {
-                println!("Security Header Issues ({})", result.header_findings.len());
-                println!("------------------------");
-                for h in &result.header_findings {
-                    println!("  [{}] {}", h.severity, h.finding);
-                }
-                println!();
-            }
-
-            if !result.sqli_findings.is_empty() {
-                println!("SQL Injection Findings ({})", result.sqli_findings.len());
-                println!("-----------------------");
-                for s in &result.sqli_findings {
-                    println!("  {}", s);
-                }
-                println!();
-            }
-
-            if !result.xss_findings.is_empty() {
-                println!("XSS Findings ({})", result.xss_findings.len());
-                println!("--------------");
-                for x in &result.xss_findings {
-                    println!("  {}", x);
-                }
-                println!();
-            }
-
-            if !result.traversal_findings.is_empty() {
-                println!(
-                    "Directory Traversal Findings ({})",
-                    result.traversal_findings.len()
-                );
-                println!("-------------------------------");
-                for t in &result.traversal_findings {
-                    println!("  [{}] {}", t.severity, t.evidence);
-                }
-                println!();
-            }
-
-            if !result.status_disclosure.is_empty() {
-                println!("Information Disclosure");
-                println!("----------------------");
-                for d in &result.status_disclosure {
-                    println!("  {d}");
-                }
-                println!();
-            }
-
-            let total = result.header_findings.len()
-                + result.sqli_findings.len()
-                + result.xss_findings.len()
-                + result.traversal_findings.len()
-                + result.status_disclosure.len();
-            if total == 0 {
-                println!("No issues found.");
-            } else {
-                println!("Total findings: {total}");
-            }
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            eprintln!("Active scan failed: {error}");
-            ExitCode::from(1)
-        }
-    }
-}
-
-/// `--tcp-scan-parallel <target> <ports> [threads]` — runs a parallel TCP port
-/// scan using multiple threads. Ports can be specified as a comma-separated
-/// list (e.g. "22,80,443") or a range (e.g. "1-1024").
-fn tcp_scan_parallel_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
-    let Some(target) = arguments.next() else {
-        eprintln!("usage: --tcp-scan-parallel <target> <ports> [threads]");
-        eprintln!("  ports: comma-separated list or range (e.g. 22,80,443 or 1-1024)");
-        eprintln!("  threads: number of threads (default: 64)");
-        eprintln!("example: --tcp-scan-parallel 192.168.1.1 22,80,443,8080 32");
-        return ExitCode::from(2);
-    };
-    let Some(ports_str) = arguments.next() else {
-        eprintln!("missing ports argument");
-        return ExitCode::from(2);
-    };
-    let mut thread_count: usize = 64;
-    let mut timeout_ms: u64 = 2000;
-    let mut grab_banners = true;
-    while let Some(arg) = arguments.next() {
-        match arg.as_str() {
-            "--threads" => {
-                let Some(val) = arguments.next() else {
-                    eprintln!("missing value for --threads");
-                    return ExitCode::from(2);
-                };
-                match val.parse::<usize>() {
-                    Ok(t) => thread_count = t,
-                    Err(_) => {
-                        eprintln!("invalid thread count: {val}");
-                        return ExitCode::from(2);
-                    }
-                }
-            }
-            "--timeout-ms" => {
-                let Some(val) = arguments.next() else {
-                    eprintln!("missing value for --timeout-ms");
-                    return ExitCode::from(2);
-                };
-                match val.parse::<u64>() {
-                    Ok(t) => timeout_ms = t,
-                    Err(_) => {
-                        eprintln!("invalid timeout: {val}");
-                        return ExitCode::from(2);
-                    }
-                }
-            }
-            "--no-banner" => grab_banners = false,
-            other => {
-                eprintln!("unexpected argument: {other}");
-                return ExitCode::from(2);
-            }
-        }
-    }
-
-    // Parse ports from comma-separated or range notation
-    let ports = match parse_port_spec(&ports_str) {
-        Ok(p) => p,
-        Err(msg) => {
-            eprintln!("port parse error: {msg}");
-            return ExitCode::from(2);
-        }
-    };
-
-    eprintln!(
-        "Scanning {} ports on {} with {} threads...",
-        ports.len(),
-        target,
-        thread_count
-    );
-    let report = security_agent::run_tcp_scan_parallel(
-        &target,
-        &ports,
-        timeout_ms,
-        grab_banners,
-        thread_count,
-    );
-    print_port_scan_report(&report);
-    ExitCode::SUCCESS
-}
-
-/// Parses a port specification: comma-separated ("22,80,443") or range
-/// ("1-1024") or mixed ("22,80-90,443").
-fn parse_port_spec(spec: &str) -> Result<Vec<u16>, String> {
-    let mut ports = Vec::new();
-    for part in spec.split(',') {
-        let part = part.trim();
-        if part.contains('-') {
-            let mut range_parts = part.splitn(2, '-');
-            let start: u16 = range_parts
-                .next()
-                .unwrap_or("0")
-                .parse()
-                .map_err(|_| format!("invalid start port in range: {part}"))?;
-            let end: u16 = range_parts
-                .next()
-                .unwrap_or("0")
-                .parse()
-                .map_err(|_| format!("invalid end port in range: {part}"))?;
-            if start > end {
-                return Err(format!("start port {start} > end port {end}"));
-            }
-            for p in start..=end {
-                ports.push(p);
-            }
-        } else {
-            let port: u16 = part
-                .parse()
-                .map_err(|_| format!("invalid port: {part}"))?;
-            ports.push(port);
-        }
-    }
-    if ports.is_empty() {
-        return Err("no ports specified".to_string());
-    }
-    Ok(ports)
-}
-
-/// Prints a port scan report in a human-readable format.
-fn print_port_scan_report(report: &security_agent::PortScanReport) {
-    println!("Parallel TCP Scan Report");
-    println!("========================");
-    println!("Target: {} ({})", report.target, report.target_ip.map(|ip| ip.to_string()).unwrap_or_else(|| "unresolved".to_string()));
-    println!("Scan type: {}", report.scan_type);
-    println!("Ports scanned: {}", report.total_ports_scanned);
-    println!("Scan time: {}ms", report.scan_duration_ms);
-    println!();
-
-    if !report.open_ports.is_empty() {
-        println!("Open Ports ({})", report.open_ports.len());
-        println!("-------------");
-        for pr in &report.open_ports {
-            let banner = pr
-                .banner
-                .as_deref()
-                .map(|b| format!("  [{}]", b.chars().take(80).collect::<String>()))
-                .unwrap_or_default();
-            let service = pr
-                .service
-                .as_deref()
-                .unwrap_or("unknown");
-            println!("  {}/tcp  open  {service}{banner}", pr.port);
-        }
-        println!();
-    }
-
-    if !report.services.is_empty() {
-        println!("Service Enumeration ({})", report.services.len());
-        println!("---------------------");
-        for svc in &report.services {
-            println!(
-                "  {}/tcp  {}  {}",
-                svc.port,
-                svc.name,
-                if svc.extra.is_empty() {
-                    String::new()
-                } else {
-                    format!("({})", svc.extra)
-                }
-            );
-        }
-        println!();
-    }
-
-    println!(
-        "Closed: {}  Filtered: {}  Timed out: {}",
-        report.closed_ports, report.filtered_ports, report.timeout_ports
-    );
-
-    if let Some(ref os) = report.os_fingerprint {
-        println!("OS fingerprint: {} ({}% confidence)", os.os_name, os.confidence);
-        if !os.details.is_empty() {
-            println!("  Details: {}", os.details);
-        }
-    }
-}
-
-/// `--dir-enum <url>` — enumerates common paths on a web server to discover
-/// hidden endpoints, admin panels, configuration files, and backup files.
-fn dir_enum_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
-    let Some(url) = arguments.next() else {
-        eprintln!("usage: --dir-enum <base-url>");
-        eprintln!("example: --dir-enum http://example.com");
-        return ExitCode::from(2);
-    };
-    let mut timeout: u64 = 5;
-    while let Some(arg) = arguments.next() {
-        match arg.as_str() {
-            "--timeout" => {
-                let Some(val) = arguments.next() else {
-                    eprintln!("missing value for --timeout");
-                    return ExitCode::from(2);
-                };
-                match val.parse::<u64>() {
-                    Ok(t) => timeout = t,
-                    Err(_) => {
-                        eprintln!("invalid timeout value: {val}");
-                        return ExitCode::from(2);
-                    }
-                }
-            }
-            other => {
-                eprintln!("unexpected argument: {other}");
-                return ExitCode::from(2);
-            }
-        }
-    }
-
-    eprintln!("Enumerating directories on {url}...");
-    let results = security_agent::directory_enumeration(&url, timeout);
-    println!("Directory Enumeration Results");
-    println!("============================");
-    println!("Target: {url}");
-    println!("Paths checked: 50");
-    println!();
-
-    if results.is_empty() {
-        println!("No non-standard paths found.");
-    } else {
-        println!("Discovered Endpoints ({})", results.len());
-        println!("----------------------");
-        for (path, status, body_len) in &results {
-            println!("  {status}  {path}  ({body_len} bytes)");
-        }
-    }
-    ExitCode::SUCCESS
-}
-
-/// `--scan-supply-chain <file> [type]` — analyzes a dependency manifest file
-/// for vulnerable, outdated, typosquatted, or risky dependencies. Supported
-/// types: package.json, Cargo.toml, requirements.txt, GitHub Actions workflow,
-/// or a lock file (package-lock.json, Cargo.lock, yarn.lock, pnpm-lock.yaml).
-fn scan_supply_chain_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
-    let Some(path) = arguments.next() else {
-        eprintln!("usage: --scan-supply-chain <file> [type]");
-        eprintln!("  types: package.json, Cargo.toml, requirements.txt, github-workflow,");
-        eprintln!("         package-lock.json, Cargo.lock, yarn.lock, pnpm-lock.yaml");
-        eprintln!("  (auto-detected from filename if not specified)");
-        eprintln!("example: --scan-supply-chain ./package.json");
-        return ExitCode::from(2);
-    };
-
-    let content = match fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("failed to read {path}: {e}");
-            return ExitCode::from(1);
-        }
-    };
-
-    // Auto-detect type from filename if not explicitly provided
-    let explicit_type = arguments.next();
-    let file_type = match explicit_type.as_deref() {
-        Some(t) => t.to_string(),
-        None => {
-            let p = std::path::Path::new(&path);
-            let filename = p
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
-            match filename {
-                "package.json" => "package.json".to_string(),
-                "Cargo.toml" => "Cargo.toml".to_string(),
-                "requirements.txt" => "requirements.txt".to_string(),
-                "package-lock.json" | "yarn.lock" | "pnpm-lock.yaml" => {
-                    "lock".to_string()
-                }
-                "Cargo.lock" => "lock".to_string(),
-                f if f.ends_with(".yml") || f.ends_with(".yaml") => "github-workflow".to_string(),
-                _ => {
-                    eprintln!("cannot auto-detect file type for {filename}");
-                    eprintln!("please specify the type explicitly");
-                    return ExitCode::from(2);
-                }
-            }
-        }
-    };
-
-    println!("Supply Chain Analysis");
-    println!("=====================");
-    println!("File: {path}");
-    println!("Type: {file_type}");
-    println!();
-
-    let mut total_findings = 0;
-
-    match file_type.as_str() {
-        "package.json" => {
-            let findings = security_agent::offensive::supply_chain::analyze_package_json(&content);
-            total_findings = findings.len();
-            if findings.is_empty() {
-                println!("No issues found in package.json.");
-            } else {
-                println!("Dependency Issues ({})", findings.len());
-                println!("------------------");
-                for f in &findings {
-                    println!("  [{}] {}: {}", f.severity, f.package_name, f.description);
-                }
-            }
-            let inv = security_agent::offensive::supply_chain::generate_inventory(&content, "package.json");
-            println!();
-            println!(
-                "Inventory: {} total dependencies across {} ecosystem(s)",
-                inv.total,
-                inv.by_ecosystem.len()
-            );
-        }
-        "Cargo.toml" => {
-            let findings = security_agent::offensive::supply_chain::analyze_cargo_toml(&content);
-            total_findings = findings.len();
-            if findings.is_empty() {
-                println!("No issues found in Cargo.toml.");
-            } else {
-                println!("Dependency Issues ({})", findings.len());
-                println!("------------------");
-                for f in &findings {
-                    println!("  [{}] {}: {}", f.severity, f.package_name, f.description);
-                }
-            }
-            let inv = security_agent::offensive::supply_chain::generate_inventory(&content, "Cargo.toml");
-            println!();
-            println!("Inventory: {} total dependencies", inv.total);
-        }
-        "requirements.txt" => {
-            let findings =
-                security_agent::offensive::supply_chain::analyze_requirements_txt(&content);
-            total_findings = findings.len();
-            if findings.is_empty() {
-                println!("No issues found in requirements.txt.");
-            } else {
-                println!("Dependency Issues ({})", findings.len());
-                println!("------------------");
-                for f in &findings {
-                    println!("  [{}] {}: {}", f.severity, f.package_name, f.description);
-                }
-            }
-            let inv =
-                security_agent::offensive::supply_chain::generate_inventory(&content, "requirements.txt");
-            println!();
-            println!("Inventory: {} total dependencies", inv.total);
-        }
-        "github-workflow" => {
-            let findings =
-                security_agent::offensive::supply_chain::analyze_github_workflow(&content);
-            total_findings = findings.len();
-            if findings.is_empty() {
-                println!("No issues found in workflow file.");
-            } else {
-                println!("CI/CD Pipeline Issues ({})", findings.len());
-                println!("----------------------");
-                for f in &findings {
-                    println!(
-                        "  [{}] {} — {}",
-                        f.severity, f.misconfiguration, f.remediation
-                    );
-                }
-            }
-        }
-        "lock" => {
-            let filename = std::path::Path::new(&path)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
-            let lock_type = match filename {
-                "Cargo.lock" => "cargo.lock",
-                "yarn.lock" => "yarn.lock",
-                "pnpm-lock.yaml" => "pnpm.lock",
-                _ => "npm.lock",
-            };
-            let integrity =
-                security_agent::offensive::supply_chain::analyze_lock_integrity(&content, lock_type);
-            println!("Lock File Integrity: {}", integrity.integrity_status);
-            println!("  Total dependencies: {}", integrity.total_deps);
-            println!("  Unchecked dependencies: {}", integrity.unchecked_deps);
-            if integrity.hash_mismatches > 0 {
-                println!("  Hash mismatches: {}", integrity.hash_mismatches);
-                total_findings = integrity.hash_mismatches;
-            }
-            if integrity.unchecked_deps > 0 {
-                total_findings += integrity.unchecked_deps;
-            }
-        }
-        other => {
-            eprintln!("unsupported file type: {other}");
-            return ExitCode::from(2);
-        }
-    }
-
-    println!();
-    println!("Total findings: {total_findings}");
-    ExitCode::SUCCESS
-}
-
-/// `--scan-cloud <file> [type]` — analyzes cloud security configurations
-/// for AWS, GCP, or Azure misconfigurations. Input is a JSON file containing
-/// IAM policies, S3 bucket policies, security groups, GCP IAM, Azure role
-/// assignments, or NSG rules. Type auto-detected from content structure.
-fn scan_cloud_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
-    let Some(path) = arguments.next() else {
-        eprintln!("usage: --scan-cloud <json-file> [type]");
-        eprintln!("  types: aws-iam, aws-s3, aws-sg, gcp-iam, gcp-fw, azure-role, azure-nsg");
-        eprintln!("  (auto-detected from JSON structure if not specified)");
-        eprintln!("example: --scan-cloud iam-policy.json aws-iam");
-        return ExitCode::from(2);
-    };
-
-    let content = match fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("failed to read {path}: {e}");
-            return ExitCode::from(1);
-        }
-    };
-
-    let cloud_type = arguments.next();
-
-    println!("Cloud Security Analysis");
-    println!("=======================");
-    println!("File: {path}");
-    println!();
-
-    let report = match cloud_type.as_deref() {
-        Some("aws-iam") => {
-            println!("Type: AWS IAM Policy");
-            let mut r = security_agent::CloudSecurityReport::new();
-            r.add_aws(security_agent::offensive::cloud_security::analyze_iam_policy(&content));
-            r
-        }
-        Some("aws-s3") => {
-            println!("Type: AWS S3 Bucket Policy");
-            let mut r = security_agent::CloudSecurityReport::new();
-            r.add_aws(security_agent::offensive::cloud_security::analyze_s3_policy(&content));
-            r
-        }
-        Some("aws-sg") => {
-            println!("Type: AWS Security Group");
-            let mut r = security_agent::CloudSecurityReport::new();
-            r.add_aws(security_agent::offensive::cloud_security::analyze_security_group(&content));
-            r
-        }
-        Some("gcp-iam") => {
-            println!("Type: GCP IAM Policy");
-            let mut r = security_agent::CloudSecurityReport::new();
-            r.add_gcp(security_agent::offensive::cloud_security::analyze_gcp_iam(&content));
-            r
-        }
-        Some("gcp-fw") => {
-            println!("Type: GCP Firewall Rules");
-            let mut r = security_agent::CloudSecurityReport::new();
-            r.add_gcp(security_agent::offensive::cloud_security::analyze_gcp_firewall(&content));
-            r
-        }
-        Some("azure-role") => {
-            println!("Type: Azure Role Assignment");
-            let mut r = security_agent::CloudSecurityReport::new();
-            r.add_azure(security_agent::offensive::cloud_security::analyze_azure_role(&content));
-            r
-        }
-        Some("azure-nsg") => {
-            println!("Type: Azure Network Security Group");
-            let mut r = security_agent::CloudSecurityReport::new();
-            r.add_azure(security_agent::offensive::cloud_security::analyze_azure_nsg(&content));
-            r
-        }
-        None => {
-            // Auto-detect from content structure
-            println!("Type: auto-detected");
-            let has_statement = content.contains("\"Statement\"");
-            let has_principal = content.contains("\"Principal\"");
-            let has_bindings = content.contains("\"bindings\"");
-            let has_role_def = content.contains("\"roleDefinitionId\"");
-            let has_nsg = content.contains("\"securityRules\"") || content.contains("\"properties\"");
-
-            if has_role_def {
-                println!("  (detected: Azure Role Assignment)");
-                let mut r = security_agent::CloudSecurityReport::new();
-                r.add_azure(security_agent::offensive::cloud_security::analyze_azure_role(&content));
-                r
-            } else if has_nsg && !has_statement {
-                println!("  (detected: Azure NSG)");
-                let mut r = security_agent::CloudSecurityReport::new();
-                r.add_azure(security_agent::offensive::cloud_security::analyze_azure_nsg(&content));
-                r
-            } else if has_bindings {
-                println!("  (detected: GCP IAM)");
-                let mut r = security_agent::CloudSecurityReport::new();
-                r.add_gcp(security_agent::offensive::cloud_security::analyze_gcp_iam(&content));
-                r
-            } else if has_statement && has_principal {
-                println!("  (detected: AWS S3 Bucket Policy)");
-                let mut r = security_agent::CloudSecurityReport::new();
-                r.add_aws(security_agent::offensive::cloud_security::analyze_s3_policy(&content));
-                r
-            } else if has_statement {
-                println!("  (detected: AWS IAM Policy)");
-                let mut r = security_agent::CloudSecurityReport::new();
-                r.add_aws(security_agent::offensive::cloud_security::analyze_iam_policy(&content));
-                r
-            } else {
-                eprintln!("could not auto-detect cloud provider from content");
-                eprintln!("please specify the type explicitly");
-                return ExitCode::from(2);
-            }
-        }
-        Some(other) => {
-            eprintln!("unknown cloud type: {other}");
-            return ExitCode::from(2);
-        }
-    };
-
-    println!();
-
-    if !report.aws_findings.is_empty() {
-        println!("AWS Findings ({})", report.aws_findings.len());
-        println!("--------------");
-        for f in &report.aws_findings {
-            println!(
-                "  [{}] {} — {} ({})",
-                f.severity, f.misconfiguration, f.resource, f.cwe
-            );
-            println!("    Remediation: {}", f.remediation);
-        }
-        println!();
-    }
-
-    if !report.gcp_findings.is_empty() {
-        println!("GCP Findings ({})", report.gcp_findings.len());
-        println!("--------------");
-        for f in &report.gcp_findings {
-            println!(
-                "  [{}] {} — {} ({})",
-                f.severity, f.misconfiguration, f.service, f.cwe
-            );
-            println!("    Remediation: {}", f.remediation);
-        }
-        println!();
-    }
-
-    if !report.azure_findings.is_empty() {
-        println!("Azure Findings ({})", report.azure_findings.len());
-        println!("----------------");
-        for f in &report.azure_findings {
-            println!(
-                "  [{}] {} ({})",
-                f.severity, f.misconfiguration, f.cwe
-            );
-            println!("    Remediation: {}", f.remediation);
-        }
-        println!();
-    }
-
-    let total = report.total_findings();
-    if total == 0 {
-        println!("No misconfigurations detected.");
-    } else {
-        println!(
-            "Summary: {} Critical, {} High, {} Medium, {} Low — Total: {}",
-            report.total_critical,
-            report.total_high,
-            report.total_medium,
-            report.total_low,
-            total
-        );
     }
     ExitCode::SUCCESS
 }

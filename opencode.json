@@ -1,0 +1,25 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "default_agent": "coder",
+  "instructions": ["ARCHITECTURE.md", "CONTRIBUTING.md", "OPERATING_GUIDE.md"],
+  "skills": {
+    "paths": [".github/skills"]
+  },
+  "agent": {
+    "build": {
+      "description": "Rust build, test, and lint agent for security-agent. Run cargo fmt, clippy, test, and build.",
+      "permission": {
+        "bash": { "cargo *": "allow", "make *": "allow", "./sa *": "allow", "*": "ask" }
+      }
+    },
+    "plan": {
+      "description": "Architecture planning for security-agent scan workflows, module design, and data flow."
+    },
+    "general": {
+      "description": "General-purpose agent with full security-agent project context."
+    },
+    "explore": {
+      "description": "Explore security-agent codebase: find modules, trace call paths, inspect tool catalog and skills."
+    }
+  }
+}

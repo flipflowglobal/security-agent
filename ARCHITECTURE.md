@@ -26,8 +26,9 @@ layer it belongs to.
 │  Findings pipeline         ingest.rs · findings.rs · findings_log.rs ·│
 │                            memory_store.rs · compat.rs                 │
 ├─────────────────────────────────────────────────────────────────────┤
-│  Orchestration & execution coordinator.rs · execution.rs ·            │
-│                            engagement_config.rs · tagged_run.rs        │
+│  Orchestration & execution coordinator.rs · orchestrator.rs ·         │
+│                            execution.rs · engagement_config.rs ·       │
+│                            tagged_run.rs                               │
 ├─────────────────────────────────────────────────────────────────────┤
 │  Local tools (offline)     builtin_tools.rs · local_analyzers.rs ·    │
 │                            pcap.rs · local_assets.rs                   │
@@ -69,15 +70,26 @@ Release packaging:                  scripts/deploy.sh (make deploy)
 | Authz | `src/integrity.rs` | Offline tool-integrity verification vs. manifest | `verify`, `IntegrityStatus` |
 | Authz | `src/intensity_guard.rs` | Non-blocking intensity advisories | `advise` |
 | Authz | `src/network_policy.rs` | Offline-by-default / online-opt-in egress governance | `NetworkMode` |
+| Authz | `src/scope.rs` | Pre-spawn egress scope enforcement (IPv4/CIDR/URL target allow-listing) | `ScopePolicy` |
+| Authz | `src/secrets.rs` | Credential store: redaction-safe secrets, `${secret:NAME}` resolution, output scrubbing | `SecretStore`, `Secret` |
 | Tools | `src/builtin_tools.rs` | Offline substitutes (autopsy, volatility) + SHA-256 | `run_builtin_tool`, `is_builtin_tool` |
 | Tools | `src/local_analyzers.rs` | Forensic substitutes (binwalk, foremost, bulk_extractor, hashdeep) | `run_binwalk`, `run_foremost`, `run_bulk_extractor`, `run_hashdeep` |
 | Tools | `src/pcap.rs` | Offline Wireshark substitute (classic PCAP parser) | `run_wireshark` |
 | Tools | `src/local_assets.rs` | Compiled-in skill/tool catalog + PATH resolution | `LocalAgentAssets` |
 | Exec | `src/coordinator.rs` | Scoped task planning, audit integration | `Coordinator`, `ExecutionPlan` |
-| Exec | `src/execution.rs` | Real external-tool execution, gated by `NetworkMode` | `run_external_tool`, `execute_plan` |
+| Exec | `src/orchestrator.rs` | Orders a plan into a deduplicated, least-invasive-first execution schedule | `ToolOrchestrator`, `OrchestrationSchedule` |
+| Exec | `src/execution.rs` | Real external-tool execution in scheduled order, gated by `NetworkMode` | `run_external_tool`, `execute_plan` |
+| Exec | `src/tool_adapter.rs` | Per-tool invocation model: authorized step + discovered context → concrete `argv`/output format | `AdapterRegistry`, `ToolAdapter`, `ToolInvocation` |
+| Exec | `src/runtime.rs` | Concurrent runtime: class-ordered bounded concurrency, deterministic output, rate limit, cancel, guard, checkpoint/resume | `ExecutionRuntime`, `RuntimeConfig` |
+| Exec | `src/engagement_context.rs` | Discovery blackboard (hosts/services/endpoints) threaded through the pipeline | `EngagementContext` |
+| Exec | `src/pipeline.rs` | Staged, result-driven engagement: discovery feeds later stages | `run_engagement_pipeline`, `EngagementReport` |
+| Exec | `src/observability.rs` | Structured stage/step events, pluggable sinks, progress rollup | `EngagementEvent`, `EventSink`, `ProgressSummary` |
 | Exec | `src/engagement_config.rs` | Zero-dependency engagement-config parser | `load_engagement_config` |
 | Exec | `src/tagged_run.rs` | Tagged test-run metadata for audit correlation | `TaggedTestRun` |
-| Findings | `src/ingest.rs` | Real tool output → scored `Finding`s | `ingest` |
+| Findings | `src/ingest.rs` | Real tool output (semgrep/SARIF/JSONL/nmap-XML) → scored `Finding`s | `ingest` |
+| Findings | `src/correlation.rs` | Dedup + cross-tool correlation of findings, corroboration-boosted confidence | `correlate` |
+| Findings | `src/evidence.rs` | Evidence capture / chain-of-custody (SHA-256 + provenance) | `EvidenceRecord`, `capture` |
+| Findings | `src/report.rs` | Engagement deliverables: SARIF 2.1.0, JSON summary, Markdown report | `render_sarif`, `render_markdown`, `ReportInputs` |
 | Findings | `src/findings_log.rs` | Append-only on-disk findings log (single format) | `append_findings`, `load_findings` |
 | Findings | `src/findings_db.rs` | Same role as `findings_log.rs`, backed by `.sadb` (see Infra) instead of JSON Lines | `append_findings`, `load_findings` |
 | Findings | `src/memory_store.rs` | Folds the findings log into cognitive memory | `load_memory` |
@@ -106,7 +118,11 @@ Coordinator.plan_authorized_scan  ── PolicyEngine.authorize (policy.rs)
         │                              │
         │                              └──▶ AuditLedger (governance.rs) ─▶ audit_log.rs
         ▼
-ExecutionPlan ──▶ execute_plan (execution.rs)
+ExecutionPlan ──▶ ToolOrchestrator.schedule (orchestrator.rs)
+                    │   order: static → active network → exploitation
+                    │   dedup: one run per (target, tool)
+                    ▼
+             OrchestrationSchedule ──▶ execute_plan (execution.rs)
                     │   gate: NetworkMode (network_policy.rs)
                     │   offline → StaticLocalAnalysis only
                     │   online  → + ActiveNetwork / ActiveExploitation (real binaries)

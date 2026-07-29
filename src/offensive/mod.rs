@@ -12,23 +12,38 @@
 //! - **Post-exploitation**: privilege escalation checks, lateral movement helpers
 //! - **Wireless**: WPA handshake analysis, WPS pin calculation, deauth frame crafting
 //! - **Evasion**: payload encoding, obfuscation, fragmentation
+//! - **Cloud security**: AWS/GCP/Azure misconfiguration detection
+//! - **Supply chain**: dependency manifest analysis, typosquatting, CI/CD auditing
+//! - **Listener**: TCP reverse shell listener for catching inbound shells
 
-pub mod recon;
-pub mod web_exploit;
+pub mod cloud_security;
 pub mod credential_attack;
+pub mod evasion;
+pub mod listener;
 pub mod payload_gen;
 pub mod post_exploit;
-pub mod wireless;
-pub mod evasion;
-pub mod cloud_security;
+pub mod recon;
 pub mod supply_chain;
+pub mod web_exploit;
+pub mod wireless;
 
-pub use recon::*;
-pub use web_exploit::*;
+pub use cloud_security::{
+    AwsFinding, AzureFinding, CloudSecurityReport, GcpFinding, analyze_azure_nsg,
+    analyze_azure_role, analyze_gcp_firewall, analyze_gcp_iam, analyze_iam_policy,
+    analyze_s3_policy, analyze_security_group, generate_cloud_report,
+};
 pub use credential_attack::*;
+pub use evasion::*;
+pub use listener::{
+    ListenerConfig, ListenerError, ListenerEvent, ListenerSummary, ShutdownReason, start_listener,
+};
 pub use payload_gen::*;
 pub use post_exploit::*;
+pub use recon::*;
+pub use supply_chain::{
+    CicdFinding, DependencyFinding, DependencyInventory, FindingType, LicenseRisk,
+    LockFileIntegrity, analyze_cargo_toml, analyze_github_workflow, analyze_lock_integrity,
+    analyze_package_json, analyze_requirements_txt, check_license_risk, generate_inventory,
+};
+pub use web_exploit::*;
 pub use wireless::*;
-pub use evasion::*;
-pub use cloud_security::*;
-pub use supply_chain::*;

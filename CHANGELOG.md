@@ -10,6 +10,120 @@ conventions. Releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## [Unreleased]
 
 ### Added
+- **Full catalog adapter coverage: every cataloged tool now has an
+  invocation adapter and is coverage-tested.** The 14 tools with rich
+  behavior keep their hand-written adapters; the remaining ~75 are driven by
+  a declarative `ToolSpec` table (`CATALOG_SPECS`) through a single
+  `SpecAdapter`, each with a realistic non-interactive invocation and a
+  target-placement shape (network host / web URL / local path / no target).
+  `registry::cataloged_tool_names()` exposes the authoritative,
+  deduplicated 89-tool catalog, and two data-driven tests enforce the
+  contract: `every_cataloged_tool_has_a_registered_adapter` (a real adapter,
+  never the fallback, builds a well-formed invocation for each) and
+  `every_cataloged_tool_has_a_bundled_skill` (each has its compiled-in
+  `SKILL.md`). Names outside the catalog still resolve to the conservative
+  fallback.
+- **End-to-end reporting integration tests (Stage 8).** A new
+  `tests/report_e2e.rs` seeds a real findings log through the library, then
+  drives the compiled binary's `--report` command and asserts on the
+  rendered deliverables — SARIF validity and severity levels, Markdown
+  risk-ranking and the attack-path section, JSON summary counts, and clean
+  tolerance of a findings log full of garbage. This covers the full load →
+  correlate → render → print path with real data, complementing the
+  black-box `cli.rs` (which relies only on built-in assets).
+- **`src/observability.rs` — structured engagement observability (Stage 7),
+  emitted live by the runtime.** A typed `EngagementEvent` stream
+  (stage/step started, completed, failed, refused) serializes to
+  deterministic JSON lines and flows to pluggable `EventSink`s — a
+  `WriterSink` for JSON-Lines log aggregation, a `CollectingSink` for tests,
+  or `NullSink`. Sinks are `Sync`, so `ExecutionRuntime` emits from its
+  concurrent workers (wired via `RunInputs::with_events`), giving a live
+  signal of a long run. `ProgressSummary::of` folds a set of outcomes into a
+  one-line status (succeeded / failed / refused), counting a pre-spawn
+  refusal separately from an execution failure.
+- **`src/secrets.rs` + `src/scope.rs` — secrets handling and egress scope
+  enforcement (Stage 6), wired into the runtime.** Authenticated tooling can
+  now be driven safely: `Secret` wraps a credential so it never renders in
+  `Debug`/`Display`, and `SecretStore` resolves named secrets from the
+  environment (`SECAGENT_SECRET_*`) or an on-disk file, substitutes
+  `${secret:NAME}` references in a tool's arguments at spawn time, and
+  redacts any secret value echoed in a tool's output before it is recorded.
+  `ScopePolicy` enforces the authorized egress scope: before a tool spawns,
+  the runtime checks the concrete argv for IPv4 literals, `host:port` pairs,
+  and URL hosts and refuses (`ToolExecutionError::Refused`) any target
+  outside the configured exact hosts / IPv4 CIDR ranges — defense in depth
+  atop `NetworkMode`, with in-house CIDR matching and no DNS. Both are wired
+  into `ExecutionRuntime` via `RunInputs::with_scope` / `with_secrets`, so a
+  run resolves secrets, enforces scope, and scrubs output on every step.
+- **`src/report.rs` — engagement reporting and deliverables (Stage 5).**
+  Renders scored, correlated findings and their evidence into the documents
+  an engagement is judged by: a **SARIF 2.1.0** file for scanners/CI/
+  dashboards, a machine-readable **JSON summary**, and a human **Markdown
+  report** (executive summary, severity rollup, ranked findings with
+  remediation, the attack-path narrative from `advanced.rs`, and the
+  evidence chain-of-custody table). Every renderer is deterministic for a
+  given input — findings ordered by descending risk then id, timestamp
+  supplied by the caller — so a report is byte-identical across runs.
+  Serialization is in-house (an escaping JSON value writer plus an epoch→UTC
+  formatter; no date/JSON dependency). Surfaced end to end via the new
+  `--report <findings-log> [--format sarif|json|markdown] [--evidence
+  <path>] [--engagement <id>]` CLI command, which loads a findings log,
+  correlates it, and writes the chosen deliverable.
+- **Execution/data plane: a real per-tool invocation layer, a concurrent
+  runtime, a result-driven pipeline, and findings hardening.** Four stages
+  built on the merged foundation (`tool_adapter.rs`, `runtime.rs`,
+  `engagement_context.rs`) turn the orchestrated schedule into an actual
+  engagement:
+  - **`src/tool_adapter.rs` (Stage 1)** — a bespoke `ToolAdapter` per
+    cataloged tool (nmap, masscan, nuclei, gobuster, feroxbuster, ffuf,
+    nikto, whatweb, wpscan, subfinder, sqlmap, hydra, semgrep, jadx) that
+    builds a correct, tool-specific `argv` + `OutputFormat` from the
+    authorized step, maps `TestIntensity` onto each tool's aggressiveness
+    knobs, targets discovered endpoints/services from the engagement
+    context, and appends operator overrides last. Un-adapted tools keep the
+    conservative fallback.
+  - **`src/runtime.rs` (Stage 3)** — `ExecutionRuntime` executes a schedule
+    one execution class at a time (a class fully completes before the next
+    starts) with bounded concurrency *within* a class via
+    `std::thread::scope`, returns outcomes in deterministic execution order,
+    and adds rate limiting, an `AtomicBool` cancellation kill-switch, a
+    mid-run authorization guard, and checkpoint/resume.
+  - **`src/pipeline.rs` (Stage 2)** — `run_engagement_pipeline` runs the
+    schedule class-by-class and folds each stage's tool output
+    (nmap/masscan XML → hosts/services, URL/subdomain JSON-lines →
+    endpoints/hosts) into the shared `EngagementContext`, so later stages
+    scan what discovery actually found.
+  - **`src/correlation.rs` + `src/evidence.rs` (Stage 4)** — `correlate`
+    deduplicates findings by normalized identity and boosts confidence on
+    independent cross-tool corroboration; `capture` records a SHA-256 +
+    provenance `EvidenceRecord` per tool run for chain-of-custody. An nmap
+    XML parser was also added to `ingest.rs`.
+
+  All modules are zero-dependency, total/bounded over untrusted tool output,
+  and pass the full `clippy::pedantic` + `clippy::nursery` gate with unit
+  tests.
+- **`src/orchestrator.rs` — a tool orchestrator that turns an
+  `ExecutionPlan` into an ordered, deduplicated `OrchestrationSchedule`.**
+  The coordinator's plan says *what is authorized* but not *what order to
+  run in*, and its per-target tasks can name the same tool for the same
+  target more than once (a target matched by two specialists, overlapping
+  toolchain packs). `ToolOrchestrator::schedule` closes that gap with two
+  guarantees: it orders steps **least-invasive first** — static local
+  analysis before active network before active exploitation, via
+  `registry::classify_execution` (now `pub`, the same name-based classifier
+  the catalog stamps every `ToolDefinition` with) — so read-only work can
+  surface a blocker before any traffic reaches a live target and
+  exploitation is always last; and it schedules each `(target, tool)` pair
+  **exactly once**, keeping its first appearance. Ordering is a stable sort,
+  so ties within a class keep plan order and a schedule is fully
+  deterministic. This is an ordering/dedup layer, not a permission one — the
+  `NetworkMode` egress gate in `src/execution.rs` still decides whether an
+  active step may run at all. `execute_plan` now runs the schedule instead
+  of iterating raw tasks, so real execution follows the safe order and never
+  double-runs a tool against a target; `--plan-scan` prints the resulting
+  `Execution Schedule` alongside the plan. Static-local steps never carry a
+  network address (they operate on files, not targets), mirroring the
+  argument-injection rule execution already applied.
 - **`src/language_model.rs` — a hand-rolled Levenberg-Marquardt refinement
   pass (`lm_refine_attention`) for the self-attention projections.**
   Full-network LM isn't feasible here — it needs a dense `JᵀJ` over every

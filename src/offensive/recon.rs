@@ -3,10 +3,8 @@
 //! reports from local analysis or direct socket operations.
 
 use std::fmt;
-use std::net::{IpAddr, Ipv4Addr, TcpStream, ToSocketAddrs};
 use std::io::Write;
-use std::sync::{Arc, Mutex};
-use std::thread;
+use std::net::{IpAddr, Ipv4Addr, TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
 // ─── TCP Connect Port Scanner ────────────────────────────────────────────────
@@ -78,7 +76,7 @@ impl fmt::Display for PortScanReport {
         if !self.open_ports.is_empty() {
             writeln!(f, "Open Ports")?;
             writeln!(f, "----------")?;
-            writeln!(f, "{:<8} {:<12} {:<20} {}", "PORT", "STATE", "SERVICE", "BANNER")?;
+            writeln!(f, "{:<8} {:<12} {:<20} BANNER", "PORT", "STATE", "SERVICE")?;
             for port in &self.open_ports {
                 let banner = port.banner.as_deref().unwrap_or("-");
                 let service = port.service.as_deref().unwrap_or("unknown");
@@ -132,15 +130,11 @@ pub struct ServiceInfo {
 }
 
 fn truncate(s: &str, max: usize) -> &str {
-    if s.len() <= max {
-        s
-    } else {
-        &s[..max]
-    }
+    if s.len() <= max { s } else { &s[..max] }
 }
 
 /// Well-known port-to-service mapping for fingerprinting.
-fn well_known_service(port: u16) -> Option<&'static str> {
+const fn well_known_service(port: u16) -> Option<&'static str> {
     match port {
         21 => Some("ftp"),
         22 => Some("ssh"),
@@ -176,6 +170,7 @@ fn well_known_service(port: u16) -> Option<&'static str> {
 /// This is a synchronous, blocking scan suitable for authorized testing.
 /// Each connection attempt uses the given timeout. Returns a structured
 /// report with open ports, service detection, and banner grabbing.
+#[must_use]
 pub fn run_tcp_scan(
     target: &str,
     ports: &[u16],
@@ -203,7 +198,7 @@ pub fn run_tcp_scan(
         }
     }
 
-    let scan_duration_ms = start.elapsed().as_millis() as u64;
+    let scan_duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
     // OS fingerprinting based on open ports and banner patterns
     let os_fingerprint = fingerprint_os(&open_ports);
@@ -213,10 +208,7 @@ pub fn run_tcp_scan(
         .iter()
         .map(|pr| ServiceInfo {
             port: pr.port,
-            name: pr
-                .service
-                .clone()
-                .unwrap_or_else(|| "unknown".to_string()),
+            name: pr.service.clone().unwrap_or_else(|| "unknown".to_string()),
             version: extract_version(pr.banner.as_deref()),
             extra: pr
                 .banner
@@ -243,118 +235,16 @@ pub fn run_tcp_scan(
     }
 }
 
-/// Runs a parallel TCP port scan using multiple threads for significantly
-/// faster scanning of large port ranges. Uses a configurable thread count
-/// (default: 64 threads) and a shared work queue.
-pub fn run_tcp_scan_parallel(
-    target: &str,
-    ports: &[u16],
-    timeout_ms: u64,
-    grab_banners: bool,
-    thread_count: usize,
-) -> PortScanReport {
-    let timeout = Duration::from_millis(timeout_ms);
-    let start = Instant::now();
-
-    let target_ip = resolve_target(target);
-    let target = Arc::new(target.to_string());
-
-    let results: Arc<Mutex<Vec<PortResult>>> = Arc::new(Mutex::new(Vec::new()));
-    let closed: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
-    let filtered: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
-    let timed_out: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
-
-    // Split ports into chunks for each thread
-    let chunk_size = (ports.len() / thread_count.max(1)).max(1);
-    let mut handles = Vec::new();
-
-    for chunk in ports.chunks(chunk_size) {
-        let chunk = chunk.to_vec();
-        let target = Arc::clone(&target);
-        let results = Arc::clone(&results);
-        let closed = Arc::clone(&closed);
-        let filtered = Arc::clone(&filtered);
-        let timed_out = Arc::clone(&timed_out);
-
-        handles.push(thread::spawn(move || {
-            for &port in &chunk {
-                let result = scan_port(&target, port, timeout, grab_banners);
-                match result.state {
-                    PortState::Open => {
-                        results.lock().unwrap().push(result);
-                    }
-                    PortState::Closed => {
-                        *closed.lock().unwrap() += 1;
-                    }
-                    PortState::Filtered => {
-                        *filtered.lock().unwrap() += 1;
-                    }
-                    PortState::Timeout => {
-                        *timed_out.lock().unwrap() += 1;
-                    }
-                }
-            }
-        }));
-    }
-
-    for handle in handles {
-        handle.join().ok();
-    }
-
-    let scan_duration_ms = start.elapsed().as_millis() as u64;
-
-    let mut open_ports = Arc::try_unwrap(results).unwrap().into_inner().unwrap();
-    open_ports.sort_by_key(|p| p.port);
-
-    let os_fingerprint = fingerprint_os(&open_ports);
-
-    let services: Vec<ServiceInfo> = open_ports
-        .iter()
-        .map(|pr| ServiceInfo {
-            port: pr.port,
-            name: pr
-                .service
-                .clone()
-                .unwrap_or_else(|| "unknown".to_string()),
-            version: extract_version(pr.banner.as_deref()),
-            extra: pr
-                .banner
-                .as_deref()
-                .unwrap_or("")
-                .chars()
-                .take(60)
-                .collect(),
-        })
-        .collect();
-
-    PortScanReport {
-        target: (*target).clone(),
-        target_ip,
-        scan_type: format!("TCP Connect ({thread_count} threads)"),
-        total_ports_scanned: ports.len(),
-        open_ports,
-        closed_ports: Arc::try_unwrap(closed).unwrap().into_inner().unwrap(),
-        filtered_ports: Arc::try_unwrap(filtered).unwrap().into_inner().unwrap(),
-        timeout_ports: Arc::try_unwrap(timed_out).unwrap().into_inner().unwrap(),
-        scan_duration_ms,
-        os_fingerprint,
-        services,
-    }
-}
-
 fn resolve_target(target: &str) -> Option<Ipv4Addr> {
     // Try parsing as IP first
     if let Ok(ip) = target.parse::<Ipv4Addr>() {
         return Some(ip);
     }
     // Try DNS resolution
-    let addr = format!("{target}:0")
-        .to_socket_addrs()
-        .ok()?
-        .next()?;
+    let addr = format!("{target}:0").to_socket_addrs().ok()?.next()?;
     match addr.ip() {
         IpAddr::V4(ip) => Some(ip),
-        _ => None,
+        IpAddr::V6(_) => None,
     }
 }
 
@@ -362,10 +252,13 @@ fn scan_port(target: &str, port: u16, timeout: Duration, grab_banners: bool) -> 
     let addr = format!("{target}:{port}");
     let start = Instant::now();
 
-    let state = match TcpStream::connect_timeout(&addr.parse().unwrap_or_else(|_| {
-        // Fallback: try address resolution
-        "0.0.0.0:0".parse().unwrap()
-    }), timeout) {
+    let state = match TcpStream::connect_timeout(
+        &addr.parse().unwrap_or_else(|_| {
+            // Fallback: try address resolution
+            "0.0.0.0:0".parse().unwrap()
+        }),
+        timeout,
+    ) {
         Ok(stream) => {
             let _ = stream.set_read_timeout(Some(timeout));
             let _ = stream.set_write_timeout(Some(timeout));
@@ -377,7 +270,7 @@ fn scan_port(target: &str, port: u16, timeout: Duration, grab_banners: bool) -> 
         Err(_) => PortState::Filtered,
     };
 
-    let response_time_ms = start.elapsed().as_millis() as u64;
+    let response_time_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
     let service = well_known_service(port).map(str::to_string);
 
     let banner = if state == PortState::Open && grab_banners {
@@ -417,10 +310,10 @@ fn grab_banner(target: &str, port: u16, timeout: Duration) -> Option<String> {
             .unwrap_or("")
             .trim()
             .to_string();
-        if !banner.is_empty() {
-            Some(banner)
-        } else {
+        if banner.is_empty() {
             None
+        } else {
+            Some(banner)
         }
     } else {
         None
@@ -470,30 +363,38 @@ fn fingerprint_os(open_ports: &[PortResult]) -> Option<OsFingerprint> {
 }
 
 fn extract_version(banner: Option<&str>) -> String {
-    let banner = match banner {
-        Some(b) => b,
-        None => return "unknown".to_string(),
+    let Some(banner) = banner else {
+        return "unknown".to_string();
     };
 
     // Try to extract version strings from common patterns
     if banner.contains("Apache/") {
         if let Some(start) = banner.find("Apache/") {
             let rest = &banner[start + 7..];
-            let version: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '.').collect();
+            let version: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '.')
+                .collect();
             return format!("Apache/{version}");
         }
     }
     if banner.contains("nginx/") {
         if let Some(start) = banner.find("nginx/") {
             let rest = &banner[start + 6..];
-            let version: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '.').collect();
+            let version: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '.')
+                .collect();
             return format!("nginx/{version}");
         }
     }
     if banner.contains("OpenSSH_") {
         if let Some(start) = banner.find("OpenSSH_") {
             let rest = &banner[start + 8..];
-            let version: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '.').collect();
+            let version: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '.')
+                .collect();
             return format!("OpenSSH_{version}");
         }
     }
@@ -509,11 +410,8 @@ fn extract_version(banner: Option<&str>) -> String {
 
 /// Run a SYN scan simulation (reports what a SYN scan would find based on
 /// connect scan results, with timing analysis for filtered detection).
-pub fn run_syn_scan_analysis(
-    target: &str,
-    ports: &[u16],
-    timeout_ms: u64,
-) -> PortScanReport {
+#[must_use]
+pub fn run_syn_scan_analysis(target: &str, ports: &[u16], timeout_ms: u64) -> PortScanReport {
     // SYN scan is conceptually different but for a builtin we approximate
     // using connect scan with stricter timeout and no banner grabbing
     let mut report = run_tcp_scan(target, ports, timeout_ms, false);
@@ -563,9 +461,27 @@ mod tests {
     #[test]
     fn fingerprint_os_detects_windows() {
         let ports = vec![
-            PortResult { port: 135, state: PortState::Open, service: None, banner: None, response_time_ms: 1 },
-            PortResult { port: 445, state: PortState::Open, service: None, banner: None, response_time_ms: 1 },
-            PortResult { port: 3389, state: PortState::Open, service: None, banner: None, response_time_ms: 1 },
+            PortResult {
+                port: 135,
+                state: PortState::Open,
+                service: None,
+                banner: None,
+                response_time_ms: 1,
+            },
+            PortResult {
+                port: 445,
+                state: PortState::Open,
+                service: None,
+                banner: None,
+                response_time_ms: 1,
+            },
+            PortResult {
+                port: 3389,
+                state: PortState::Open,
+                service: None,
+                banner: None,
+                response_time_ms: 1,
+            },
         ];
         let os = fingerprint_os(&ports);
         assert!(os.is_some());
@@ -575,8 +491,20 @@ mod tests {
     #[test]
     fn fingerprint_os_detects_linux() {
         let ports = vec![
-            PortResult { port: 22, state: PortState::Open, service: None, banner: None, response_time_ms: 1 },
-            PortResult { port: 80, state: PortState::Open, service: None, banner: None, response_time_ms: 1 },
+            PortResult {
+                port: 22,
+                state: PortState::Open,
+                service: None,
+                banner: None,
+                response_time_ms: 1,
+            },
+            PortResult {
+                port: 80,
+                state: PortState::Open,
+                service: None,
+                banner: None,
+                response_time_ms: 1,
+            },
         ];
         let os = fingerprint_os(&ports);
         assert!(os.is_some());
@@ -606,6 +534,9 @@ mod tests {
 
     #[test]
     fn extract_version_unknown_banner() {
-        assert_eq!(extract_version(Some("220 mail.example.com ESMTP")), "detected");
+        assert_eq!(
+            extract_version(Some("220 mail.example.com ESMTP")),
+            "detected"
+        );
     }
 }

@@ -20,7 +20,11 @@ impl fmt::Display for ObfuscationResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "Obfuscation: {}", self.technique)?;
         writeln!(f, "Effectiveness: {}", self.effectiveness)?;
-        writeln!(f, "Size change: {} → {} bytes", self.original_length, self.obfuscated_length)?;
+        writeln!(
+            f,
+            "Size change: {} → {} bytes",
+            self.original_length, self.obfuscated_length
+        )?;
         writeln!(f, "Notes: {}", self.notes)?;
         writeln!(f)?;
         writeln!(f, "Result:")?;
@@ -29,7 +33,8 @@ impl fmt::Display for ObfuscationResult {
     }
 }
 
-/// Apply PowerShell string obfuscation techniques.
+/// Apply `PowerShell` string obfuscation techniques.
+#[must_use]
 pub fn obfuscate_powershell(command: &str) -> Vec<ObfuscationResult> {
     let mut results = Vec::new();
 
@@ -84,7 +89,11 @@ fn powershell_concat_obfuscate(cmd: &str) -> ObfuscationResult {
         })
         .collect::<String>();
 
-    let final_obfuscated = if obfuscated == cmd { &fallback } else { &obfuscated };
+    let final_obfuscated = if obfuscated == cmd {
+        &fallback
+    } else {
+        &obfuscated
+    };
 
     ObfuscationResult {
         technique: "String concatenation".to_string(),
@@ -98,7 +107,7 @@ fn powershell_concat_obfuscate(cmd: &str) -> ObfuscationResult {
 }
 
 fn powershell_charcode_obfuscate(cmd: &str) -> ObfuscationResult {
-    let charcodes: Vec<String> = cmd.bytes().map(|b| format!("{}+", b)).collect();
+    let charcodes: Vec<String> = cmd.bytes().map(|b| format!("{b}+")).collect();
     let joined = charcodes.join("");
     let trimmed = joined.trim_end_matches('+');
 
@@ -111,13 +120,16 @@ fn powershell_charcode_obfuscate(cmd: &str) -> ObfuscationResult {
         original_length: cmd.len(),
         obfuscated_length: cmd.len() * 4, // ~4x expansion
         effectiveness: "Medium-High".to_string(),
-        notes: "Highly effective against basic signature matching; runtime detection may catch".to_string(),
+        notes: "Highly effective against basic signature matching; runtime detection may catch"
+            .to_string(),
     }
 }
 
 fn powershell_reverse_obfuscate(cmd: &str) -> ObfuscationResult {
     let reversed: String = cmd.chars().rev().collect();
-    let obfuscated = format!("'{reversed}' -replace '(.|$)','' -replace '(.{{2}})','$$1' | ForEach-Object {{ [char]([int]$_ -bxor 0) }} | ForEach-Object {{ [string]$_ }} | Out-String | . {{ $_.Trim() }}");
+    let obfuscated = format!(
+        "'{reversed}' -replace '(.|$)','' -replace '(.{{2}})','$$1' | ForEach-Object {{ [char]([int]$_ -bxor 0) }} | ForEach-Object {{ [string]$_ }} | Out-String | . {{ $_.Trim() }}"
+    );
 
     ObfuscationResult {
         technique: "String reversal with self-decode".to_string(),
@@ -132,7 +144,9 @@ fn powershell_reverse_obfuscate(cmd: &str) -> ObfuscationResult {
 
 fn powershell_base64_obfuscate(cmd: &str) -> ObfuscationResult {
     let encoded = base64_encode_simple(cmd);
-    let obfuscated = format!("[System.Text.Encoding]::Unicode.GetString([System.Convert]::FromBase64String(\"{encoded}\")) | . {{ $_ }}");
+    let obfuscated = format!(
+        "[System.Text.Encoding]::Unicode.GetString([System.Convert]::FromBase64String(\"{encoded}\")) | . {{ $_ }}"
+    );
 
     ObfuscationResult {
         technique: "Base64 encoded command".to_string(),
@@ -167,7 +181,8 @@ fn powershell_tick_obfuscate(cmd: &str) -> ObfuscationResult {
         original_length: cmd.len(),
         obfuscated_length: len,
         effectiveness: "Low-Medium".to_string(),
-        notes: "Simple but effective against naive pattern matching; modern AV ignores ticks".to_string(),
+        notes: "Simple but effective against naive pattern matching; modern AV ignores ticks"
+            .to_string(),
     }
 }
 
@@ -200,9 +215,17 @@ fn base64_encode_simple(input: &str) -> String {
     let mut result = String::new();
 
     for chunk in bytes.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let b0 = u32::from(chunk[0]);
+        let b1 = if chunk.len() > 1 {
+            u32::from(chunk[1])
+        } else {
+            0
+        };
+        let b2 = if chunk.len() > 2 {
+            u32::from(chunk[2])
+        } else {
+            0
+        };
 
         let triple = (b0 << 16) | (b1 << 8) | b2;
 
@@ -247,15 +270,13 @@ impl fmt::Display for FragmentedPayload {
 }
 
 /// Fragment an HTTP payload to evade deep packet inspection.
+#[must_use]
 pub fn fragment_http_payload(payload: &[u8], mtu: u16) -> FragmentedPayload {
     let header_overhead = 40; // TCP/IP header
     let max_fragment = (mtu as usize).saturating_sub(header_overhead);
     let max_fragment = max_fragment.max(1);
 
-    let fragments: Vec<Vec<u8>> = payload
-        .chunks(max_fragment)
-        .map(|chunk| chunk.to_vec())
-        .collect();
+    let fragments: Vec<Vec<u8>> = payload.chunks(max_fragment).map(<[u8]>::to_vec).collect();
 
     let technique = if fragments.len() > 3 {
         "TCP segment fragmentation — evades DPI reassembly".to_string()
@@ -275,14 +296,15 @@ pub fn fragment_http_payload(payload: &[u8], mtu: u16) -> FragmentedPayload {
 // ─── IPID Sequence Manipulation ──────────────────────────────────────────────
 
 /// Generate randomized IP ID values to avoid network fingerprinting.
+#[must_use]
 pub fn generate_random_ipids(count: usize) -> Vec<u16> {
     // Simple linear congruential generator for deterministic randomness
     let mut seed: u64 = 0xDEAD_BEEF_CAFE_BABE;
     let mut ipids = Vec::with_capacity(count);
 
     for _ in 0..count {
-        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
-        ipids.push((seed >> 32) as u16);
+        seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        ipids.push(((seed >> 32) & 0xFFFF) as u16);
     }
 
     ipids
@@ -291,14 +313,15 @@ pub fn generate_random_ipids(count: usize) -> Vec<u16> {
 // ─── Payload Checksum Manipulation ───────────────────────────────────────────
 
 /// Calculate IP header checksum (used for packet forgery detection evasion).
+#[must_use]
 pub fn calculate_ip_checksum(header: &[u8]) -> u16 {
     let mut sum: u32 = 0;
 
     for chunk in header.chunks(2) {
         let word = if chunk.len() == 2 {
-            u16::from_be_bytes([chunk[0], chunk[1]]) as u32
+            u32::from(u16::from_be_bytes([chunk[0], chunk[1]]))
         } else {
-            (chunk[0] as u32) << 8
+            u32::from(chunk[0]) << 8
         };
         sum = sum.wrapping_add(word);
     }
@@ -308,7 +331,7 @@ pub fn calculate_ip_checksum(header: &[u8]) -> u16 {
         sum = (sum & 0xFFFF) + (sum >> 16);
     }
 
-    !(sum as u16)
+    !(u16::try_from(sum).unwrap_or_default())
 }
 
 // ─── Decoy Generation ───────────────────────────────────────────────────────
@@ -332,12 +355,13 @@ impl fmt::Display for DecoyTraffic {
 }
 
 /// Generate nmap-style decoy IP addresses for scan obfuscation.
+#[must_use]
 pub fn generate_decoys(real_ip: &str, count: usize) -> DecoyTraffic {
     let mut decoys = Vec::new();
     let mut seed: u64 = 0xCAFE_BABE;
 
     for _ in 0..count {
-        seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+        seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
         let a = (seed >> 24) & 0xFF;
         let b = (seed >> 16) & 0xFF;
         let c = (seed >> 8) & 0xFF;
@@ -378,7 +402,11 @@ mod tests {
     fn test_powershell_obfuscation_techniques() {
         let results = obfuscate_powershell("Get-Process");
         assert!(results.len() >= 5);
-        assert!(results.iter().any(|r| r.technique.contains("concatenation")));
+        assert!(
+            results
+                .iter()
+                .any(|r| r.technique.contains("concatenation"))
+        );
     }
 
     #[test]
@@ -391,10 +419,14 @@ mod tests {
 
     #[test]
     fn test_ip_checksum() {
-        let header = vec![0x45, 0x00, 0x00, 0x28, 0x00, 0x01, 0x00, 0x00, 0x40, 0x06, 0x00, 0x00, 0xc0, 0xa8, 0x01, 0x01, 0xc0, 0xa8, 0x01, 0x02];
+        let header = vec![
+            0x45, 0x00, 0x00, 0x28, 0x00, 0x01, 0x00, 0x00, 0x40, 0x06, 0x00, 0x00, 0xc0, 0xa8,
+            0x01, 0x01, 0xc0, 0xa8, 0x01, 0x02,
+        ];
         let checksum = calculate_ip_checksum(&header);
         // Just verify it produces a result
-        assert!(checksum != 0 || true); // checksum could be any value
+        // checksum could be any non-zero value; just verify it computes
+        assert_ne!(checksum, 0);
     }
 
     #[test]

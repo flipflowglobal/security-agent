@@ -23,11 +23,11 @@ pub enum Severity {
 impl fmt::Display for Severity {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Severity::Critical => write!(f, "CRITICAL"),
-            Severity::High => write!(f, "HIGH"),
-            Severity::Medium => write!(f, "MEDIUM"),
-            Severity::Low => write!(f, "LOW"),
-            Severity::Informational => write!(f, "INFORMATIONAL"),
+            Self::Critical => write!(f, "CRITICAL"),
+            Self::High => write!(f, "HIGH"),
+            Self::Medium => write!(f, "MEDIUM"),
+            Self::Low => write!(f, "LOW"),
+            Self::Informational => write!(f, "INFORMATIONAL"),
         }
     }
 }
@@ -64,6 +64,7 @@ impl fmt::Display for AwsFinding {
 /// Analyze an AWS IAM policy document for misconfigurations.
 ///
 /// Input should be the JSON policy body (inline or attached policy).
+#[must_use]
 pub fn analyze_iam_policy(policy: &str) -> Vec<AwsFinding> {
     let mut findings = Vec::new();
 
@@ -153,14 +154,13 @@ pub fn analyze_iam_policy(policy: &str) -> Vec<AwsFinding> {
 }
 
 /// Analyze an AWS S3 bucket policy for public access misconfigurations.
+#[must_use]
 pub fn analyze_s3_policy(policy: &str) -> Vec<AwsFinding> {
     let mut findings = Vec::new();
 
     // Check for public read access
-    let has_allow = policy.contains(r#""Effect": "Allow""#) || policy.contains(r#""Effect":"Allow""#);
-    let has_principal_star = policy.contains(r#""Principal": "*""#) || policy.contains(r#""Principal":"*""#);
-    if has_allow
-        && has_principal_star
+    if (policy.contains(r#""Effect":"Allow""#) || policy.contains(r#""Effect": "Allow""#))
+        && (policy.contains(r#""Principal":"*""#) || policy.contains(r#""Principal": "*""#))
         && (policy.contains("s3:GetObject") || policy.contains("s3:ListBucket"))
     {
         findings.push(AwsFinding {
@@ -175,7 +175,9 @@ pub fn analyze_s3_policy(policy: &str) -> Vec<AwsFinding> {
     }
 
     // Check for public write access
-    if policy.contains("s3:PutObject") && has_principal_star {
+    if policy.contains("s3:PutObject")
+        && (policy.contains(r#""Principal": "*""#) || policy.contains(r#""Principal":"*""#))
+    {
         findings.push(AwsFinding {
             service: "S3".into(),
             resource: "Bucket Policy".into(),
@@ -205,7 +207,8 @@ pub fn analyze_s3_policy(policy: &str) -> Vec<AwsFinding> {
 
 /// Analyze an AWS security group for overly permissive rules.
 ///
-/// Input should be a JSON representation of security group rules (IpPermissions).
+/// Input should be a JSON representation of security group rules (`IpPermissions`).
+#[must_use]
 pub fn analyze_security_group(sg_rules: &str) -> Vec<AwsFinding> {
     let mut findings = Vec::new();
 
@@ -288,6 +291,7 @@ impl fmt::Display for GcpFinding {
 }
 
 /// Analyze a GCP IAM policy for misconfigurations.
+#[must_use]
 pub fn analyze_gcp_iam(policy: &str) -> Vec<GcpFinding> {
     let mut findings = Vec::new();
 
@@ -310,8 +314,7 @@ pub fn analyze_gcp_iam(policy: &str) -> Vec<GcpFinding> {
             misconfiguration: "GCP IAM policy binds to allAuthenticatedUsers".into(),
             severity: Severity::High,
             cwe: "CWE-284".into(),
-            remediation:
-                "Replace with specific service accounts or Google Groups instead.".into(),
+            remediation: "Replace with specific service accounts or Google Groups instead.".into(),
         });
     }
 
@@ -330,25 +333,24 @@ pub fn analyze_gcp_iam(policy: &str) -> Vec<GcpFinding> {
     if policy.contains("iam.serviceAccounts.keys.create") {
         findings.push(GcpFinding {
             service: "IAM".into(),
-            misconfiguration:
-                "GCP IAM policy grants iam.serviceAccounts.keys.create permission".into(),
+            misconfiguration: "GCP IAM policy grants iam.serviceAccounts.keys.create permission"
+                .into(),
             severity: Severity::High,
             cwe: "CWE-798".into(),
-            remediation:
-                "Remove this permission; use Workload Identity Federation instead.".into(),
+            remediation: "Remove this permission; use Workload Identity Federation instead.".into(),
         });
     }
 
     // Check for overly broad service account impersonation
-    if policy.contains("iam.serviceAccounts.getAccessToken") && policy.contains("*") {
+    if policy.contains("iam.serviceAccounts.getAccessToken") && policy.contains('*') {
         findings.push(GcpFinding {
             service: "IAM".into(),
-            misconfiguration:
-                "GCP IAM policy grants getAccessToken for wildcard service accounts".into(),
+            misconfiguration: "GCP IAM policy grants getAccessToken for wildcard service accounts"
+                .into(),
             severity: Severity::High,
             cwe: "CWE-284".into(),
-            remediation:
-                "Restrict impersonation to specific service accounts needed for the role.".into(),
+            remediation: "Restrict impersonation to specific service accounts needed for the role."
+                .into(),
         });
     }
 
@@ -356,6 +358,7 @@ pub fn analyze_gcp_iam(policy: &str) -> Vec<GcpFinding> {
 }
 
 /// Analyze a GCP firewall rules definition for misconfigurations.
+#[must_use]
 pub fn analyze_gcp_firewall(rules: &str) -> Vec<GcpFinding> {
     let mut findings = Vec::new();
 
@@ -385,8 +388,7 @@ pub fn analyze_gcp_firewall(rules: &str) -> Vec<GcpFinding> {
     if rules.contains(r#""direction": "EGRESS""#) && rules.contains("0.0.0.0/0") {
         findings.push(GcpFinding {
             service: "Compute".into(),
-            misconfiguration: "GCP firewall rule allows unrestricted egress to 0.0.0.0/0"
-                .into(),
+            misconfiguration: "GCP firewall rule allows unrestricted egress to 0.0.0.0/0".into(),
             severity: Severity::Medium,
             cwe: "CWE-319".into(),
             remediation: "Restrict egress to known destinations.".into(),
@@ -420,24 +422,26 @@ impl fmt::Display for AzureFinding {
 }
 
 /// Analyze an Azure role assignment for overly privileged access.
+#[must_use]
 pub fn analyze_azure_role(assignment: &str) -> Vec<AzureFinding> {
     let mut findings = Vec::new();
 
     // Check for Owner role
-    if assignment.contains("Owner") || assignment.contains("8e3af657")
-    {
+    if assignment.contains("Owner") || assignment.contains("8e3af657") {
         findings.push(AzureFinding {
             service: "Authorization".into(),
             misconfiguration: "Azure role assignment grants Owner role".into(),
             severity: Severity::Critical,
             cwe: "CWE-269".into(),
-            remediation: "Replace with Contributor or a custom role with minimum required permissions.".into(),
+            remediation:
+                "Replace with Contributor or a custom role with minimum required permissions."
+                    .into(),
         });
     }
 
     // Check for Contributor role
     if assignment.contains("Contributor")
-        || assignment.contains("b24988ac")
+        || assignment.contains("b24988ac-6180-42a0-ab88-20f7382dd24c")
     {
         findings.push(AzureFinding {
             service: "Authorization".into(),
@@ -450,12 +454,12 @@ pub fn analyze_azure_role(assignment: &str) -> Vec<AzureFinding> {
 
     // Check for User Access Administrator
     if assignment.contains("User Access Administrator")
-        || assignment.contains("18d7d88d")
+        || assignment.contains("18d7d88d-d35e-4fb5-a5c3-7773c20a72d9")
     {
         findings.push(AzureFinding {
             service: "Authorization".into(),
-            misconfiguration:
-                "Azure role assignment grants User Access Administrator permissions".into(),
+            misconfiguration: "Azure role assignment grants User Access Administrator permissions"
+                .into(),
             severity: Severity::High,
             cwe: "CWE-269".into(),
             remediation: "Remove unless explicitly required for identity management tasks.".into(),
@@ -463,7 +467,9 @@ pub fn analyze_azure_role(assignment: &str) -> Vec<AzureFinding> {
     }
 
     // Check for subscription-level assignments
-    if assignment.contains("subscriptions") && (assignment.contains("Owner") || assignment.contains("Contributor")) {
+    if assignment.contains("subscriptions")
+        && (assignment.contains("Owner") || assignment.contains("Contributor"))
+    {
         findings.push(AzureFinding {
             service: "Authorization".into(),
             misconfiguration: "Broad role assigned at subscription level".into(),
@@ -477,6 +483,7 @@ pub fn analyze_azure_role(assignment: &str) -> Vec<AzureFinding> {
 }
 
 /// Analyze an Azure Network Security Group (NSG) for overly permissive rules.
+#[must_use]
 pub fn analyze_azure_nsg(nsg_rules: &str) -> Vec<AzureFinding> {
     let mut findings = Vec::new();
 
@@ -495,23 +502,25 @@ pub fn analyze_azure_nsg(nsg_rules: &str) -> Vec<AzureFinding> {
     }
 
     // Check for allow-all inbound
-    if nsg_rules.contains(r#""access": "Allow""#) && nsg_rules.contains(r#""direction": "Inbound""#)
-        && (nsg_rules.contains(r#""destinationPortRange": "*""#) || nsg_rules.contains(r#""protocol": "*""#))
+    if nsg_rules.contains(r#""access": "Allow""#)
+        && nsg_rules.contains(r#""direction": "Inbound""#)
+        && (nsg_rules.contains(r#""destinationPortRange": "*""#)
+            || nsg_rules.contains(r#""protocol": "*""#))
     {
         findings.push(AzureFinding {
             service: "Network".into(),
             misconfiguration: "Azure NSG allows all inbound traffic".into(),
             severity: Severity::Critical,
             cwe: "CWE-284".into(),
-            remediation:
-                "Restrict destination port ranges and protocols to required values.".into(),
+            remediation: "Restrict destination port ranges and protocols to required values."
+                .into(),
         });
     }
 
     // Check for SSH/RDP open to the world
     let open_ports: Vec<(&str, &str)> = vec![("22", "SSH"), ("3389", "RDP")];
     for (port, name) in &open_ports {
-        if nsg_rules.contains(port) && nsg_rules.contains("*") {
+        if nsg_rules.contains(port) && nsg_rules.contains('*') {
             findings.push(AzureFinding {
                 service: "Network".into(),
                 misconfiguration: format!(
@@ -543,9 +552,16 @@ pub struct CloudSecurityReport {
     pub total_low: usize,
 }
 
+impl Default for CloudSecurityReport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CloudSecurityReport {
     /// Create an empty report.
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self {
             aws_findings: Vec::new(),
             gcp_findings: Vec::new(),
@@ -597,6 +613,7 @@ impl CloudSecurityReport {
     }
 
     /// Total number of findings across all providers.
+    #[must_use]
     pub fn total_findings(&self) -> usize {
         self.aws_findings.len() + self.gcp_findings.len() + self.azure_findings.len()
     }
@@ -646,10 +663,11 @@ impl fmt::Display for CloudSecurityReport {
 /// Generate a unified report from raw cloud configuration JSON dumps.
 ///
 /// Pass `None` for any provider you don't want to analyze.
+#[must_use]
 pub fn generate_cloud_report(
     aws_iam: Option<&str>,
-    aws_s3: Option<&str>,
-    aws_sg: Option<&str>,
+    aws_s3_policy: Option<&str>,
+    aws_security_group: Option<&str>,
     gcp_iam: Option<&str>,
     gcp_fw: Option<&str>,
     azure_role: Option<&str>,
@@ -660,10 +678,10 @@ pub fn generate_cloud_report(
     if let Some(policy) = aws_iam {
         report.add_aws(analyze_iam_policy(policy));
     }
-    if let Some(policy) = aws_s3 {
+    if let Some(policy) = aws_s3_policy {
         report.add_aws(analyze_s3_policy(policy));
     }
-    if let Some(sg) = aws_sg {
+    if let Some(sg) = aws_security_group {
         report.add_aws(analyze_security_group(sg));
     }
     if let Some(policy) = gcp_iam {
@@ -691,14 +709,22 @@ mod tests {
         let policy = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"arn:aws:s3:::*"}]}"#;
         let findings = analyze_iam_policy(policy);
         assert!(!findings.is_empty());
-        assert!(findings.iter().any(|f| f.misconfiguration.contains("wildcard Action")));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.misconfiguration.contains("wildcard Action"))
+        );
     }
 
     #[test]
     fn test_detect_admin_access_policy() {
         let policy = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}],"AttachedPolicies":[{"PolicyName":"AdministratorAccess"}]}"#;
         let findings = analyze_iam_policy(policy);
-        assert!(findings.iter().any(|f| f.misconfiguration.contains("AdministratorAccess")));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.misconfiguration.contains("AdministratorAccess"))
+        );
     }
 
     #[test]
@@ -706,7 +732,11 @@ mod tests {
         let policy = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":"*","Action":"s3:GetObject","Resource":"arn:aws:s3:::mybucket/*"}]}"#;
         let findings = analyze_s3_policy(policy);
         assert!(!findings.is_empty());
-        assert!(findings.iter().any(|f| f.misconfiguration.contains("public read")));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.misconfiguration.contains("public read"))
+        );
     }
 
     #[test]
@@ -714,7 +744,11 @@ mod tests {
         let policy = r#"{"bindings":[{"role":"roles/viewer","members":["allUsers"]}]}"#;
         let findings = analyze_gcp_iam(policy);
         assert!(!findings.is_empty());
-        assert!(findings.iter().any(|f| f.misconfiguration.contains("allUsers")));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.misconfiguration.contains("allUsers"))
+        );
     }
 
     #[test]
@@ -722,14 +756,25 @@ mod tests {
         let assignment = r#"{"roleDefinitionId":"/subscriptions/sub1/providers/Microsoft.Authorization/roleDefinitions/8e3af657","principalId":"user1"}"#;
         let findings = analyze_azure_role(assignment);
         assert!(!findings.is_empty());
-        assert!(findings.iter().any(|f| f.misconfiguration.contains("Owner")));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.misconfiguration.contains("Owner"))
+        );
     }
 
     #[test]
     fn test_cloud_report_counts_severities() {
         let report = generate_cloud_report(
-            Some(r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}"#),
-            None, None, None, None, None, None,
+            Some(
+                r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}"#,
+            ),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         );
         assert!(report.total_critical > 0);
         assert_eq!(report.total_findings(), report.aws_findings.len());

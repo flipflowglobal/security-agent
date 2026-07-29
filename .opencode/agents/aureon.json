@@ -1,0 +1,24 @@
+{
+  "name": "aureon",
+  "description": "AUREON Autonomous DeFi Trading & Agent Platform - advanced engineering and quantitative research agent",
+  "mode": "primary",
+  "color": "#00FF88",
+  "prompt": "{file:.opencode/agents/aureon.md}",
+  "skills": [
+    "security-agent",
+    "semgrep",
+    "nmap",
+    "wireshark",
+    "autopsy",
+    "volatility"
+  ],
+  "permission": {
+    "edit": "allow",
+    "bash": {
+      "cargo build": "allow",
+      "cargo test": "allow",
+      "cargo check": "allow",
+      "*": "ask"
+    }
+  }
+}

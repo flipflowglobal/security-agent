@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "path": ".agents/skills"
+    },
+    {
+      "path": ".opencode/skills"
+    },
+    {
+      "path": ".github/skills"
+    }
+  ]
+}

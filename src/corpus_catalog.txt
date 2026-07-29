@@ -1,0 +1,89 @@
+aircrack-ng actively scans an authorized network target within scope.
+amass actively scans an authorized network target within scope.
+androguard runs static local analysis on authorized evidence within scope.
+apkleaks runs static local analysis on authorized evidence within scope.
+apksigner runs static local analysis on authorized evidence within scope.
+apktool runs static local analysis on authorized evidence within scope.
+autopsy runs static local analysis on authorized evidence within scope.
+beef-xss attempts exploitation of an authorized target after explicit approval.
+bettercap actively scans an authorized network target within scope.
+binwalk runs static local analysis on authorized evidence within scope.
+bulk_extractor runs static local analysis on authorized evidence within scope.
+burpsuite actively scans an authorized network target within scope.
+cewl actively scans an authorized network target within scope.
+chirpw runs static local analysis on authorized evidence within scope.
+chkrootkit runs static local analysis on authorized evidence within scope.
+crackmapexec attempts exploitation of an authorized target after explicit approval.
+crunch runs static local analysis on authorized evidence within scope.
+cutycapt actively scans an authorized network target within scope.
+dex2jar runs static local analysis on authorized evidence within scope.
+dirb actively scans an authorized network target within scope.
+dmitry actively scans an authorized network target within scope.
+driftnet actively scans an authorized network target within scope.
+drozer attempts exploitation of an authorized target after explicit approval.
+enum4linux actively scans an authorized network target within scope.
+ettercap actively scans an authorized network target within scope.
+evil-winrm attempts exploitation of an authorized target after explicit approval.
+feroxbuster actively scans an authorized network target within scope.
+ffuf actively scans an authorized network target within scope.
+foremost runs static local analysis on authorized evidence within scope.
+frida attempts exploitation of an authorized target after explicit approval.
+galleta runs static local analysis on authorized evidence within scope.
+giskismet runs static local analysis on authorized evidence within scope.
+gobuster actively scans an authorized network target within scope.
+hashcat runs static local analysis on authorized evidence within scope.
+hashdeep runs static local analysis on authorized evidence within scope.
+httrack actively scans an authorized network target within scope.
+hydra actively scans an authorized network target within scope.
+ike-scan actively scans an authorized network target within scope.
+jadx runs static local analysis on authorized evidence within scope.
+john runs static local analysis on authorized evidence within scope.
+keepnote runs static local analysis on authorized evidence within scope.
+kismet actively scans an authorized network target within scope.
+lynis runs static local analysis on authorized evidence within scope.
+macchanger actively scans an authorized network target within scope.
+mariana-trench runs static local analysis on authorized evidence within scope.
+masscan actively scans an authorized network target within scope.
+mdb-sql runs static local analysis on authorized evidence within scope.
+medusa actively scans an authorized network target within scope.
+mfoc actively scans an authorized network target within scope.
+mfterm actively scans an authorized network target within scope.
+mitmproxy actively scans an authorized network target within scope.
+mobsf runs static local analysis on authorized evidence within scope.
+msfconsole attempts exploitation of an authorized target after explicit approval.
+msfpc attempts exploitation of an authorized target after explicit approval.
+ncrack actively scans an authorized network target within scope.
+netdiscover actively scans an authorized network target within scope.
+netexec attempts exploitation of an authorized target after explicit approval.
+netsniff-ng actively scans an authorized network target within scope.
+nikto actively scans an authorized network target within scope.
+nmap actively scans an authorized network target within scope.
+nuclei actively scans an authorized network target within scope.
+objection attempts exploitation of an authorized target after explicit approval.
+ophcrack runs static local analysis on authorized evidence within scope.
+pyrit runs static local analysis on authorized evidence within scope.
+qark runs static local analysis on authorized evidence within scope.
+rcrack runs static local analysis on authorized evidence within scope.
+reaver actively scans an authorized network target within scope.
+recordmydesktop runs static local analysis on authorized evidence within scope.
+searchsploit runs static local analysis on authorized evidence within scope.
+semgrep runs static local analysis on authorized evidence within scope.
+setoolkit attempts exploitation of an authorized target after explicit approval.
+skipfish actively scans an authorized network target within scope.
+smbmap actively scans an authorized network target within scope.
+sqlitebrowser runs static local analysis on authorized evidence within scope.
+sqlmap attempts exploitation of an authorized target after explicit approval.
+subfinder actively scans an authorized network target within scope.
+tcpdump actively scans an authorized network target within scope.
+termineter actively scans an authorized network target within scope.
+thc-ipv6 actively scans an authorized network target within scope.
+trueseeing runs static local analysis on authorized evidence within scope.
+volatility runs static local analysis on authorized evidence within scope.
+wafw00f actively scans an authorized network target within scope.
+wfuzz actively scans an authorized network target within scope.
+whatweb actively scans an authorized network target within scope.
+wifite actively scans an authorized network target within scope.
+wireshark runs static local analysis on authorized evidence within scope.
+wpscan actively scans an authorized network target within scope.
+yersinia actively scans an authorized network target within scope.
+zenmap actively scans an authorized network target within scope.

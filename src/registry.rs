@@ -1,6 +1,21 @@
 use crate::model::{SpecialistKind, TargetType, Technique, TestIntensity};
 use std::collections::HashMap;
 
+/// The complete, deduplicated, sorted list of every tool name in the
+/// catalog — the desktop/full toolset plus the Android toolset.
+///
+/// This is the authoritative enumeration used to assert full coverage: every
+/// name here has a compiled-in skill ([`crate::local_assets`]) and a
+/// registered invocation adapter ([`crate::tool_adapter`]).
+#[must_use]
+pub fn cataloged_tool_names() -> Vec<String> {
+    let mut names = requested_full_toolset_names();
+    names.extend(android_toolset_names());
+    names.sort();
+    names.dedup();
+    names
+}
+
 fn requested_full_toolset_names() -> Vec<String> {
     vec![
         "autopsy",
@@ -429,12 +444,19 @@ pub struct ToolDefinition {
 }
 
 /// Best-effort classification of every cataloged tool's execution surface.
+///
 /// This drives which tools Phase-4-style real execution wiring may invoke
 /// directly (`StaticLocalAnalysis`) versus which require additional,
 /// not-yet-built live-target/rate-limit gating (`ActiveNetwork`,
 /// `ActiveExploitation`). Unrecognized names fall back to the strictest
 /// class rather than being silently treated as safe.
-fn classify_execution(name: &str) -> ExecutionClass {
+///
+/// This is the single source of truth for a tool's class: the catalog
+/// stamps each [`ToolDefinition`] with it here, and
+/// [`crate::orchestrator`] reuses it to order execution least-invasive
+/// first from a plan's tool names alone (no `PATH` resolution required).
+#[must_use]
+pub fn classify_execution(name: &str) -> ExecutionClass {
     use ExecutionClass::{ActiveExploitation, ActiveNetwork, StaticLocalAnalysis};
     match name {
         "autopsy" | "volatility" | "binwalk" | "bulk_extractor" | "foremost" | "hashdeep"

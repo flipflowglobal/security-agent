@@ -1,21 +1,18 @@
-MIT License
+Business Source License 1.1
 
-Copyright (c) 2026 Security-Agent contributors
+Licensor: FlipFlow Global
+Licensed Work: The software and associated documentation files in this repository.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Additional Grant:
+You may use the Licensed Work for development, testing, research, and non-commercial evaluation purposes.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+Use Restrictions:
+You may not use the Licensed Work in a production environment or for any commercial purpose without a separate commercial license from the Licensor.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+Change Date: 2028-07-24
+
+Change License: GNU General Public License v2.0 or later (GPL-2.0-or-later)
+
+Notice:
+The Business Source License 1.1 (this document) runs until the Change Date.
+After the Change Date, the Licensed Work will be licensed under the Change License.

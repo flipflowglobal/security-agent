@@ -92,10 +92,13 @@ const CODES: usize = 56;
 const VQ_STAGES: usize = 2;
 /// Hidden-layer width of the prediction head.
 const HIDDEN: usize = 28;
-/// Training passes over the corpus. The larger corpus gives more windows
-/// per epoch than before, so fewer epochs are needed for at least as much
-/// total gradient exposure as the smaller corpus got at 150.
-const EPOCHS: usize = 55;
+/// Training passes over the corpus. The bundled model now trains on the
+/// hand-written corpus plus the generated catalog corpus (one sentence per
+/// cataloged tool), which roughly triples the windows per epoch, so fewer
+/// epochs reach comparable total gradient exposure while keeping training
+/// fast. Held-out perplexity discrimination and routing accuracy (see
+/// `crate::lm_eval`) stay well above their floors at this count.
+const EPOCHS: usize = 35;
 /// SGD learning rate.
 const LEARNING_RATE: f32 = 0.05;
 /// Weight of the VQ commitment/codebook penalties.
@@ -135,6 +138,25 @@ const LM_WINDOW_STRIDE: usize = 12;
 const BOS: &str = "<s>";
 /// End-of-sentence token; generation stops when it is produced.
 const EOS: &str = "</s>";
+/// The single-character byte-fallback alphabet: every character
+/// [`normalize`] can emit (ASCII lowercase letters and digits). Seeding
+/// these into the vocabulary makes every normalized word representable, so
+/// an out-of-vocabulary word decomposes into its characters instead of being
+/// dropped before scoring.
+const ALPHABET: &str = "abcdefghijklmnopqrstuvwxyz0123456789";
+
+/// How many log-space standard deviations above the model's typical in-domain
+/// perplexity the self-calibrated anomaly threshold sits (see
+/// [`NeuralLanguageModel::calibrate_anomaly_threshold`]). Larger is more
+/// conservative (fewer false positives). Chosen so the threshold lands in the
+/// wide gap between in-domain finding text and out-of-vocabulary gibberish.
+const ANOMALY_CALIBRATION_SIGMAS: f32 = 4.0;
+/// Lower bound for the calibrated threshold, so a degenerate corpus can never
+/// drive it low enough to flag ordinary text.
+const ANOMALY_THRESHOLD_FLOOR: f32 = 100.0;
+/// Threshold used before calibration runs (or when there is nothing to
+/// calibrate on). Matches the historical hand-tuned default.
+const ANOMALY_THRESHOLD_FALLBACK: f32 = 1000.0;
 
 /// In-domain training text, compiled into the binary. Larger than a bare
 /// minimum on purpose — broad enough to cover the agent's own vocabulary
@@ -197,6 +219,19 @@ a deny listed target is refused before any scan begins.
 network policy keeps the agent offline until the operator opts in.
 compliance reporting maps findings to a recognized control framework.
 the retest confirms whether a remediated finding has actually been fixed.";
+
+/// The full training corpus for the bundled model: the hand-written
+/// [`SECURITY_CORPUS`] followed by the generated catalog corpus (one sentence
+/// per cataloged tool, see [`crate::corpus_gen`]). Concatenated at runtime so
+/// the two sources stay separately editable; the result is deterministic.
+fn bundled_corpus() -> String {
+    let mut corpus =
+        String::with_capacity(SECURITY_CORPUS.len() + crate::corpus_gen::CATALOG_CORPUS.len() + 1);
+    corpus.push_str(SECURITY_CORPUS);
+    corpus.push('\n');
+    corpus.push_str(crate::corpus_gen::CATALOG_CORPUS);
+    corpus
+}
 
 /// A fast, fully-deterministic pseudo-random generator (`SplitMix64`), used
 /// for reproducible weight initialization — no external RNG crate.
@@ -271,21 +306,55 @@ fn dct_matrix() -> Vec<f32> {
 struct Vocabulary {
     tokens: Vec<String>,
     ids: std::collections::HashMap<String, usize>,
+    /// Per-id flag: whether the token is valid *generation output*. True for
+    /// whole corpus words and [`EOS`]; false for [`BOS`] and the single
+    /// character byte-fallback tokens, which exist only to encode unknown
+    /// *input* and should never be emitted as raw characters. A character
+    /// that also occurs as a standalone corpus word (e.g. `a`) is upgraded to
+    /// emittable.
+    emittable: Vec<bool>,
 }
 
 impl Vocabulary {
     fn from_corpus(corpus: &str) -> Self {
+        // BOS is padding-only (never emitted); EOS is emittable so generation
+        // can stop.
         let mut tokens = vec![BOS.to_string(), EOS.to_string()];
+        let mut emittable = vec![false, true];
         let mut ids = std::collections::HashMap::new();
         ids.insert(BOS.to_string(), 0);
         ids.insert(EOS.to_string(), 1);
-        for token in corpus.split_whitespace().filter_map(normalize) {
+        // Seed the single-character byte-fallback alphabet before any corpus
+        // word, so every character `normalize` can emit has a token. This is
+        // what lets an out-of-vocabulary word decompose into characters
+        // rather than being dropped (see [`Self::tokenize_word`]). The
+        // alphabet is fixed and corpus-independent, so these ids are stable
+        // across corpora. Characters are input-side fallback only, so they
+        // start non-emittable.
+        for ch in ALPHABET.chars() {
+            let token = ch.to_string();
             if !ids.contains_key(&token) {
                 ids.insert(token.clone(), tokens.len());
                 tokens.push(token);
+                emittable.push(false);
             }
         }
-        Self { tokens, ids }
+        for token in corpus.split_whitespace().filter_map(normalize) {
+            if let Some(&id) = ids.get(&token) {
+                // A character that also appears as a standalone word (e.g.
+                // `a`) becomes a valid generation output.
+                emittable[id] = true;
+            } else {
+                ids.insert(token.clone(), tokens.len());
+                tokens.push(token);
+                emittable.push(true);
+            }
+        }
+        Self {
+            tokens,
+            ids,
+            emittable,
+        }
     }
 
     fn len(&self) -> usize {
@@ -298,6 +367,35 @@ impl Vocabulary {
 
     fn token(&self, id: usize) -> &str {
         &self.tokens[id]
+    }
+
+    /// Tokenizes one already-[`normalize`]d word: the word itself when the
+    /// vocabulary knows it as a whole, otherwise its character byte-fallback.
+    /// Because [`from_corpus`](Self::from_corpus) seeds every character
+    /// [`normalize`] can produce, the fallback never drops anything — an
+    /// unknown word always yields at least one token. An empty input yields
+    /// no tokens.
+    fn tokenize_word(&self, word: &str) -> Vec<usize> {
+        if let Some(id) = self.id(word) {
+            return vec![id];
+        }
+        word.chars()
+            .filter_map(|ch| self.id(&ch.to_string()))
+            .collect()
+    }
+
+    /// Whether `word` is a first-class whole-word token (as opposed to one
+    /// that must fall back to characters). Used by the evaluation harness to
+    /// measure word-level vocabulary coverage separately from the byte-level
+    /// representability the fallback guarantees.
+    fn knows_word(&self, word: &str) -> bool {
+        self.id(word).is_some()
+    }
+
+    /// Whether the token `id` may be produced as generation output. Character
+    /// byte-fallback tokens and [`BOS`] are input-only and return false.
+    fn is_emittable(&self, id: usize) -> bool {
+        self.emittable.get(id).copied().unwrap_or(false)
     }
 }
 
@@ -317,20 +415,19 @@ fn normalize(raw: &str) -> Option<String> {
 }
 
 /// Splits `text` into sentences (on `.`), each a token-id sequence padded
-/// with `CONTEXT` leading [`BOS`] ids and a trailing [`EOS`] id. Unknown
-/// words are dropped.
+/// with `CONTEXT` leading [`BOS`] ids and a trailing [`EOS`] id. Words the
+/// vocabulary does not know as a whole are decomposed into character tokens
+/// by [`Vocabulary::tokenize_word`] rather than dropped, so no content is
+/// silently lost before scoring or training.
 fn encode_sentences(vocab: &Vocabulary, text: &str) -> Vec<Vec<usize>> {
     let bos = vocab.id(BOS).unwrap_or(0);
     let eos = vocab.id(EOS).unwrap_or(1);
     text.split('.')
         .filter_map(|sentence| {
             let mut ids: Vec<usize> = vec![bos; CONTEXT];
-            ids.extend(
-                sentence
-                    .split_whitespace()
-                    .filter_map(normalize)
-                    .filter_map(|token| vocab.id(&token)),
-            );
+            for word in sentence.split_whitespace().filter_map(normalize) {
+                ids.extend(vocab.tokenize_word(&word));
+            }
             if ids.len() == CONTEXT {
                 return None; // empty sentence
             }
@@ -395,6 +492,11 @@ pub struct NeuralLanguageModel {
     b1: Vec<f32>,             // HIDDEN
     w2: Vec<f32>,             // vocab_len * HIDDEN
     b2: Vec<f32>,             // vocab_len
+    /// Self-calibrated anomaly threshold: the perplexity above which text is
+    /// treated as out-of-domain, derived from this model's own in-domain
+    /// perplexity distribution (see [`Self::calibrate_anomaly_threshold`])
+    /// rather than a hand-tuned constant. Set after training.
+    anomaly_threshold: f32,
 }
 
 impl Default for NeuralLanguageModel {
@@ -404,10 +506,17 @@ impl Default for NeuralLanguageModel {
 }
 
 impl NeuralLanguageModel {
-    /// Builds and trains the default model on the bundled security corpus,
-    /// then polishes its self-attention projections with a Levenberg-
-    /// Marquardt refinement pass (see [`Self::lm_refine_attention`]).
-    /// Deterministic: the same binary always yields the same model.
+    /// Builds and trains the default model on the bundled security corpus
+    /// augmented with the catalog corpus, then polishes its self-attention
+    /// projections with a Levenberg-Marquardt refinement pass (see
+    /// [`Self::lm_refine_attention`]). Deterministic: the same binary always
+    /// yields the same model.
+    ///
+    /// The catalog corpus ([`crate::corpus_gen::CATALOG_CORPUS`]) contributes
+    /// one sentence per cataloged tool, so every tool name enters the model's
+    /// vocabulary and the execution-class language is reinforced. It is
+    /// appended only here; the `trained_*` constructors train on exactly the
+    /// corpus they are given, keeping test baselines pure.
     ///
     /// Training is memoized in a process-wide [`std::sync::OnceLock`] and
     /// subsequent calls return a clone, so repeated use (tests, multiple CLI
@@ -419,8 +528,12 @@ impl NeuralLanguageModel {
         static CACHED: std::sync::OnceLock<NeuralLanguageModel> = std::sync::OnceLock::new();
         CACHED
             .get_or_init(|| {
-                let mut model = Self::trained_on(SECURITY_CORPUS, EPOCHS);
-                model.lm_refine_attention(SECURITY_CORPUS);
+                let corpus = bundled_corpus();
+                let mut model = Self::trained_on(&corpus, EPOCHS);
+                model.lm_refine_attention(&corpus);
+                // Re-calibrate after refinement, since the LM pass shifts the
+                // perplexity distribution the threshold is derived from.
+                model.anomaly_threshold = model.calibrate_anomaly_threshold(&corpus);
                 model
             })
             .clone()
@@ -457,6 +570,7 @@ impl NeuralLanguageModel {
             w2: init(vocab_len * HIDDEN, 0.3, &mut rng),
             b2: vec![0.0; vocab_len],
             vocab,
+            anomaly_threshold: ANOMALY_THRESHOLD_FALLBACK,
         };
 
         let sentences = encode_sentences(&model.vocab, corpus);
@@ -469,20 +583,27 @@ impl NeuralLanguageModel {
                 }
             }
         }
+        // Calibrate the anomaly threshold against the trained model's own
+        // in-domain perplexity distribution.
+        model.anomaly_threshold = model.calibrate_anomaly_threshold(corpus);
         model
     }
 
-    /// Mean-pooled embedding of `text` over its in-vocabulary tokens (a
-    /// bag-of-embeddings sentence vector), length [`EMBED`]. Zero vector when
-    /// no token is known. Used by the natural-language intent router to
+    /// Mean-pooled embedding of `text` (a bag-of-embeddings sentence vector),
+    /// length [`EMBED`]. Every word contributes: a known word through its
+    /// whole-word embedding, an unknown word through the mean of its
+    /// character embeddings (byte-fallback, see
+    /// [`Vocabulary::tokenize_word`]), so out-of-vocabulary terms are no
+    /// longer silently ignored. Zero vector only for empty or
+    /// non-alphanumeric input. Used by the natural-language intent router to
     /// compare an instruction against capability descriptions in the model's
     /// learned semantic space.
     #[must_use]
     pub fn embed_text(&self, text: &str) -> Vec<f32> {
         let mut sum = vec![0.0_f32; EMBED];
         let mut n = 0usize;
-        for token in text.split_whitespace().filter_map(normalize) {
-            if let Some(id) = self.vocab.id(&token) {
+        for word in text.split_whitespace().filter_map(normalize) {
+            for id in self.vocab.tokenize_word(&word) {
                 let base = id * EMBED;
                 for (acc, &value) in sum.iter_mut().zip(&self.embed[base..base + EMBED]) {
                     *acc += value;
@@ -497,6 +618,60 @@ impl NeuralLanguageModel {
             }
         }
         sum
+    }
+
+    /// Whether `word` is a first-class whole-word vocabulary token rather
+    /// than one that falls back to characters. Exposed for the evaluation
+    /// harness's word-level coverage metric.
+    #[must_use]
+    pub fn knows_word(&self, word: &str) -> bool {
+        normalize(word).is_some_and(|w| self.vocab.knows_word(&w))
+    }
+
+    /// The self-calibrated anomaly threshold: perplexity at or above which a
+    /// string is out-of-domain enough to flag (see [`crate::anomaly`]).
+    ///
+    /// Derived from this model's own in-domain perplexity distribution rather
+    /// than a hand-tuned constant, so it tracks the model automatically —
+    /// corpus, tokenizer, or training changes that shift the perplexity scale
+    /// no longer require re-tuning a magic number.
+    #[must_use]
+    pub const fn anomaly_threshold(&self) -> f32 {
+        self.anomaly_threshold
+    }
+
+    /// Computes the anomaly threshold from the model's per-sentence perplexity
+    /// over `corpus`, its notion of "normal" in-domain text.
+    ///
+    /// Perplexity is the exponential of mean per-token surprise, so it is
+    /// multiplicative and heavy-tailed; its in-domain distribution is modeled
+    /// as log-normal. The threshold is `exp(mu + K*sigma)` of the per-sentence
+    /// log-perplexities — the point [`ANOMALY_CALIBRATION_SIGMAS`] standard
+    /// deviations above typical in-domain surprise *in log space*. Text above
+    /// it is surprising at a level the model rarely produces for in-domain
+    /// content. Floored by [`ANOMALY_THRESHOLD_FLOOR`] and falling back to
+    /// [`ANOMALY_THRESHOLD_FALLBACK`] when the corpus yields no finite score.
+    fn calibrate_anomaly_threshold(&self, corpus: &str) -> f32 {
+        let logs: Vec<f32> = corpus
+            .split('.')
+            .map(str::trim)
+            .filter(|sentence| !sentence.is_empty())
+            .map(|sentence| self.perplexity(sentence))
+            .filter(|p| p.is_finite() && *p > 0.0)
+            .map(f32::ln)
+            .collect();
+
+        if logs.is_empty() {
+            return ANOMALY_THRESHOLD_FALLBACK;
+        }
+
+        let n = count(logs.len());
+        let mean_log = logs.iter().sum::<f32>() / n;
+        let variance = logs.iter().map(|log| (log - mean_log).powi(2)).sum::<f32>() / n;
+        let threshold = ANOMALY_CALIBRATION_SIGMAS
+            .mul_add(variance.sqrt(), mean_log)
+            .exp();
+        threshold.max(ANOMALY_THRESHOLD_FLOOR)
     }
 
     /// Looks up the raw per-position token embeddings for `context`,
@@ -834,10 +1009,15 @@ impl NeuralLanguageModel {
     fn sample_next(&self, context: [usize; CONTEXT], rng: &mut Rng) -> usize {
         let pass = self.forward(context);
 
+        // Restrict sampling to emittable tokens: whole words and EOS. The
+        // character byte-fallback tokens exist only to encode unknown input
+        // and must never be generated as raw characters, which would derail
+        // the continuation.
         let mut candidates: Vec<(usize, f32)> = pass
             .probs
             .iter()
             .enumerate()
+            .filter(|&(id, _)| self.vocab.is_emittable(id))
             .map(|(id, &p)| (id, p.max(f32::MIN_POSITIVE).powf(1.0 / TEMPERATURE)))
             .collect();
         candidates.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
@@ -855,14 +1035,16 @@ impl NeuralLanguageModel {
     }
 
     /// Encodes `prompt` into an initial context of the last [`CONTEXT`]
-    /// known token ids, padding with [`BOS`] when the prompt is short or its
-    /// words are out of vocabulary.
+    /// token ids, padding with [`BOS`] when the prompt is short. Unknown
+    /// words fall back to character tokens (see
+    /// [`Vocabulary::tokenize_word`]) rather than being dropped, so a prompt
+    /// made only of out-of-vocabulary words still seeds a real context.
     fn seed_context(&self, prompt: &str) -> [usize; CONTEXT] {
         let bos = self.vocab.id(BOS).unwrap_or(0);
         let known: Vec<usize> = prompt
             .split_whitespace()
             .filter_map(normalize)
-            .filter_map(|token| self.vocab.id(&token))
+            .flat_map(|word| self.vocab.tokenize_word(&word))
             .collect();
         let mut context = [bos; CONTEXT];
         for (slot, &id) in context
@@ -1508,7 +1690,9 @@ mod tests {
         let second = model.generate("the coordinator plans an", 8);
         assert_eq!(first, second, "sampling must be deterministic per prompt");
 
-        let vocab = Vocabulary::from_corpus(SECURITY_CORPUS);
+        // The bundled model trains on the combined corpus, so its vocabulary
+        // (and therefore its emittable tokens) includes catalog tool names.
+        let vocab = Vocabulary::from_corpus(&bundled_corpus());
         for token in first.split_whitespace() {
             assert!(
                 vocab.id(token).is_some(),
@@ -1537,16 +1721,24 @@ mod tests {
     #[test]
     fn sample_next_can_diverge_from_the_greedy_pick() {
         let model = NeuralLanguageModel::bundled();
-        let context = model.seed_context("the coordinator plans an");
+        // A sentence-start context (all padding) spreads probability across
+        // many sentence openers, so the next-token distribution is flat enough
+        // that sampling reliably diverges from the top pick on every platform.
+        // A peaked mid-sentence context can, under different float rounding,
+        // leave the top token dominant enough that no seed diverges.
+        let context = model.seed_context("");
         let pass = model.forward(context);
+        // Greedy over the tokens `sample_next` can actually emit, so the
+        // comparison matches the candidate set sampling draws from.
         let greedy = pass
             .probs
             .iter()
             .enumerate()
+            .filter(|&(id, _)| model.vocab.is_emittable(id))
             .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
             .map_or(0, |(id, _)| id);
 
-        let diverged = (0..64u64).any(|seed| {
+        let diverged = (0..256u64).any(|seed| {
             let mut rng = Rng::new(seed);
             model.sample_next(context, &mut rng) != greedy
         });
@@ -1798,7 +1990,9 @@ mod tests {
     fn generation_handles_unknown_and_empty_prompts() {
         let model = NeuralLanguageModel::bundled();
         let out = model.generate("qqqq zzzz", 6);
-        let vocab = Vocabulary::from_corpus(SECURITY_CORPUS);
+        // Compare against the model's actual training vocabulary (the combined
+        // corpus), which includes catalog tool names the model may emit.
+        let vocab = Vocabulary::from_corpus(&bundled_corpus());
         for token in out.split_whitespace() {
             assert!(vocab.id(token).is_some());
         }
@@ -1815,6 +2009,33 @@ mod tests {
             "in-domain text should be less surprising: in_domain={in_domain:.2} gibberish={gibberish:.2}"
         );
         assert!(in_domain.is_finite());
+    }
+
+    #[test]
+    fn calibrated_anomaly_threshold_separates_in_domain_from_gibberish() {
+        let model = NeuralLanguageModel::bundled();
+        let threshold = model.anomaly_threshold();
+
+        assert!(
+            threshold >= ANOMALY_THRESHOLD_FLOOR,
+            "threshold {threshold:.1} must respect the floor {ANOMALY_THRESHOLD_FLOOR:.1}",
+        );
+        for text in [
+            "the policy engine denies out of scope targets",
+            "static analysis surfaces injection and unsafe deserialization bugs",
+            "the audit ledger records every authorized action",
+        ] {
+            assert!(
+                model.perplexity(text) < threshold,
+                "in-domain text should sit below the calibrated threshold ({threshold:.1}): {text}",
+            );
+        }
+        for text in ["zzq xqv vfrb qwx ncbz", "qwph jklzx mbvpre ttghre plfwqz"] {
+            assert!(
+                model.perplexity(text) >= threshold,
+                "gibberish should sit at or above the calibrated threshold ({threshold:.1}): {text}",
+            );
+        }
     }
 
     #[test]

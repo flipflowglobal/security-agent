@@ -40,10 +40,10 @@ trait FindingParser {
 /// operator, it is simply not auto-ingested into scored findings yet.
 #[must_use]
 pub fn ingest(target_id: &str, report: &ToolExecutionReport) -> Vec<Finding> {
-    let parsers: Vec<&dyn FindingParser> = vec![
+    let parsers: &[&dyn FindingParser] = &[
         &SemgrepJsonParser,
         &NucleiSarifParser,
-        &NmapJsonParser,
+        &NmapParser,
         &NiktoJsonParser,
         &SqlmapJsonParser,
         &HydraJsonParser,
@@ -64,6 +64,7 @@ pub fn ingest(target_id: &str, report: &ToolExecutionReport) -> Vec<Finding> {
         &JadxJsonParser,
         &MobSfJsonParser,
         &GenericJsonLinesParser,
+        &NmapParser,
     ];
     let Some(parser) = parsers
         .into_iter()
@@ -250,97 +251,119 @@ impl FindingParser for NucleiSarifParser {
     }
 }
 
-// ─── Nmap (-oJ JSON output) ─────────────────────────────────────────────────
+// ─── Nmap (JSON -oJ + XML -oX) ─────────────────────────────────────────────
 
-struct NmapJsonParser;
+/// Unified nmap parser that auto-detects format: JSON (`-oJ`, top-level array)
+/// or XML (`-oX`, `<nmaprun>`). Falls back to XML parsing for the test
+/// path that supplies XML output — this avoids registering two parsers for
+/// the same tool name (which makes the first-wins lookup order-dependent).
+struct NmapParser;
 
-impl FindingParser for NmapJsonParser {
+impl FindingParser for NmapParser {
     fn tool_name(&self) -> &'static str {
         "nmap"
     }
 
     fn parse(&self, target_id: &str, report: &ToolExecutionReport) -> Vec<Finding> {
-        // nmap -oJ wraps results in a top-level array (may contain null elements)
         let stdout = report.stdout.trim();
-        let json_str = if stdout.starts_with('[') {
-            stdout
-        } else {
-            return Vec::new();
-        };
-        let Some(root) = json::parse(json_str) else {
-            return Vec::new();
-        };
-        let hosts = match &root {
-            JsonValue::Array(arr) => arr.iter().filter_map(|v| {
-                if v.is_null() {
-                    None
-                } else {
-                    Some(v)
-                }
-            }),
-            _ => return Vec::new(),
-        };
 
-        let mut findings = Vec::new();
-        for host in hosts {
-            let addr = extract_str(host, "address").unwrap_or("unknown");
-            let ports = json_array_or_empty(host, "ports");
-            for port_val in ports {
-                let port_id = extract_u64(port_val, "portid").unwrap_or(0);
-                let protocol = extract_str(port_val, "protocol").unwrap_or("tcp");
-                let state = extract_str(port_val, "state").unwrap_or("unknown");
+        // Try JSON path first (nmap -oJ produces a top-level array)
+        if stdout.starts_with('[') {
+            return parse_nmap_json(target_id, stdout);
+        }
 
-                let service_name = port_val
-                    .get("service")
-                    .and_then(|s| extract_str(s, "name"))
-                    .unwrap_or("unknown");
+        // Fall back to XML path (nmap -oX)
+        parse_nmap_xml(target_id, stdout)
+    }
+}
 
-                let is_open = state == "open";
-                let severity = if is_open && is_risky_port(port_id) {
-                    Severity::High
-                } else if is_open {
-                    Severity::Informational
-                } else {
-                    Severity::Informational
-                };
+fn parse_nmap_json(target_id: &str, json_str: &str) -> Vec<Finding> {
+    let Some(root) = json::parse(json_str) else {
+        return Vec::new();
+    };
+    let hosts = match &root {
+        JsonValue::Array(arr) => arr.iter().filter_map(|v| {
+            if v.is_null() { None } else { Some(v) }
+        }),
+        _ => return Vec::new(),
+    };
 
-                let title = format!(
-                    "{port_id}/{protocol} {state} — {service_name} on {addr}"
-                );
+    let mut findings = Vec::new();
+    for host in hosts {
+        let addr = extract_str(host, "address").unwrap_or("unknown");
+        let ports = json_array_or_empty(host, "ports");
+        for port_val in ports {
+            let port_id = extract_u64(port_val, "portid").unwrap_or(0);
+            let protocol = extract_str(port_val, "protocol").unwrap_or("tcp");
+            let state = extract_str(port_val, "state").unwrap_or("unknown");
+            let service_name = port_val
+                .get("service")
+                .and_then(|s| extract_str(s, "name"))
+                .unwrap_or("unknown");
 
-                // Check for NSE scripts that indicate vulnerabilities
-                let scripts = json_array_or_empty(port_val, "scripts");
-                for script in scripts {
-                    let script_id = extract_str(script, "id").unwrap_or("nse-script");
-                    let script_output = extract_str(script, "output").unwrap_or("");
+            let is_open = state == "open";
+            let severity = if is_open && is_risky_port(port_id) {
+                Severity::High
+            } else {
+                Severity::Informational
+            };
 
-                    let script_severity = classify_nmap_script(script_id, script_output);
-                    let index = findings.len();
-                    findings.push(scored_finding(
-                        self.tool_name(),
-                        target_id,
-                        index,
-                        format!("NSE: {script_id} on {addr}:{port_id}"),
-                        script_severity,
-                        65,
-                        format!("{addr}:{port_id} — {script_output}"),
-                    ));
-                }
+            let title = format!("{port_id}/{protocol} {state} — {service_name} on {addr}");
 
+            // NSE scripts that indicate vulnerabilities
+            let scripts = json_array_or_empty(port_val, "scripts");
+            for script in scripts {
+                let script_id = extract_str(script, "id").unwrap_or("nse-script");
+                let script_output = extract_str(script, "output").unwrap_or("");
+                let script_severity = classify_nmap_script(script_id, script_output);
                 let index = findings.len();
                 findings.push(scored_finding(
-                    self.tool_name(),
-                    target_id,
-                    index,
-                    title,
-                    severity,
-                    80,
-                    format!("{addr}:{port_id}/{protocol}"),
+                    "nmap", target_id, index,
+                    format!("NSE: {script_id} on {addr}:{port_id}"),
+                    script_severity, 65,
+                    format!("{addr}:{port_id} — {script_output}"),
                 ));
             }
+
+            let index = findings.len();
+            findings.push(scored_finding(
+                "nmap", target_id, index, title, severity, 80,
+                format!("{addr}:{port_id}/{protocol}"),
+            ));
         }
-        findings
     }
+    findings
+}
+
+fn parse_nmap_xml(target_id: &str, xml: &str) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    for host_block in xml.split("<host ").skip(1) {
+        let address = xml_attr(host_block, "addr").unwrap_or(target_id);
+        for port_block in host_block.split("<port ").skip(1) {
+            if findings.len() >= MAX_FINDINGS_PER_REPORT {
+                return findings;
+            }
+            if !port_block.contains("state=\"open\"") {
+                continue;
+            }
+            let protocol = xml_attr(port_block, "protocol").unwrap_or("tcp");
+            let Some(port) = xml_attr(port_block, "portid") else {
+                continue;
+            };
+            let service = port_block
+                .split_once("<service ")
+                .and_then(|(_, rest)| xml_attr(rest, "name"))
+                .unwrap_or("unknown");
+            let index = findings.len();
+            findings.push(scored_finding(
+                "nmap", target_id, index,
+                format!("open-port-{port}-{protocol} ({service})"),
+                Severity::Informational, 80,
+                format!("{address}:{port}/{protocol}"),
+            ));
+        }
+    }
+    findings
 }
 
 fn is_risky_port(port: u64) -> bool {
@@ -1807,6 +1830,15 @@ impl FindingParser for GenericJsonLinesParser {
     }
 }
 
+/// Reads an attribute value `key="value"` out of an XML fragment, or `None`.
+fn xml_attr<'a>(fragment: &'a str, key: &str) -> Option<&'a str> {
+    let needle = format!("{key}=\"");
+    let start = fragment.find(&needle)? + needle.len();
+    let rest = &fragment[start..];
+    let end = rest.find('"')?;
+    Some(&rest[..end])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1970,8 +2002,27 @@ mod tests {
 
     #[test]
     fn unknown_tool_returns_empty_vec() {
-        let findings = ingest("target-a", &report("nonexistent-tool", "some output"));
+        let findings = ingest("target-a", &report("wafw00f", "some scan output"));
         assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn nmap_xml_yields_informational_findings_for_open_ports() {
+        let xml = r#"<nmaprun><host starttime="1"><address addr="10.0.0.5" addrtype="ipv4"/>
+            <ports>
+              <port protocol="tcp" portid="443"><state state="open"/><service name="https"/></port>
+              <port protocol="tcp" portid="22"><state state="closed"/><service name="ssh"/></port>
+            </ports></host></nmaprun>"#;
+        let findings = ingest("target-a", &report("nmap", xml));
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, Severity::Informational);
+        assert!(findings[0].title.contains("open-port-443-tcp"));
+        assert_eq!(findings[0].remediation_playbook, "10.0.0.5:443/tcp");
+    }
+
+    #[test]
+    fn nmap_non_xml_output_yields_nothing() {
+        assert!(ingest("target-a", &report("nmap", "some scan output")).is_empty());
     }
 
     #[test]

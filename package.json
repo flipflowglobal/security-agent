@@ -1,0 +1,22 @@
+{
+  "name": "security-agent-desktop",
+  "version": "1.0.0",
+  "description": "Security Agent — Autonomous Offline Security Operations Desktop Console",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "echo \"No test specified\""
+  },
+  "keywords": [
+    "security",
+    "cybersecurity",
+    "audit",
+    "offline-agent",
+    "electron"
+  ],
+  "author": "FlipFlow Global",
+  "license": "BSL-1.1",
+  "devDependencies": {
+    "electron": "^34.0.0"
+  }
+}

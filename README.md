@@ -172,8 +172,19 @@ The `MobileAndroid` specialist uses a dedicated tool set for APK/DEX analysis an
 | `src/policy.rs` | Authorization and least-privilege policy engine |
 | `src/workflow.rs` | Ordered workflow stage model |
 | `src/coordinator.rs` | Orchestration, scoped task planning, audit integration |
+| `src/orchestrator.rs` | Turns a plan into an ordered, deduplicated execution schedule (least-invasive first: static → active network → exploitation) |
 | `src/engagement_config.rs` | Zero-dependency parser for `--plan-scan` engagement config files |
-| `src/execution.rs` | Bounded real execution of `StaticLocalAnalysis` cataloged tools, plus `execute_plan` |
+| `src/execution.rs` | Bounded real execution of `StaticLocalAnalysis` cataloged tools, run in the orchestrator's scheduled order via `execute_plan` |
+| `src/tool_adapter.rs` | Per-tool invocation model: builds each tool's concrete `argv`/output-format from an authorized step + discovered context (`AdapterRegistry`, `ToolAdapter`) |
+| `src/runtime.rs` | Concurrent execution runtime: class-ordered bounded concurrency, deterministic output, rate limiting, cancellation, mid-run authorization guard, checkpoint/resume (`ExecutionRuntime`) |
+| `src/engagement_context.rs` | Discovery blackboard: deduplicated hosts/services/endpoints threaded through the staged pipeline (`EngagementContext`) |
+| `src/pipeline.rs` | Result-driven staged engagement: runs the schedule class-by-class, folding each stage's discoveries forward (`run_engagement_pipeline`) |
+| `src/correlation.rs` | Deduplicates and cross-tool-correlates findings, boosting confidence on independent corroboration (`correlate`) |
+| `src/evidence.rs` | Evidence capture / chain-of-custody: SHA-256 of each tool's output plus provenance (`EvidenceRecord`, `capture`) |
+| `src/report.rs` | Engagement deliverables: SARIF 2.1.0, machine JSON summary, and Markdown report (rollups, remediation, attack-path narrative, evidence) — surfaced by `--report` |
+| `src/secrets.rs` | Credential handling for authenticated tools: redaction-safe `Secret`, a store resolving `${secret:NAME}` references from env/file, and output scrubbing (`SecretStore`) |
+| `src/scope.rs` | Pre-spawn egress scope enforcement: refuses out-of-scope IPv4/CIDR/URL targets in a tool's argv before it runs (`ScopePolicy`) |
+| `src/observability.rs` | Structured engagement events + pluggable sinks (JSON-lines/collecting/null) and a progress rollup, emitted live by the runtime (`EngagementEvent`, `EventSink`, `ProgressSummary`) |
 | `src/audit_log.rs` | Append-only on-disk persistence for the audit ledger |
 | `src/audit_db.rs` | Same role as `audit_log.rs`, backed by the zero-dependency `.sadb` embedded database instead of JSON Lines |
 | `src/findings.rs` | Unified finding model and normalized risk scorer |

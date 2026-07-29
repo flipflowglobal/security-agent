@@ -1,0 +1,13 @@
+{
+  "agents": [
+    {
+      "name": "aureon",
+      "displayName": "AUREON Quant & DeFi Agent",
+      "description": "AUREON Autonomous DeFi Trading & Agent Platform - advanced engineering and quantitative research agent",
+      "mode": "primary",
+      "color": "#00FF88",
+      "path": ".agents/agents/aureon/aureon.txt",
+      "promptFile": ".agents/agents/aureon/aureon.txt"
+    }
+  ]
+}
