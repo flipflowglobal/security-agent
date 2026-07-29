@@ -90,15 +90,18 @@ const CODES: usize = 56;
 /// residual path *through* the quantizer that shrinks quantization error and
 /// recovers detail the discrete bottleneck would otherwise lose.
 const VQ_STAGES: usize = 2;
-/// Hidden-layer width of the prediction head.
-const HIDDEN: usize = 28;
-/// Training passes over the corpus. The bundled model now trains on the
+/// Hidden-layer width of the prediction head. Widened alongside the corpus
+/// scale-up: the extra capacity sharpens perplexity discrimination on the
+/// larger, more varied training text without inflating `FEAT` (which is tied
+/// to `EMBED`), so training cost stays moderate.
+const HIDDEN: usize = 40;
+/// Training passes over the corpus. The bundled model trains on the
 /// hand-written corpus plus the generated catalog corpus (one sentence per
-/// cataloged tool), which roughly triples the windows per epoch, so fewer
-/// epochs reach comparable total gradient exposure while keeping training
-/// fast. Held-out perplexity discrimination and routing accuracy (see
-/// `crate::lm_eval`) stay well above their floors at this count.
-const EPOCHS: usize = 35;
+/// cataloged tool). Both have grown — more windows per epoch — so few epochs
+/// reach ample total gradient exposure while keeping training fast. Held-out
+/// perplexity discrimination and routing accuracy (see `crate::lm_eval`) stay
+/// well above their floors at this count.
+const EPOCHS: usize = 30;
 /// SGD learning rate.
 const LEARNING_RATE: f32 = 0.05;
 /// Weight of the VQ commitment/codebook penalties.
@@ -145,12 +148,17 @@ const EOS: &str = "</s>";
 /// dropped before scoring.
 const ALPHABET: &str = "abcdefghijklmnopqrstuvwxyz0123456789";
 
-/// How many log-space standard deviations above the model's typical in-domain
-/// perplexity the self-calibrated anomaly threshold sits (see
-/// [`NeuralLanguageModel::calibrate_anomaly_threshold`]). Larger is more
-/// conservative (fewer false positives). Chosen so the threshold lands in the
-/// wide gap between in-domain finding text and out-of-vocabulary gibberish.
-const ANOMALY_CALIBRATION_SIGMAS: f32 = 4.0;
+/// The percentile of the model's in-domain per-sentence perplexity taken as
+/// the base of the self-calibrated anomaly threshold (see
+/// [`NeuralLanguageModel::calibrate_anomaly_threshold`]). A high percentile is
+/// robust to the heavy right tail a few unusual training sentences create —
+/// unlike a mean-plus-k-sigma fit, whose sigma that tail inflates until the
+/// threshold overshoots even gibberish.
+const ANOMALY_CALIBRATION_PERCENTILE: f32 = 0.90;
+/// Multiplier applied to that percentile to leave headroom above ordinary
+/// in-domain surprise while staying far below out-of-vocabulary gibberish
+/// (in-domain perplexity reaches the hundreds; gibberish, tens of thousands).
+const ANOMALY_CALIBRATION_MARGIN: f32 = 6.0;
 /// Lower bound for the calibrated threshold, so a degenerate corpus can never
 /// drive it low enough to flag ordinary text.
 const ANOMALY_THRESHOLD_FLOOR: f32 = 100.0;
@@ -163,9 +171,11 @@ const ANOMALY_THRESHOLD_FALLBACK: f32 = 1000.0;
 /// (recon, web, cloud, mobile, network, social engineering, governance,
 /// reporting) so both generation and the NLU router's
 /// [`NeuralLanguageModel::embed_text`] space see more of the terms real
-/// capability phrasings use — while
-/// staying small enough that training (SGD, deterministic, from scratch)
-/// remains fast.
+/// capability phrasings use. It deliberately includes finding-title-style
+/// sentences ("a port scan detected an open service on a remote host") so the
+/// model learns the structure of real finding text, which lifts word-level
+/// coverage of realistic findings (see `crate::lm_eval`). It stays small
+/// enough that training (SGD, deterministic, from scratch) remains fast.
 const SECURITY_CORPUS: &str = "\
 the coordinator plans an authorized scan across in scope targets.
 every finding is scored by severity and confidence.
@@ -218,7 +228,38 @@ the intensity guard throttles requests to avoid disrupting production.
 a deny listed target is refused before any scan begins.
 network policy keeps the agent offline until the operator opts in.
 compliance reporting maps findings to a recognized control framework.
-the retest confirms whether a remediated finding has actually been fixed.";
+the retest confirms whether a remediated finding has actually been fixed.
+a port scan detected an open service on a remote host.
+a service banner revealed the running version on an open port.
+an exposed admin panel returned a login page without authentication.
+a directory scan found a hidden git folder exposed on the staging host.
+a subdomain enumeration discovered an unlisted host outside the inventory.
+a web scan flagged an outdated plugin on the content management system.
+a password spray attempted many logins against the exposed portal.
+a decompiled application exposed an embedded key in the mobile binary.
+a network capture revealed cleartext credentials traveling on the wire.
+a certificate check reported an expired certificate on the login host.
+a fuzzing run triggered an unhandled error in the request handler.
+a directory listing exposed a backup archive on the public server.
+a default credential granted access to the management console.
+a verbose error message leaked a stack trace and an internal path.
+an open redirect forwarded a victim to an attacker controlled domain.
+a session token failed to expire after the user logged out.
+a memory image analysis recovered artifacts of a running process.
+a wireless capture recorded a handshake from a nearby access point.
+a local privilege escalation abused a misconfigured service permission.
+a supply chain review flagged an unpinned dependency with a known flaw.
+an api endpoint returned another user record without an authorization check.
+a rate limit was missing on the password reset endpoint.
+a secret was committed to the repository history in plaintext.
+a firewall rule allowed inbound traffic to an internal service.
+the scanner ranks each open service by exposure and likely impact.
+the operator reviews the evidence before the finding is confirmed.
+the coordinator schedules the next wave once discovery completes.
+discovery of a new host expands the authorized scan to reachable services.
+the report groups related findings by affected host and severity.
+a credential stuffing attempt reused leaked passwords against the login.
+the specialist verifies a suspected vulnerability before reporting it.";
 
 /// The full training corpus for the bundled model: the hand-written
 /// [`SECURITY_CORPUS`] followed by the generated catalog corpus (one sentence
@@ -285,6 +326,16 @@ fn hash_prompt(prompt: &str) -> u64 {
 #[allow(clippy::cast_precision_loss)]
 const fn count(value: usize) -> f32 {
     value as f32
+}
+
+/// The `q`-quantile (`q` in `[0, 1]`) of an ascending-sorted, non-empty slice,
+/// by nearest-rank. Deterministic and allocation-free.
+fn percentile(sorted: &[f32], q: f32) -> f32 {
+    let last = sorted.len() - 1;
+    let rank = (q.clamp(0.0, 1.0) * count(last)).round();
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let index = (rank as usize).min(last);
+    sorted[index]
 }
 
 /// The DCT-II basis matrix (`CONTEXT` × `CONTEXT`), row-major:
@@ -643,35 +694,31 @@ impl NeuralLanguageModel {
     /// Computes the anomaly threshold from the model's per-sentence perplexity
     /// over `corpus`, its notion of "normal" in-domain text.
     ///
-    /// Perplexity is the exponential of mean per-token surprise, so it is
-    /// multiplicative and heavy-tailed; its in-domain distribution is modeled
-    /// as log-normal. The threshold is `exp(mu + K*sigma)` of the per-sentence
-    /// log-perplexities — the point [`ANOMALY_CALIBRATION_SIGMAS`] standard
-    /// deviations above typical in-domain surprise *in log space*. Text above
-    /// it is surprising at a level the model rarely produces for in-domain
-    /// content. Floored by [`ANOMALY_THRESHOLD_FLOOR`] and falling back to
+    /// The threshold is a high percentile
+    /// ([`ANOMALY_CALIBRATION_PERCENTILE`]) of the per-sentence perplexities,
+    /// scaled by [`ANOMALY_CALIBRATION_MARGIN`]. A percentile is deliberately
+    /// used instead of a mean-plus-k-sigma fit: perplexity is heavy-tailed, so
+    /// a handful of unusually surprising training sentences inflate the
+    /// standard deviation until the threshold overshoots even gibberish,
+    /// whereas a percentile tracks the bulk of the distribution regardless of
+    /// the tail. Floored by [`ANOMALY_THRESHOLD_FLOOR`] and falling back to
     /// [`ANOMALY_THRESHOLD_FALLBACK`] when the corpus yields no finite score.
     fn calibrate_anomaly_threshold(&self, corpus: &str) -> f32 {
-        let logs: Vec<f32> = corpus
+        let mut perplexities: Vec<f32> = corpus
             .split('.')
             .map(str::trim)
             .filter(|sentence| !sentence.is_empty())
             .map(|sentence| self.perplexity(sentence))
             .filter(|p| p.is_finite() && *p > 0.0)
-            .map(f32::ln)
             .collect();
 
-        if logs.is_empty() {
+        if perplexities.is_empty() {
             return ANOMALY_THRESHOLD_FALLBACK;
         }
 
-        let n = count(logs.len());
-        let mean_log = logs.iter().sum::<f32>() / n;
-        let variance = logs.iter().map(|log| (log - mean_log).powi(2)).sum::<f32>() / n;
-        let threshold = ANOMALY_CALIBRATION_SIGMAS
-            .mul_add(variance.sqrt(), mean_log)
-            .exp();
-        threshold.max(ANOMALY_THRESHOLD_FLOOR)
+        perplexities.sort_by(f32::total_cmp);
+        let base = percentile(&perplexities, ANOMALY_CALIBRATION_PERCENTILE);
+        (base * ANOMALY_CALIBRATION_MARGIN).max(ANOMALY_THRESHOLD_FLOOR)
     }
 
     /// Looks up the raw per-position token embeddings for `context`,
