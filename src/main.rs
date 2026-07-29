@@ -37,6 +37,7 @@ fn main() -> ExitCode {
         Some("--view-reasoning-log-db") => view_reasoning_log_db_command(&mut arguments),
         Some("--schedule-retest") => schedule_retest_command(&mut arguments),
         Some("--report") => report_command(&mut arguments),
+        Some("--lm-eval") => lm_eval_command(),
         Some("--llm-generate") => llm_generate_command(&mut arguments),
         Some("--llm-perplexity") => llm_perplexity_command(&mut arguments),
         Some("--ask") => ask_command(&assets, &mut arguments),
@@ -947,6 +948,24 @@ fn llm_generate_command(arguments: &mut impl Iterator<Item = String>) -> ExitCod
         println!("{prompt} {continuation}");
     }
     ExitCode::SUCCESS
+}
+
+/// Runs the held-out evaluation of the built-in language model and prints
+/// the report (`--lm-eval`). Measures the model's three production jobs —
+/// perplexity-based anomaly discrimination, intent routing, and generation —
+/// against fixed quality floors, plus a vocabulary-coverage diagnostic.
+/// Exits non-zero when a gated floor is not met, so the command doubles as a
+/// regression check outside the test suite.
+fn lm_eval_command() -> ExitCode {
+    let assets = security_agent::LocalAgentAssets::bundled();
+    let model = security_agent::NeuralLanguageModel::bundled();
+    let report = security_agent::evaluate(&assets, &model);
+    print!("{}", report.summary());
+    if report.passes() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
 }
 
 /// Scores how surprising text is to the built-in language model
