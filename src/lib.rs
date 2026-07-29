@@ -11,6 +11,7 @@ pub mod cognition;
 pub mod cognitive_engine;
 pub mod compat;
 pub mod coordinator;
+pub mod corpus_gen;
 pub mod correlation;
 pub mod engagement_config;
 pub mod engagement_context;
@@ -25,6 +26,7 @@ pub mod integrity;
 pub mod intensity_guard;
 mod json;
 pub mod language_model;
+pub mod lm_eval;
 pub mod local_analyzers;
 pub mod local_assets;
 pub mod memory_store;
@@ -96,6 +98,9 @@ pub use governance::{AuditLedger, AuditRecord, Role};
 pub use integrity::{IntegrityManifest, IntegrityStatus, verify};
 pub use intensity_guard::{IntensityAdvisory, advise};
 pub use language_model::{LanguageModel, NeuralLanguageModel};
+pub use lm_eval::{
+    CoverageEval, GenerationEval, LmEvalReport, PerplexityEval, RoutingEval, evaluate,
+};
 pub use local_analyzers::{
     BinwalkReport, CarvedFile, EntropyRegion, FeatureGroup, FeatureReport, ForemostReport,
     HashdeepReport, HashedFile, SignatureHit, run_binwalk, run_bulk_extractor, run_foremost,

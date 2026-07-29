@@ -16,10 +16,15 @@
 use crate::findings::Finding;
 use crate::language_model::LanguageModel;
 
-/// Default perplexity above which a string is treated as anomalous. The
-/// bundled corpus is small, so this is set high to flag only clearly
-/// out-of-domain text rather than merely unusual phrasing.
-pub const DEFAULT_ANOMALY_THRESHOLD: f32 = 60.0;
+/// Fallback perplexity threshold for callers that have no concrete model to
+/// calibrate against.
+///
+/// Prefer [`crate::language_model::NeuralLanguageModel::anomaly_threshold`],
+/// which derives the cutoff from the model's own in-domain perplexity
+/// distribution and therefore tracks corpus/tokenizer/training changes
+/// without re-tuning. This constant is only the scale-tied default used when
+/// a self-calibrated value is unavailable.
+pub const DEFAULT_ANOMALY_THRESHOLD: f32 = 1000.0;
 
 /// One finding's text scored for language-model surprise.
 #[derive(Debug, Clone, PartialEq)]
@@ -90,7 +95,8 @@ mod tests {
             finding("F-normal", "the policy engine denies out of scope targets"),
             finding("F-weird", "zzq xqv vfrb qwx ncbz"),
         ];
-        let flags = scan_findings(&findings, &model, DEFAULT_ANOMALY_THRESHOLD);
+        // Exercise the self-calibrated threshold, not the fallback constant.
+        let flags = scan_findings(&findings, &model, model.anomaly_threshold());
 
         let weird = flags.iter().find(|f| f.finding_id == "F-weird").unwrap();
         let normal = flags.iter().find(|f| f.finding_id == "F-normal").unwrap();
