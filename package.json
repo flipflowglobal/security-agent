@@ -2,7 +2,7 @@
   "name": "security-agent-desktop",
   "version": "1.0.0",
   "description": "Security Agent — Autonomous Offline Security Operations Desktop Console",
-  "main": "main.js",
+  "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
     "test": "echo \"No test specified\""
