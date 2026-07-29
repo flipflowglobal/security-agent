@@ -133,8 +133,13 @@ const SPECS: &[IntentSpec] = &[
         examples: &["list skills", "what skills do you have", "show skills"],
     },
     IntentSpec {
+        // "show" is deliberately not a trigger: it is a generic display verb
+        // ("show me the tools", "show the audit log") that collides with other
+        // intents. A skill-explanation request is anchored instead by naming a
+        // tool/skill (which adds a strong signal below) or by an explicit
+        // "explain"/"describe" verb.
         intent: Intent::ShowSkill,
-        triggers: &["show", "explain", "describe", "how do i use", "skill for"],
+        triggers: &["explain", "describe", "how do i use", "skill for"],
         examples: &[
             "show me the nmap skill",
             "explain the semgrep tool",
@@ -258,20 +263,20 @@ pub fn interpret(
     let mut scored: Vec<(Intent, f32, f32)> = SPECS
         .iter()
         .map(|spec| {
-            let lexical = lexical_score(&lowered, spec.triggers);
-            let semantic = semantic_score(&instruction_vec, spec.examples, model);
-            let mut combined = SEMANTIC_WEIGHT.mul_add(semantic, lexical);
-            // Naming one of the agent's own tools/skills strongly implies
-            // "explain this to me".
+            let mut lexical = lexical_score(&lowered, spec.triggers);
+            // Naming one of the agent's own tools/skills is itself a strong
+            // lexical anchor for "explain this to me" — counted as lexical (not
+            // just a ranking bonus) so the scope gate treats such a request as
+            // in scope even when no trigger word is present.
             if spec.intent == Intent::ShowSkill && asset_name.is_some() {
-                combined += 1.5;
+                lexical += 1.5;
             }
+            let semantic = semantic_score(&instruction_vec, spec.examples, model);
+            let combined = SEMANTIC_WEIGHT.mul_add(semantic, lexical);
             (spec.intent, combined, lexical)
         })
         .collect();
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-    let (best_intent, _, best_lexical) = scored[0];
 
     let ranked: Vec<(Intent, f32)> = scored.iter().map(|&(i, c, _)| (i, c)).collect();
     let confidence = softmax_confidence(&ranked);
@@ -281,11 +286,20 @@ pub fn interpret(
     // own tools/skills. Semantic similarity ranks the matched intents but is
     // too weak here to admit scope on its own, so an off-topic request with
     // no keyword overlap declines cleanly to `OutOfScope`.
-    let intent = if best_lexical > 0.0 || asset_name.is_some() {
-        best_intent
-    } else {
-        Intent::OutOfScope
-    };
+    //
+    // Route to the highest-combined intent *that actually has a lexical
+    // anchor* (`scored` is sorted by combined score, so the first anchored
+    // entry is that intent; a named asset counts as an anchor for
+    // `ShowSkill`, folded into its lexical score above). Checking only the
+    // single top-ranked intent's anchor would wrongly decline an anchored
+    // request whenever the noisy semantic signal floated an un-anchored intent
+    // above it.
+    let intent = scored
+        .iter()
+        .find(|&&(_, _, lexical)| lexical > 0.0)
+        .map_or(Intent::OutOfScope, |&(anchored_intent, _, _)| {
+            anchored_intent
+        });
 
     let slot = extract_slot(intent, instruction, &lowered, asset_name);
     let reply = build_reply(intent, slot.as_deref(), assets);
@@ -299,6 +313,12 @@ pub fn interpret(
 
 /// Lexical score: 1.0 per matched single word, 1.5 per matched multi-word
 /// phrase (phrases are stronger evidence).
+///
+/// Single-word triggers match on their [`stem`], so inflected forms a user
+/// naturally types — `tool` for the `tools` trigger, `anomalous` for
+/// `anomaly`, `healthy` for `health` — still anchor the intent instead of
+/// silently failing exact-equality and leaving the request to fall through to
+/// out-of-scope.
 fn lexical_score(lowered: &str, triggers: &[&str]) -> f32 {
     let mut score = 0.0;
     for trigger in triggers {
@@ -306,14 +326,42 @@ fn lexical_score(lowered: &str, triggers: &[&str]) -> f32 {
             if lowered.contains(trigger) {
                 score += 1.5;
             }
-        } else if lowered
-            .split(|c: char| !c.is_ascii_alphanumeric())
-            .any(|word| word == *trigger)
-        {
-            score += 1.0;
+        } else {
+            let trigger_stem = stem(trigger);
+            if lowered
+                .split(|c: char| !c.is_ascii_alphanumeric())
+                .filter(|word| !word.is_empty())
+                .any(|word| stem(word) == trigger_stem)
+            {
+                score += 1.0;
+            }
         }
     }
     score
+}
+
+/// A conservative suffix stemmer for lexical matching: strips the productive
+/// inflections that otherwise split a trigger from the form a user types,
+/// while leaving short words untouched so unrelated words never collapse
+/// together.
+///
+/// Each suffix carries a minimum surviving-stem length, tuned so that the
+/// plural of a trigger matches (`tools` -> `tool`) and the `-y`/`-ous`
+/// adjective pair shares a stem (`anomaly`, `anomalous` -> `anomal`), yet a
+/// short word like `ready` is *not* reduced to `read` (which would collide
+/// with the common word `read`). Suffixes are tried most-specific first so
+/// `anomalous` strips `-ous` rather than a bare `-s`. Inputs are the ASCII
+/// alphanumeric tokens `normalize` produces, so byte and character lengths
+/// agree.
+fn stem(word: &str) -> &str {
+    for (suffix, min_stem) in [("ous", 4), ("es", 3), ("y", 6), ("s", 3)] {
+        if let Some(root) = word.strip_suffix(suffix) {
+            if root.len() >= min_stem {
+                return root;
+            }
+        }
+    }
+    word
 }
 
 /// Cosine similarity (mapped to `[0, 1]`) between the instruction vector and
@@ -550,6 +598,54 @@ mod tests {
         let interp = route("generate text about scanning targets");
         assert_eq!(interp.intent, Intent::Generate);
         assert_eq!(interp.slot.as_deref(), Some("scanning targets"));
+    }
+
+    #[test]
+    fn stem_matches_inflected_forms_without_over_reducing() {
+        // Plural and -y/-ous adjective inflections collapse to a shared stem.
+        assert_eq!(stem("tools"), stem("tool"));
+        assert_eq!(stem("anomaly"), stem("anomalous"));
+        assert_eq!(stem("healthy"), stem("health"));
+        assert_eq!(stem("skills"), stem("skill"));
+        // But short words are left intact, so unrelated words never collide.
+        assert_ne!(stem("ready"), stem("read"));
+        assert_ne!(stem("planet"), stem("plan"));
+        assert_ne!(stem("scandal"), stem("scan"));
+    }
+
+    #[test]
+    fn routes_inflected_trigger_words() {
+        // Morphology: singular "tool" anchors ListTools; "anomalous" anchors
+        // AnomalyCheck even though the trigger word is "anomaly".
+        assert_eq!(
+            route("show me every tool you have").intent,
+            Intent::ListTools
+        );
+        assert_eq!(
+            route("does this log line look anomalous").intent,
+            Intent::AnomalyCheck,
+        );
+    }
+
+    #[test]
+    fn anchored_intent_survives_a_noisy_semantic_top_rank() {
+        // "assess" lexically anchors PlanScan; the scope gate must route to it
+        // rather than declining just because an un-anchored intent floated
+        // higher on the tiny model's semantic similarity.
+        assert_eq!(route("assess this target for me").intent, Intent::PlanScan);
+    }
+
+    #[test]
+    fn generic_show_verb_does_not_hijack_show_skill() {
+        // "show" is no longer a ShowSkill trigger, so a generic display request
+        // routes by its object, not to ShowSkill.
+        assert_eq!(
+            route("show me every tool you have").intent,
+            Intent::ListTools
+        );
+        assert_eq!(route("show me the audit ledger").intent, Intent::ViewAudit);
+        // Naming an actual skill still routes to ShowSkill via the asset anchor.
+        assert_eq!(route("describe the nmap skill").intent, Intent::ShowSkill);
     }
 
     #[test]

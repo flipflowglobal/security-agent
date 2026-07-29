@@ -85,8 +85,10 @@ const OOV_GIBBERISH: &[&str] = &[
     "wgblmr xtqvn pplzkd nnbvhc jjrwqe",
 ];
 
-/// One held-out routing case: a paraphrase and the intent it should reach.
-/// None of these strings is a router example phrasing.
+/// Held-out routing cases: a paraphrase and the intent it should reach. None
+/// of these strings is a router example phrasing, and several deliberately use
+/// inflected forms (`tool`, `anomalous`, `healthy`, `assess`) to check that
+/// routing generalizes across morphology rather than memorizing exact words.
 const ROUTING_CASES: &[(&str, Intent)] = &[
     ("are you online and ready to work", Intent::OfflineStatus),
     ("tell me about yourself", Intent::About),
@@ -100,6 +102,19 @@ const ROUTING_CASES: &[(&str, Intent)] = &[
     ("does this log line look anomalous", Intent::AnomalyCheck),
     ("what is the weather like tomorrow", Intent::OutOfScope),
     ("recommend a good pasta recipe", Intent::OutOfScope),
+    // Second batch: broader paraphrases and inflected forms.
+    ("check the health of the local agent", Intent::OfflineStatus),
+    ("list every tool you can run", Intent::ListTools),
+    ("enumerate your skills", Intent::ListSkills),
+    ("describe the nmap skill", Intent::ShowSkill),
+    ("assess this target for me", Intent::PlanScan),
+    ("show me the audit ledger", Intent::ViewAudit),
+    ("draft a note about the results", Intent::Generate),
+    ("flag anything suspicious here", Intent::AnomalyCheck),
+    ("open the findings database", Intent::ViewFindingsDb),
+    ("view the reasoning log", Intent::ViewReasoningLogDb),
+    ("book a table for two tonight", Intent::OutOfScope),
+    ("how many planets are in the sky", Intent::OutOfScope),
 ];
 
 /// Prompts fed to the generator when checking that its continuations stay
@@ -211,10 +226,13 @@ pub mod floors {
     pub const MIN_SEPARATION_RATIO: f32 = 1.05;
     /// Pairwise ranking must beat this. 0.5 is chance.
     pub const MIN_RANKING_AUC: f32 = 0.70;
-    /// Held-out routing accuracy floor. Set below the current 10/12 baseline
-    /// so the gate passes with headroom yet still fails if routing regresses
-    /// by more than one case.
-    pub const MIN_ROUTING_ACCURACY: f32 = 0.75;
+    /// Held-out routing accuracy floor.
+    ///
+    /// The router clears all 24 held-out paraphrases after the L4
+    /// morphology/scope fixes; the floor sits below that with headroom so the
+    /// gate passes reliably yet still fails on a multi-case regression
+    /// (21/24 = 0.875 < floor).
+    pub const MIN_ROUTING_ACCURACY: f32 = 0.90;
     /// Out-of-vocabulary gibberish must be at least this many times as
     /// perplexing as coherent in-domain text.
     ///
