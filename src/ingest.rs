@@ -67,7 +67,7 @@ pub fn ingest(target_id: &str, report: &ToolExecutionReport) -> Vec<Finding> {
         &NmapParser,
     ];
     let Some(parser) = parsers
-        .into_iter()
+        .iter()
         .find(|parser| parser.tool_name() == report.tool)
     else {
         return Vec::new();
@@ -282,9 +282,7 @@ fn parse_nmap_json(target_id: &str, json_str: &str) -> Vec<Finding> {
         return Vec::new();
     };
     let hosts = match &root {
-        JsonValue::Array(arr) => arr.iter().filter_map(|v| {
-            if v.is_null() { None } else { Some(v) }
-        }),
+        JsonValue::Array(arr) => arr.iter().filter(|v| !v.is_null()),
         _ => return Vec::new(),
     };
 
@@ -318,16 +316,24 @@ fn parse_nmap_json(target_id: &str, json_str: &str) -> Vec<Finding> {
                 let script_severity = classify_nmap_script(script_id, script_output);
                 let index = findings.len();
                 findings.push(scored_finding(
-                    "nmap", target_id, index,
+                    "nmap",
+                    target_id,
+                    index,
                     format!("NSE: {script_id} on {addr}:{port_id}"),
-                    script_severity, 65,
+                    script_severity,
+                    65,
                     format!("{addr}:{port_id} — {script_output}"),
                 ));
             }
 
             let index = findings.len();
             findings.push(scored_finding(
-                "nmap", target_id, index, title, severity, 80,
+                "nmap",
+                target_id,
+                index,
+                title,
+                severity,
+                80,
                 format!("{addr}:{port_id}/{protocol}"),
             ));
         }
@@ -356,9 +362,12 @@ fn parse_nmap_xml(target_id: &str, xml: &str) -> Vec<Finding> {
                 .unwrap_or("unknown");
             let index = findings.len();
             findings.push(scored_finding(
-                "nmap", target_id, index,
+                "nmap",
+                target_id,
+                index,
                 format!("open-port-{port}-{protocol} ({service})"),
-                Severity::Informational, 80,
+                Severity::Informational,
+                80,
                 format!("{address}:{port}/{protocol}"),
             ));
         }
@@ -369,8 +378,32 @@ fn parse_nmap_xml(target_id: &str, xml: &str) -> Vec<Finding> {
 fn is_risky_port(port: u64) -> bool {
     matches!(
         port,
-        21 | 22 | 23 | 25 | 53 | 80 | 110 | 111 | 135 | 139 | 143 | 443 | 445 | 993 | 995
-            | 1433 | 1434 | 1521 | 3306 | 3389 | 5432 | 5900 | 5985 | 6379 | 8080 | 8443 | 9200
+        21 | 22
+            | 23
+            | 25
+            | 53
+            | 80
+            | 110
+            | 111
+            | 135
+            | 139
+            | 143
+            | 443
+            | 445
+            | 993
+            | 995
+            | 1433
+            | 1434
+            | 1521
+            | 3306
+            | 3389
+            | 5432
+            | 5900
+            | 5985
+            | 6379
+            | 8080
+            | 8443
+            | 9200
             | 27017
     )
 }
@@ -379,9 +412,9 @@ fn classify_nmap_script(script_id: &str, output: &str) -> Severity {
     let lower = output.to_ascii_lowercase();
     if script_id.contains("vuln") || script_id.contains("exploit") {
         Severity::High
-    } else if script_id.contains("auth") && lower.contains("anonymous") {
-        Severity::Medium
-    } else if script_id.contains("ssl") && lower.contains("weak") {
+    } else if (script_id.contains("auth") && lower.contains("anonymous"))
+        || (script_id.contains("ssl") && lower.contains("weak"))
+    {
         Severity::Medium
     } else if lower.contains("vulnerable") || lower.contains("exploit") {
         Severity::High
@@ -779,8 +812,7 @@ impl FindingParser for WpscanJsonParser {
                         .or_else(|| extract_str(entry, "cvss"))
                         .unwrap_or("info");
                     let fixed_in = extract_str(entry, "fixed_in").unwrap_or("");
-                    let _references = extract_str(entry, "references")
-                        .unwrap_or("");
+                    let _references = extract_str(entry, "references").unwrap_or("");
 
                     let remediation = if !fixed_in.is_empty() {
                         format!("Update to version {fixed_in}")
@@ -837,24 +869,20 @@ impl FindingParser for WpscanJsonParser {
         }
 
         // Parse plugins with vulnerabilities
-        if let Some(plugins) = root.get("plugins") {
-            if let JsonValue::Object(map) = plugins {
-                for (slug, plugin_data) in map {
-                    if let Some(vulns) = plugin_data.get("vulnerabilities") {
-                        if let JsonValue::Array(arr) = vulns {
-                            if !arr.is_empty() {
-                                let index = findings.len();
-                                findings.push(scored_finding(
-                                    self.tool_name(),
-                                    target_id,
-                                    index,
-                                    format!("Plugin \"{slug}\" has {} known vulnerabilities", arr.len()),
-                                    Severity::Medium,
-                                    75,
-                                    "update-or-remove-plugin".to_string(),
-                                ));
-                            }
-                        }
+        if let Some(JsonValue::Object(map)) = root.get("plugins") {
+            for (slug, plugin_data) in map {
+                if let Some(JsonValue::Array(arr)) = plugin_data.get("vulnerabilities") {
+                    if !arr.is_empty() {
+                        let index = findings.len();
+                        findings.push(scored_finding(
+                            self.tool_name(),
+                            target_id,
+                            index,
+                            format!("Plugin \"{slug}\" has {} known vulnerabilities", arr.len()),
+                            Severity::Medium,
+                            75,
+                            "update-or-remove-plugin".to_string(),
+                        ));
                     }
                 }
             }
@@ -1029,12 +1057,14 @@ impl FindingParser for WhatwebJsonParser {
                         self.tool_name(),
                         target_id,
                         index,
-                        format!("{plugin_name}{} at {url}",
+                        format!(
+                            "{plugin_name}{} at {url}",
                             if details.is_empty() {
                                 String::new()
                             } else {
                                 format!(" ({})", details.join(", "))
-                            }),
+                            }
+                        ),
                         severity,
                         55,
                         url.to_string(),
@@ -1056,9 +1086,9 @@ fn classify_whatweb_plugin(name: &str) -> Severity {
         || lower.contains("magento")
     {
         Severity::Low
-    } else if lower.contains("jquery") || lower.contains("bootstrap") || lower.contains("d3") {
-        Severity::Informational
     } else {
+        // Everything else (JS libraries such as jQuery/Bootstrap/D3, analytics,
+        // and unrecognized fingerprints) is fingerprint noise, not a finding.
         Severity::Informational
     }
 }
@@ -1078,7 +1108,10 @@ impl FindingParser for Wafw00fJsonParser {
         };
 
         // wafw00f: { "target": "...", "firewall": "...", "manufacturer": "...", "detected": true }
-        let detected = root.get("detected").and_then(JsonValue::as_bool).unwrap_or(false);
+        let detected = root
+            .get("detected")
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(false);
         let firewall = extract_str(&root, "firewall").unwrap_or("unknown");
         let manufacturer = extract_str(&root, "manufacturer").unwrap_or("unknown");
 
@@ -1150,8 +1183,14 @@ impl FindingParser for LynisJsonParser {
                 .unwrap_or("lynis-test");
             let result = extract_str(test, "result").unwrap_or("");
             let severity_label = extract_str(test, "severity").unwrap_or("");
-            let warning = test.get("warning").and_then(JsonValue::as_bool).unwrap_or(false);
-            let critical = test.get("critical").and_then(JsonValue::as_bool).unwrap_or(false);
+            let warning = test
+                .get("warning")
+                .and_then(JsonValue::as_bool)
+                .unwrap_or(false);
+            let critical = test
+                .get("critical")
+                .and_then(JsonValue::as_bool)
+                .unwrap_or(false);
 
             let severity = if critical {
                 Severity::High
@@ -1182,8 +1221,8 @@ impl FindingParser for LynisJsonParser {
 
         // Also parse hardening index
         if let Some(hardening) = root.get("hardening_index") {
-            let score = extract_u64(&hardening, "score")
-                .or_else(|| {
+            let score = extract_u64(hardening, "score")
+                .or({
                     // Sometimes it's just a number
                     if let JsonValue::Number(n) = hardening {
                         Some(*n as u64)
@@ -1361,9 +1400,9 @@ impl FindingParser for Enum4linuxNgJsonParser {
 
             let severity = if name.to_uppercase() == "IPC$" || name.to_uppercase() == "ADMIN$" {
                 Severity::Informational
-            } else if name.to_uppercase() == "C$" {
-                Severity::Low
             } else {
+                // Any other exposed share (including admin drive shares like C$)
+                // is a low-severity information-disclosure surface.
                 Severity::Low
             };
 
@@ -1579,13 +1618,11 @@ impl FindingParser for ApkleaksJsonParser {
             for entry in entries {
                 let value = match entry {
                     JsonValue::String(s) => s.clone(),
-                    JsonValue::Object(_) => {
-                        extract_str(&entry, "match")
-                            .or_else(|| extract_str(&entry, "value"))
-                            .or_else(|| extract_str(&entry, "url"))
-                            .unwrap_or("unknown")
-                            .to_string()
-                    }
+                    JsonValue::Object(_) => extract_str(entry, "match")
+                        .or_else(|| extract_str(entry, "value"))
+                        .or_else(|| extract_str(entry, "url"))
+                        .unwrap_or("unknown")
+                        .to_string(),
                     _ => continue,
                 };
 
@@ -2117,6 +2154,10 @@ mod tests {
         let findings = ingest("target-a", &report("mariana-trench", stdout));
 
         assert_eq!(findings.len(), 1);
-        assert!(findings[0].remediation_playbook.contains("request.getParameter"));
+        assert!(
+            findings[0]
+                .remediation_playbook
+                .contains("request.getParameter")
+        );
     }
 }

@@ -4,7 +4,7 @@
 //! supply chain attack vectors including typosquatting, dependency confusion,
 //! unpinned actions, and license risks.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 // =============================================================================
@@ -644,7 +644,7 @@ fn is_suspicious_python_package(name: &str) -> bool {
 pub fn analyze_lock_integrity(content: &str, file_type: &str) -> LockFileIntegrity {
     let total_deps = count_lock_deps(content, file_type);
     let unchecked_deps = count_unchecked_deps(content, file_type);
-    let hash_mismatches = count_hash_mismatches(content);
+    let hash_mismatches = count_hash_mismatches(content, file_type);
 
     let integrity_status = if hash_mismatches > 0 {
         "COMPROMISED".to_string()
@@ -693,30 +693,111 @@ fn count_unchecked_deps(content: &str, file_type: &str) -> usize {
     }
 }
 
-/// Count hash mismatches (simplified - just checks for multiple hashes)
-fn count_hash_mismatches(content: &str) -> usize {
-    // In a real implementation, we'd verify actual hashes
-    // For now, check for multiple integrity values for same package
-    let mut mismatches = 0;
-    let mut seen_integrities = BTreeMap::new();
+/// Count genuine integrity mismatches in a lock file.
+///
+/// A mismatch is a statically detectable tampering signal that needs no network
+/// access: one package *artifact* pinned to two or more different integrity
+/// hashes within the same lock file. A well-formed lock file resolves each
+/// artifact to a single hash, so divergent hashes for the same artifact mean the
+/// file was edited to smuggle a substituted dependency past review.
+///
+/// Artifact identity is the resolved tarball URL for npm lock files and the
+/// `name`+`version` pair for `Cargo.lock`. Formats without a hashable artifact
+/// identity return `0` rather than guessing.
+fn count_hash_mismatches(content: &str, file_type: &str) -> usize {
+    match file_type {
+        "package-lock" | "yarn.lock" => count_npm_hash_mismatches(content),
+        "Cargo.lock" => count_cargo_hash_mismatches(content),
+        _ => 0,
+    }
+}
+
+/// Extract the value of a JSON string field written as `"key": "value"`.
+///
+/// Returns `None` when the key is absent or its value is not a plain string, so
+/// the key token itself is never mistaken for its value.
+fn json_string_field(line: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\"");
+    let after = line.split_once(&needle)?.1.trim_start();
+    let after = after.strip_prefix(':')?.trim_start();
+    let inner = after.strip_prefix('"')?;
+    let end = inner.find('"')?;
+    Some(inner[..end].to_string())
+}
+
+/// Extract the value of a TOML string field written as `key = "value"`.
+fn toml_string_field(line: &str, key: &str) -> Option<String> {
+    let rest = line.trim().strip_prefix(key)?.trim_start();
+    let rest = rest.strip_prefix('=')?.trim_start();
+    let inner = rest.strip_prefix('"')?;
+    let end = inner.find('"')?;
+    Some(inner[..end].to_string())
+}
+
+/// npm/yarn: pair each `integrity` hash with the `resolved` artifact URL in the
+/// same package object, then count artifacts carrying more than one hash.
+fn count_npm_hash_mismatches(content: &str) -> usize {
+    let mut by_artifact: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut pending_integrity: Option<String> = None;
+    let mut pending_resolved: Option<String> = None;
 
     for line in content.lines() {
         let trimmed = line.trim();
-        if trimmed.contains("\"integrity\"") {
-            if let Some(start) = trimmed.find('"') {
-                if let Some(end) = trimmed[start + 1..].find('"') {
-                    let integrity = &trimmed[start + 1..start + 1 + end];
-                    let count = seen_integrities.entry(integrity.to_string()).or_insert(0);
-                    *count += 1;
-                    if *count > 1 {
-                        mismatches += 1;
-                    }
-                }
+        // An object-opening key (e.g. `"node_modules/foo": {`) starts a new
+        // package block; drop any half-collected pair so a hash is never
+        // attributed to a different artifact.
+        if trimmed.ends_with('{') {
+            pending_integrity = None;
+            pending_resolved = None;
+        }
+        if let Some(v) = json_string_field(trimmed, "integrity") {
+            pending_integrity = Some(v);
+        } else if let Some(v) = json_string_field(trimmed, "resolved") {
+            pending_resolved = Some(v);
+        }
+        if let (Some(res), Some(int)) = (pending_resolved.as_ref(), pending_integrity.as_ref()) {
+            by_artifact
+                .entry(res.clone())
+                .or_default()
+                .insert(int.clone());
+            pending_integrity = None;
+            pending_resolved = None;
+        }
+    }
+
+    by_artifact
+        .values()
+        .filter(|hashes| hashes.len() > 1)
+        .count()
+}
+
+/// `Cargo.lock`: flag any `name`+`version` that resolves to more than one
+/// distinct `checksum` across the file's `[[package]]` stanzas.
+fn count_cargo_hash_mismatches(content: &str) -> usize {
+    let mut by_pkg: BTreeMap<(String, String), BTreeSet<String>> = BTreeMap::new();
+    let mut name: Option<String> = None;
+    let mut version: Option<String> = None;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[[package]]" {
+            name = None;
+            version = None;
+        } else if let Some(v) = toml_string_field(trimmed, "name") {
+            name = Some(v);
+        } else if let Some(v) = toml_string_field(trimmed, "version") {
+            version = Some(v);
+        } else if let Some(checksum) = toml_string_field(trimmed, "checksum") {
+            if let (Some(n), Some(v)) = (name.as_ref(), version.as_ref()) {
+                by_pkg
+                    .entry((n.clone(), v.clone()))
+                    .or_default()
+                    .insert(checksum);
             }
         }
     }
 
-    mismatches
+    by_pkg.values().filter(|hashes| hashes.len() > 1).count()
 }
 
 // =============================================================================
@@ -1054,6 +1135,75 @@ jobs:
         let integrity = analyze_lock_integrity(lock, "package-lock");
         assert_eq!(integrity.total_deps, 2);
         assert_eq!(integrity.unchecked_deps, 1);
+        // A clean lock file with one hash per artifact has no mismatches.
+        assert_eq!(integrity.hash_mismatches, 0);
+        assert_eq!(
+            integrity.integrity_status,
+            "1 dependencies without integrity checks"
+        );
+    }
+
+    #[test]
+    fn test_npm_hash_mismatch_detected() {
+        // The same resolved artifact URL pinned to two different integrity
+        // hashes is a tampering signal and must be reported as COMPROMISED.
+        let lock = r#"{
+            "packages": {
+                "node_modules/left-pad": {
+                    "version": "1.3.0",
+                    "resolved": "https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz",
+                    "integrity": "sha512-genuinehash"
+                },
+                "apps/web/node_modules/left-pad": {
+                    "version": "1.3.0",
+                    "resolved": "https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz",
+                    "integrity": "sha512-tamperedhash"
+                }
+            }
+        }"#;
+        let integrity = analyze_lock_integrity(lock, "package-lock");
+        assert_eq!(integrity.hash_mismatches, 1);
+        assert_eq!(integrity.integrity_status, "COMPROMISED");
+    }
+
+    #[test]
+    fn test_npm_hash_consistent_no_mismatch() {
+        // The same artifact deduped with an identical hash is legitimate.
+        let lock = r#"{
+            "packages": {
+                "node_modules/left-pad": {
+                    "resolved": "https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz",
+                    "integrity": "sha512-samehash"
+                },
+                "apps/web/node_modules/left-pad": {
+                    "resolved": "https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz",
+                    "integrity": "sha512-samehash"
+                }
+            }
+        }"#;
+        assert_eq!(count_npm_hash_mismatches(lock), 0);
+    }
+
+    #[test]
+    fn test_cargo_hash_mismatch_detected() {
+        let lock = r#"
+[[package]]
+name = "serde"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aaaa"
+
+[[package]]
+name = "serde"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbbb"
+"#;
+        assert_eq!(count_cargo_hash_mismatches(lock), 1);
+        assert_eq!(
+            analyze_lock_integrity(lock, "Cargo.lock").integrity_status,
+            "COMPROMISED"
+        );
     }
 
     #[test]

@@ -141,6 +141,8 @@ pub enum BuiltInToolError {
     Io { path: PathBuf, source: io::Error },
     FileLimitExceeded { limit: usize },
     SizeOverflow,
+    /// A native offline arsenal substitute failed (see [`crate::arsenal`]).
+    Arsenal(String),
 }
 
 impl fmt::Display for BuiltInToolError {
@@ -153,6 +155,7 @@ impl fmt::Display for BuiltInToolError {
                 write!(formatter, "evidence file limit exceeded: {limit}")
             }
             Self::SizeOverflow => formatter.write_str("evidence byte total overflowed"),
+            Self::Arsenal(message) => formatter.write_str(message),
         }
     }
 }
@@ -170,7 +173,7 @@ pub fn is_builtin_tool(name: &str) -> bool {
             | "foremost"
             | "bulk_extractor"
             | "hashdeep"
-    )
+    ) || crate::arsenal::handles(name)
 }
 
 /// Runs the built-in substitute named `name` against `input` and renders
@@ -190,7 +193,11 @@ pub fn run_builtin_tool(name: &str, input: &Path) -> Result<String, BuiltInToolE
         "foremost" => Ok(crate::local_analyzers::run_foremost(input)?.to_string()),
         "bulk_extractor" => Ok(crate::local_analyzers::run_bulk_extractor(input)?.to_string()),
         "hashdeep" => Ok(crate::local_analyzers::run_hashdeep(input)?.to_string()),
-        _ => Err(BuiltInToolError::UnsupportedTool(name.to_string())),
+        // Every other cataloged tool is served by a native, offline arsenal
+        // substitute (see `crate::arsenal`). No network access, no external
+        // binary is ever spawned.
+        other => crate::arsenal::run(other, input)
+            .map_err(|error| BuiltInToolError::Arsenal(error.to_string())),
     }
 }
 

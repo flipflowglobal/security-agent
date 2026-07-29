@@ -144,9 +144,10 @@ fn run_external_tool_online_opt_in_is_acknowledged() {
 fn offline_status_counts_all_builtin_substitutes() {
     let output = run(&["--offline-status"]);
     assert!(output.status.success());
-    // autopsy, volatility, wireshark, binwalk, foremost, bulk_extractor,
-    // hashdeep are all in-house local analyzers.
-    assert!(stdout(&output).contains("built_in_substitute_tools=7"));
+    // The seven bespoke forensic analyzers (autopsy, volatility, wireshark,
+    // binwalk, foremost, bulk_extractor, hashdeep) plus the native offline
+    // arsenal substitutes (see `crate::arsenal`) cover every cataloged tool.
+    assert!(stdout(&output).contains("built_in_substitute_tools=89"));
 }
 
 #[test]

@@ -1,5 +1,6 @@
 pub mod advanced;
 pub mod anomaly;
+pub mod arsenal;
 pub mod audit_db;
 pub mod audit_log;
 pub mod belief_propagation;
@@ -403,7 +404,7 @@ mod tests {
         assert!(
             all_tools
                 .iter()
-                .all(|name| local_assets.tool(name).is_some_and(LocalTool::is_installed)),
+                .all(|name| local_assets.tool(name).is_some_and(LocalTool::is_available)),
             "execution plans must not approve unavailable tools"
         );
     }
