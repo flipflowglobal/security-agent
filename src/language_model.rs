@@ -166,6 +166,18 @@ const ANOMALY_THRESHOLD_FLOOR: f32 = 100.0;
 /// calibrate on). Matches the historical hand-tuned default.
 const ANOMALY_THRESHOLD_FALLBACK: f32 = 1000.0;
 
+/// Magic prefix of the serialized-weights blob format (see
+/// [`NeuralLanguageModel::to_weight_bytes`]). Bumped if the layout changes so
+/// an old blob is cleanly rejected instead of misread.
+const WEIGHTS_MAGIC: &[u8; 8] = b"SAMDLW1\0";
+
+/// The trained bundled model's weights, compiled into the binary. Generated
+/// by `cargo run --example train_weights` and kept in sync with the training
+/// code by a drift test (see this module's tests). [`NeuralLanguageModel::bundled`]
+/// deserializes this instead of retraining; an empty or stale blob simply
+/// triggers a from-scratch training fallback.
+const BUNDLED_WEIGHTS: &[u8] = include_bytes!("model_weights.bin");
+
 /// In-domain training text, compiled into the binary. Larger than a bare
 /// minimum on purpose — broad enough to cover the agent's own vocabulary
 /// (recon, web, cloud, mobile, network, social engineering, governance,
@@ -328,6 +340,47 @@ const fn count(value: usize) -> f32 {
     value as f32
 }
 
+/// Appends each `f32` of `values` as little-endian bytes.
+fn write_f32_slice(out: &mut Vec<u8>, values: &[f32]) {
+    for &value in values {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+}
+
+/// Splits `count` bytes off the front of `cursor`, advancing it. `None` if
+/// fewer than `count` bytes remain.
+const fn take_bytes<'a>(cursor: &mut &'a [u8], count: usize) -> Option<&'a [u8]> {
+    if cursor.len() < count {
+        return None;
+    }
+    let (head, tail) = cursor.split_at(count);
+    *cursor = tail;
+    Some(head)
+}
+
+/// Reads a little-endian `u32` off the front of `cursor`.
+fn take_u32(cursor: &mut &[u8]) -> Option<u32> {
+    let bytes = take_bytes(cursor, 4)?;
+    Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+/// Reads a little-endian `f32` off the front of `cursor`.
+fn take_f32(cursor: &mut &[u8]) -> Option<f32> {
+    let bytes = take_bytes(cursor, 4)?;
+    Some(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+/// Reads `len` little-endian `f32`s off the front of `cursor`.
+fn take_f32_vec(cursor: &mut &[u8], len: usize) -> Option<Vec<f32>> {
+    let bytes = take_bytes(cursor, len * 4)?;
+    Some(
+        bytes
+            .chunks_exact(4)
+            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect(),
+    )
+}
+
 /// The `q`-quantile (`q` in `[0, 1]`) of an ascending-sorted, non-empty slice,
 /// by nearest-rank. Deterministic and allocation-free.
 fn percentile(sorted: &[f32], q: f32) -> f32 {
@@ -353,7 +406,7 @@ fn dct_matrix() -> Vec<f32> {
 }
 
 /// Token vocabulary with stable id assignment.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Vocabulary {
     tokens: Vec<String>,
     ids: std::collections::HashMap<String, usize>,
@@ -530,7 +583,7 @@ struct Forward {
 /// A vector-quantized, temporal-frequency neural language model with
 /// single-head self-attention over its context window and residual
 /// (multi-stage) quantization.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NeuralLanguageModel {
     vocab: Vocabulary,
     dct: Vec<f32>,            // CONTEXT * CONTEXT
@@ -569,25 +622,146 @@ impl NeuralLanguageModel {
     /// appended only here; the `trained_*` constructors train on exactly the
     /// corpus they are given, keeping test baselines pure.
     ///
-    /// Training is memoized in a process-wide [`std::sync::OnceLock`] and
-    /// subsequent calls return a clone, so repeated use (tests, multiple CLI
-    /// paths, `Default`) trains only once. [`Self::trained_on`] and
-    /// [`Self::trained_staged`] deliberately skip the LM pass, so tests
-    /// comparing epoch counts stay pure-SGD baselines.
+    /// Loading is memoized in a process-wide [`std::sync::OnceLock`] and
+    /// subsequent calls return a clone. The bundled weights are deserialized
+    /// from the compiled-in blob ([`BUNDLED_WEIGHTS`]) rather than retrained,
+    /// so process start is fast and every platform runs byte-identical
+    /// weights. If the blob is missing, malformed, or built for different
+    /// dimensions, it falls back to training from scratch — always correct,
+    /// just slower. [`Self::trained_on`] and [`Self::trained_staged`]
+    /// deliberately skip the LM pass, so tests comparing epoch counts stay
+    /// pure-SGD baselines.
     #[must_use]
     pub fn bundled() -> Self {
         static CACHED: std::sync::OnceLock<NeuralLanguageModel> = std::sync::OnceLock::new();
         CACHED
             .get_or_init(|| {
-                let corpus = bundled_corpus();
-                let mut model = Self::trained_on(&corpus, EPOCHS);
-                model.lm_refine_attention(&corpus);
-                // Re-calibrate after refinement, since the LM pass shifts the
-                // perplexity distribution the threshold is derived from.
-                model.anomaly_threshold = model.calibrate_anomaly_threshold(&corpus);
-                model
+                Self::from_weight_bytes(BUNDLED_WEIGHTS).unwrap_or_else(Self::train_bundled)
             })
             .clone()
+    }
+
+    /// Trains the canonical bundled model from scratch: SGD on the combined
+    /// corpus, the Levenberg-Marquardt attention refinement, then anomaly-
+    /// threshold calibration. This is what [`BUNDLED_WEIGHTS`] is a serialized
+    /// snapshot of; [`Self::bundled`] uses it only as a fallback.
+    #[must_use]
+    fn train_bundled() -> Self {
+        let corpus = bundled_corpus();
+        let mut model = Self::trained_on(&corpus, EPOCHS);
+        model.lm_refine_attention(&corpus);
+        // Re-calibrate after refinement, since the LM pass shifts the
+        // perplexity distribution the threshold is derived from.
+        model.anomaly_threshold = model.calibrate_anomaly_threshold(&corpus);
+        model
+    }
+
+    /// Serializes the freshly-trained canonical model's weights into the blob
+    /// format [`Self::from_weight_bytes`] reads. Used by the `train_weights`
+    /// example to regenerate `src/model_weights.bin`; never on the hot path.
+    #[must_use]
+    pub fn bundled_weight_blob() -> Vec<u8> {
+        Self::train_bundled().to_weight_bytes()
+    }
+
+    /// Serializes this model's learned parameters into the compact,
+    /// dependency-free blob format. The vocabulary is *not* stored — it is
+    /// deterministically rebuilt from the corpus on load — so only the header
+    /// (dimensions, for validation), the calibrated threshold, and the weight
+    /// tensors are written, each `f32` little-endian.
+    #[must_use]
+    fn to_weight_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(WEIGHTS_MAGIC);
+        for dimension in [
+            EMBED,
+            HIDDEN,
+            CONTEXT,
+            CODES,
+            self.codebooks.len(),
+            self.vocab.len(),
+        ] {
+            let dimension = u32::try_from(dimension).expect("model dimension fits in u32");
+            out.extend_from_slice(&dimension.to_le_bytes());
+        }
+        out.extend_from_slice(&self.anomaly_threshold.to_le_bytes());
+        write_f32_slice(&mut out, &self.dct);
+        write_f32_slice(&mut out, &self.embed);
+        write_f32_slice(&mut out, &self.attn_wq);
+        write_f32_slice(&mut out, &self.attn_wk);
+        write_f32_slice(&mut out, &self.attn_wv);
+        for codebook in &self.codebooks {
+            write_f32_slice(&mut out, codebook);
+        }
+        write_f32_slice(&mut out, &self.w1);
+        write_f32_slice(&mut out, &self.b1);
+        write_f32_slice(&mut out, &self.w2);
+        write_f32_slice(&mut out, &self.b2);
+        out
+    }
+
+    /// Reconstructs a model from a [`Self::to_weight_bytes`] blob, rebuilding
+    /// the vocabulary from the corpus. Returns `None` — so the caller can fall
+    /// back to training — if the blob's magic, dimensions, rebuilt vocabulary
+    /// size, or byte length do not match this build exactly.
+    #[allow(clippy::similar_names)] // attn_wq / attn_wk / attn_wv mirror the fields
+    fn from_weight_bytes(bytes: &[u8]) -> Option<Self> {
+        let mut cursor = bytes;
+        if take_bytes(&mut cursor, WEIGHTS_MAGIC.len())? != WEIGHTS_MAGIC {
+            return None;
+        }
+        let embed = take_u32(&mut cursor)? as usize;
+        let hidden = take_u32(&mut cursor)? as usize;
+        let context = take_u32(&mut cursor)? as usize;
+        let codes = take_u32(&mut cursor)? as usize;
+        let stages = take_u32(&mut cursor)? as usize;
+        let vocab_len = take_u32(&mut cursor)? as usize;
+
+        // Reject a blob built for a different architecture rather than
+        // misinterpreting its bytes.
+        if (embed, hidden, context, codes) != (EMBED, HIDDEN, CONTEXT, CODES) {
+            return None;
+        }
+        let vocab = Vocabulary::from_corpus(&bundled_corpus());
+        if vocab.len() != vocab_len {
+            return None;
+        }
+        let feat = context * embed;
+
+        let anomaly_threshold = take_f32(&mut cursor)?;
+        let dct = take_f32_vec(&mut cursor, context * context)?;
+        let embed_table = take_f32_vec(&mut cursor, vocab_len * embed)?;
+        let attn_wq = take_f32_vec(&mut cursor, embed * embed)?;
+        let attn_wk = take_f32_vec(&mut cursor, embed * embed)?;
+        let attn_wv = take_f32_vec(&mut cursor, embed * embed)?;
+        let mut codebooks = Vec::with_capacity(stages);
+        for _ in 0..stages {
+            codebooks.push(take_f32_vec(&mut cursor, codes * feat)?);
+        }
+        let w1 = take_f32_vec(&mut cursor, hidden * feat)?;
+        let b1 = take_f32_vec(&mut cursor, hidden)?;
+        let w2 = take_f32_vec(&mut cursor, vocab_len * hidden)?;
+        let b2 = take_f32_vec(&mut cursor, vocab_len)?;
+
+        // Any trailing bytes mean the blob does not match this layout.
+        if !cursor.is_empty() {
+            return None;
+        }
+
+        Some(Self {
+            vocab,
+            dct,
+            embed: embed_table,
+            attn_wq,
+            attn_wk,
+            attn_wv,
+            codebooks,
+            w1,
+            b1,
+            w2,
+            b2,
+            anomaly_threshold,
+        })
     }
 
     /// Builds a vocabulary from `corpus` and trains for `epochs` passes using
@@ -1599,6 +1773,52 @@ fn softmax(values: &mut [f32]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn weight_blob_round_trips_exactly() {
+        let model = NeuralLanguageModel::bundled();
+        let bytes = model.to_weight_bytes();
+        let restored =
+            NeuralLanguageModel::from_weight_bytes(&bytes).expect("round-trip must deserialize");
+        assert_eq!(model, restored, "serialize -> deserialize must be lossless");
+    }
+
+    #[test]
+    fn from_weight_bytes_rejects_malformed_input() {
+        assert!(NeuralLanguageModel::from_weight_bytes(b"").is_none());
+        assert!(NeuralLanguageModel::from_weight_bytes(b"not a weights blob").is_none());
+        // Correct magic but truncated body.
+        assert!(NeuralLanguageModel::from_weight_bytes(WEIGHTS_MAGIC).is_none());
+    }
+
+    #[test]
+    fn bundled_loads_from_the_committed_blob() {
+        // The blob must be present and valid so the fast path is actually
+        // taken; otherwise bundled() silently falls back to slow training.
+        assert!(
+            NeuralLanguageModel::from_weight_bytes(BUNDLED_WEIGHTS).is_some(),
+            "committed weights blob failed to load — regenerate with \
+             `cargo run --release --example train_weights > src/model_weights.bin`",
+        );
+    }
+
+    // Deterministic training can differ in the low bits across CPU
+    // architectures (see the generation tests), so the blob is the single
+    // canonical set of weights every platform loads. This drift check —
+    // that the committed blob equals a freshly trained model — is therefore
+    // pinned to the platform the blob is generated on.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn committed_weights_match_a_freshly_trained_model() {
+        let trained = NeuralLanguageModel::train_bundled();
+        let loaded = NeuralLanguageModel::from_weight_bytes(BUNDLED_WEIGHTS)
+            .expect("committed weights blob must load");
+        assert_eq!(
+            trained, loaded,
+            "src/model_weights.bin is stale — regenerate with \
+             `cargo run --release --example train_weights > src/model_weights.bin`",
+        );
+    }
 
     #[test]
     fn vocabulary_covers_the_corpus_and_specials() {
