@@ -105,8 +105,20 @@ const SPECS: &[IntentSpec] = &[
         ],
     },
     IntentSpec {
+        // "about" is anchored as the self-referential phrase rather than the
+        // bare preposition, which collides with ordinary use ("a note about
+        // the results" is a generation request, not a question about the
+        // agent).
         intent: Intent::About,
-        triggers: &["about", "version", "mission", "who are you", "purpose"],
+        triggers: &[
+            "about you",
+            "about your",
+            "about yourself",
+            "version",
+            "mission",
+            "who are you",
+            "purpose",
+        ],
         examples: &[
             "who are you",
             "what is your mission",
