@@ -164,6 +164,10 @@
             </div>
 
             <div class="sidebar-footer">
+                <button class="nav-item" data-panel="help-guide">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                    <span>Help & Guide</span>
+                </button>
                 <button class="nav-item" data-panel="about">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
                     <span>About</span>
@@ -181,8 +185,22 @@
             <!-- Dashboard Panel -->
             <section class="panel active" id="panel-dashboard">
                 <div class="panel-header">
-                    <h1>Dashboard</h1>
-                    <p class="subtitle">Security-Agent orchestration overview</p>
+                    <div class="panel-header-row">
+                        <div>
+                            <h1>Dashboard</h1>
+                            <p class="subtitle">Security-Agent orchestration overview</p>
+                        </div>
+                        <div class="mode-toggle" id="mode-toggle">
+                            <button class="mode-btn active" id="mode-offline" data-mode="offline">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l22 22"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/><path d="M10.71 5.05A16 16 0 0 1 22.56 9"/><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
+                                <span>Offline</span>
+                            </button>
+                            <button class="mode-btn" id="mode-online" data-mode="online">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
+                                <span>Online</span>
+                            </button>
+                        </div>
+                    </div>
                 </div>
                 <div class="dashboard-grid">
                     <div class="stat-card" id="stat-binary">
@@ -947,6 +965,163 @@
                 </div>
                 <div class="output-block" id="output-offensive-keys">
                     <div class="empty-state">Provide authorized_keys content or path and click Analyze.</div>
+                </div>
+            </section>
+
+            <!-- Help & Guide Panel -->
+            <section class="panel" id="panel-help-guide">
+                <div class="panel-header">
+                    <h1>Help & Guide</h1>
+                    <p class="subtitle">Everything you need to know to use Security-Agent</p>
+                </div>
+                <div class="help-guide-content">
+
+                    <div class="help-section">
+                        <h2>🚀 Getting Started</h2>
+                        <div class="help-card">
+                            <h3>What is Security-Agent?</h3>
+                            <p>Security-Agent is an autonomous offline security operations console. It runs security tools, manages assessments, and generates reports — all from your desktop.</p>
+                            <ol>
+                                <li><strong>Check the Dashboard</strong> — The main screen shows your binary status, tool count, and system health.</li>
+                                <li><strong>Toggle Online/Offline</strong> — Use the toggle in the top-right of the Dashboard to switch modes.</li>
+                                <li><strong>Run your first tool</strong> — Go to <em>Run Tool</em> and select a tool from the dropdown.</li>
+                            </ol>
+                        </div>
+                    </div>
+
+                    <div class="help-section">
+                        <h2>📊 Dashboard</h2>
+                        <div class="help-card">
+                            <p>The Dashboard gives you a quick overview of your system:</p>
+                            <ul>
+                                <li><strong>Binary Status</strong> — Shows if the security-agent binary is found and working.</li>
+                                <li><strong>Cataloged Tools</strong> — Total number of security tools available.</li>
+                                <li><strong>Embedded Skills</strong> — Number of built-in analysis skills.</li>
+                                <li><strong>Capability Coverage</strong> — Overall readiness of your system.</li>
+                                <li><strong>Online/Offline Toggle</strong> — Switch between network-connected and air-gapped modes.</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <div class="help-section">
+                        <h2>🔧 Tools</h2>
+                        <div class="help-card">
+                            <h3>Run Tool</h3>
+                            <p>Execute a built-in security analyzer:</p>
+                            <ol>
+                                <li>Select a tool from the <strong>Tool</strong> dropdown (e.g., nmap, nikto, sqlmap).</li>
+                                <li>Enter a <strong>target</strong> — an IP address, URL, or file path.</li>
+                                <li>Optionally browse for an <strong>input file</strong> or set an <strong>output file</strong>.</li>
+                                <li>Click <strong>Run Tool</strong> and wait for results.</li>
+                            </ol>
+                        </div>
+                        <div class="help-card">
+                            <h3>External Tool</h3>
+                            <p>Run any command-line tool that's installed on your system. Type the full command and arguments.</p>
+                        </div>
+                        <div class="help-card">
+                            <h3>List Tools</h3>
+                            <p>Shows all cataloged tools and whether each one is installed on your system. Green = installed, Red = not found.</p>
+                        </div>
+                        <div class="help-card">
+                            <h3>Skills</h3>
+                            <p>Browse embedded analysis skills — pre-built assessment playbooks that combine multiple tools into a single workflow.</p>
+                        </div>
+                    </div>
+
+                    <div class="help-section">
+                        <h2>🔍 Engagement</h2>
+                        <div class="help-card">
+                            <h3>Plan Scan</h3>
+                            <p>Describe a target and let the agent plan a comprehensive security scan automatically.</p>
+                            <ol>
+                                <li>Enter a target description (e.g., "web app at 192.168.1.1").</li>
+                                <li>Set the scope and rules of engagement.</li>
+                                <li>Click <strong>Generate Plan</strong> — the agent builds a step-by-step scan plan.</li>
+                            </ol>
+                        </div>
+                        <div class="help-card">
+                            <h3>Findings</h3>
+                            <p>View and manage security findings discovered during scans. Each finding includes severity, description, and remediation steps.</p>
+                        </div>
+                        <div class="help-card">
+                            <h3>Schedule Retest</h3>
+                            <p>Set up recurring retests to verify that fixes have been applied. Enter a finding ID and a schedule.</p>
+                        </div>
+                    </div>
+
+                    <div class="help-section">
+                        <h2>💾 Data & Databases</h2>
+                        <div class="help-card">
+                            <ul>
+                                <li><strong>Audit Log</strong> — Timestamped record of every action performed in the app.</li>
+                                <li><strong>Audit Database</strong> — Query the structured audit database with SQL-like filters.</li>
+                                <li><strong>Findings Database</strong> — Browse and search all security findings.</li>
+                                <li><strong>Calibration DB</strong> — Configuration data for tool calibration and tuning.</li>
+                                <li><strong>Reasoning Log</strong> — View the agent's decision-making process and logic chain.</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <div class="help-section">
+                        <h2>🧠 Intelligence</h2>
+                        <div class="help-card">
+                            <ul>
+                                <li><strong>Generate Text</strong> — Use the built-in LLM to generate security reports, policies, or analysis text.</li>
+                                <li><strong>Anomaly Score</strong> — Score a log entry or network event for anomalous behavior.</li>
+                                <li><strong>Ask (NLU)</strong> — Ask questions in plain English and get answers from the agent's knowledge base.</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <div class="help-section">
+                        <h2>⚔️ Offensive Tools</h2>
+                        <div class="help-card">
+                            <ul>
+                                <li><strong>Hash ID</strong> — Identify hash types (MD5, SHA1, bcrypt, etc.).</li>
+                                <li><strong>Password Strength</strong> — Test password complexity and get a strength score.</li>
+                                <li><strong>Gen Wordlist</strong> — Generate custom wordlists for password testing.</li>
+                                <li><strong>Gen Shell Payload</strong> — Create reverse shell payloads for authorized penetration testing.</li>
+                                <li><strong>Analyze Payload</strong> — Inspect and analyze suspicious payloads.</li>
+                                <li><strong>PS Obfuscation</strong> — Obfuscate PowerShell scripts for evasion testing.</li>
+                                <li><strong>Wireless Audit</strong> — Audit Wi-Fi networks for vulnerabilities.</li>
+                                <li><strong>Post-Exploit</strong> — Post-exploitation enumeration and persistence tools.</li>
+                                <li><strong>Gen Decoys</strong> — Generate decoy files and honeytokens.</li>
+                                <li><strong>Analyze Handshake</strong> — Analyze captured WPA/WPA2 handshakes.</li>
+                                <li><strong>WPS PIN</strong> — Generate and test WPS PINs.</li>
+                                <li><strong>Analyze Keys</strong> — Analyze cryptographic keys for weaknesses.</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <div class="help-section">
+                        <h2>⌨️ Keyboard Shortcuts</h2>
+                        <div class="help-card">
+                            <ul>
+                                <li><strong>Ctrl+1 through Ctrl+9</strong> — Quick-switch between sidebar panels.</li>
+                                <li><strong>Ctrl+Shift+S</strong> — Refresh system status.</li>
+                                <li><strong>Ctrl+L</strong> — Clear current output.</li>
+                                <li><strong>Escape</strong> — Return to Dashboard.</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <div class="help-section">
+                        <h2>❓ Troubleshooting</h2>
+                        <div class="help-card">
+                            <h3>Binary Not Found</h3>
+                            <p>If you see a "binary not found" warning, run <code>make build</code> from the project root to compile the security-agent binary.</p>
+                        </div>
+                        <div class="help-card">
+                            <h3>Tool Not Installed</h3>
+                            <p>If a tool shows as "not found" in List Tools, install it via your system's package manager (e.g., <code>apt install nmap</code>).</p>
+                        </div>
+                        <div class="help-card">
+                            <h3>Offline Mode</h3>
+                            <p>In Offline mode, all operations run locally without network access. Switch to Online mode if you need to download tool databases or reach remote targets.</p>
+                        </div>
+                    </div>
+
                 </div>
             </section>
         </main>

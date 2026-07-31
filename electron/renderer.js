@@ -175,6 +175,49 @@
         }
     }
 
+    // ── Online / Offline Mode Toggle ─────────────────────────────────────
+
+    let agentMode = 'offline'; // default mode
+
+    function setAgentMode(mode) {
+        agentMode = mode;
+        const offlineBtn = $('#mode-offline');
+        const onlineBtn = $('#mode-online');
+        if (mode === 'offline') {
+            offlineBtn.classList.add('active');
+            onlineBtn.classList.remove('active');
+        } else {
+            onlineBtn.classList.add('active');
+            offlineBtn.classList.remove('active');
+        }
+        // Store preference
+        try { localStorage.setItem('agent-mode', mode); } catch (_e) {}
+        // Update subtitle
+        const subtitle = $('#panel-dashboard .subtitle');
+        if (subtitle) {
+            subtitle.textContent = mode === 'online'
+                ? 'Security-Agent orchestration overview — Online Mode'
+                : 'Security-Agent orchestration overview — Offline Mode';
+        }
+    }
+
+    // Restore saved preference
+    try {
+        const saved = localStorage.getItem('agent-mode');
+        if (saved === 'online' || saved === 'offline') setAgentMode(saved);
+    } catch (_e) {}
+
+    // Wire up toggle buttons
+    const modeToggle = $('#mode-toggle');
+    if (modeToggle) {
+        modeToggle.addEventListener('click', function (e) {
+            const btn = e.target.closest('.mode-btn');
+            if (btn && btn.dataset.mode) {
+                setAgentMode(btn.dataset.mode);
+            }
+        });
+    }
+
     // ── System Status ─────────────────────────────────────────────────────
 
     $('#btn-refresh-status').addEventListener('click', async function () {
