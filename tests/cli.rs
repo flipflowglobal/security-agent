@@ -232,6 +232,98 @@ criticality=3
     assert!(text.contains("Execution Schedule"));
 }
 
+/// A minimal, valid engagement config written to `path`.
+fn write_engagement_config(path: &std::path::Path) {
+    std::fs::write(
+        path,
+        "\
+engagement_id=eng-run
+authorized_by=jane.doe
+authorized_by_role=SecurityAdmin
+time_window_start=0
+time_window_end=99999999999
+in_scope_targets=api-staging
+allowed_techniques=PassiveRecon,ConfigurationAudit,ApiSecurity
+max_intensity=Standard
+high_impact_approved=false
+penetrative_testing_approved=true
+
+[target]
+id=api-staging
+target_type=Api
+criticality=3
+",
+    )
+    .expect("write temp config");
+}
+
+#[test]
+fn run_engagement_drives_the_pipeline_from_a_valid_config() {
+    let config = unique_temp_path("run-engagement-ok");
+    write_engagement_config(&config);
+
+    let output = run(&[
+        "--run-engagement",
+        &config.to_string_lossy(),
+        "--max-concurrency",
+        "2",
+        "--per-tool-timeout",
+        "10",
+    ]);
+    let _ = std::fs::remove_file(&config);
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let text = stdout(&output);
+    // The concurrent staged engine ran (not the sequential --execute path).
+    assert!(text.contains("Engagement Execution (concurrent staged pipeline)"));
+    assert!(text.contains("Discovery:"));
+    assert!(text.contains("Findings ingested:"));
+}
+
+#[test]
+fn run_engagement_streams_events_to_a_file() {
+    let config = unique_temp_path("run-engagement-events-cfg");
+    let events = unique_temp_path("run-engagement-events-out");
+    write_engagement_config(&config);
+    let _ = std::fs::remove_file(&events);
+
+    let output = run(&[
+        "--run-engagement",
+        &config.to_string_lossy(),
+        "--events",
+        &events.to_string_lossy(),
+    ]);
+    let events_created = events.exists();
+    let _ = std::fs::remove_file(&config);
+    let _ = std::fs::remove_file(&events);
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert!(events_created, "--events should create the sink file");
+}
+
+#[test]
+fn run_engagement_reports_a_missing_config_path() {
+    let output = run(&["--run-engagement"]);
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("missing config file path"));
+}
+
+#[test]
+fn run_engagement_rejects_an_unknown_flag() {
+    let config = unique_temp_path("run-engagement-badflag");
+    write_engagement_config(&config);
+
+    let output = run(&[
+        "--run-engagement",
+        &config.to_string_lossy(),
+        "--not-a-real-flag",
+    ]);
+    let _ = std::fs::remove_file(&config);
+
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("unexpected argument"));
+}
+
 #[test]
 fn llm_generate_echoes_prompt_and_continues() {
     let output = run(&["--llm-generate", "the", "coordinator"]);

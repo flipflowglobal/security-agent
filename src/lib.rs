@@ -127,7 +127,8 @@ pub use offensive::*;
 pub use orchestrator::{OrchestrationSchedule, OrchestrationStep, ToolOrchestrator};
 pub use pcap::{CaptureTimestamp, ProtocolCounts, WiresharkReport, run_wireshark};
 pub use pipeline::{
-    EngagementReport, StageOutcome, record_report_artifacts, run_engagement_pipeline,
+    EngagementGuards, EngagementReport, StageOutcome, record_report_artifacts,
+    run_engagement_pipeline,
 };
 pub use policy::{AuthorizationError, AuthorizationOutcome, PolicyEngine};
 pub use registry::{

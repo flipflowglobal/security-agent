@@ -7,7 +7,7 @@
 //! already exists in [`crate::offensive`] we reuse it; the catch-all path runs
 //! a generic binary/string analysis so that no tool is ever a dead stub.
 
-use std::fmt;
+use std::fmt::{self, Write as _};
 use std::fs;
 use std::path::Path;
 
@@ -67,7 +67,10 @@ enum Category {
 }
 
 fn dispatch_category(name: &str) -> Option<Category> {
-    use Category::*;
+    use Category::{
+        Binary, Credential, Evasion, Forensic, HashCracker, Payload, Privesc, ScanInventory,
+        Sniffer, SourceScan, Web, WirelessAudit, WirelessHandshake, Wordlist, WpsAttack,
+    };
     let category = match name {
         // ── Credential / hash cracking ──────────────────────────────────
         "hashcat" | "john" | "ophcrack" | "rcrack" => HashCracker,
@@ -129,23 +132,22 @@ pub fn run(name: &str, input: &Path) -> Result<String, ArsenalError> {
         return Err(ArsenalError(format!("no arsenal substitute for '{name}'")));
     };
     match category {
-        Category::HashCracker => hash_cracker_report(name, &read_text(input)?),
-        Category::Credential => credential_report(name, &read_text(input)?),
-        Category::Wordlist => wordlist_report(name, &read_text(input)?),
-        Category::Web => web_report(name, &read_text(input)?),
-        Category::WirelessAudit => wireless_audit_report(name, &read_text(input)?),
-        Category::WirelessHandshake => handshake_report(name, input)?,
-        Category::WpsAttack => wps_report(name, &read_text(input)?),
-        Category::ScanInventory => scan_inventory_report(name, &read_text(input)?),
-        Category::Payload => payload_report(name, &read_text(input)?),
-        Category::Privesc => privesc_report(name, &read_text(input)?),
-        Category::SourceScan => source_scan_report(name, &read_text(input)?),
-        Category::Evasion => evasion_report(name, &read_text(input)?),
-        Category::Sniffer => sniffer_report(name, input)?,
-        Category::Binary => binary_report(name, input)?,
-        Category::Forensic => forensic_report(name, input)?,
+        Category::HashCracker => Ok(hash_cracker_report(name, &read_text(input)?)),
+        Category::Credential => Ok(credential_report(name, &read_text(input)?)),
+        Category::Wordlist => Ok(wordlist_report(name, &read_text(input)?)),
+        Category::Web => Ok(web_report(name, &read_text(input)?)),
+        Category::WirelessAudit => Ok(wireless_audit_report(name, &read_text(input)?)),
+        Category::WirelessHandshake => handshake_report(name, input),
+        Category::WpsAttack => Ok(wps_report(name, &read_text(input)?)),
+        Category::ScanInventory => Ok(scan_inventory_report(name, &read_text(input)?)),
+        Category::Payload => Ok(payload_report(name, &read_text(input)?)),
+        Category::Privesc => Ok(privesc_report(name, &read_text(input)?)),
+        Category::SourceScan => Ok(source_scan_report(name, &read_text(input)?)),
+        Category::Evasion => Ok(evasion_report(name, &read_text(input)?)),
+        Category::Sniffer => sniffer_report(name, input),
+        Category::Binary => binary_report(name, input),
+        Category::Forensic => forensic_report(name, input),
     }
-    .pipe(Ok)
 }
 
 // ── Input helpers ───────────────────────────────────────────────────────────
@@ -159,7 +161,9 @@ fn read_bytes(input: &Path) -> Result<Vec<u8>, ArsenalError> {
     let metadata = fs::symlink_metadata(input)
         .map_err(|source| ArsenalError(format!("{}: {source}", input.display())))?;
     if metadata.file_type().is_symlink() {
-        return Err(ArsenalError("input must not be a symbolic link".to_string()));
+        return Err(ArsenalError(
+            "input must not be a symbolic link".to_string(),
+        ));
     }
     if !metadata.is_file() {
         return Err(ArsenalError(format!(
@@ -204,10 +208,10 @@ fn hash_cracker_report(tool: &str, text: &str) -> String {
         out.push_str("No candidate hashes found in input (one hash per line).\n");
         return out;
     }
-    out.push_str(&format!("Candidate hashes analyzed: {}\n\n", hashes.len()));
+    let _ = writeln!(out, "Candidate hashes analyzed: {}\n", hashes.len());
     for (index, hash) in hashes.iter().take(500).enumerate() {
         let analysis = identify_hash(hash);
-        out.push_str(&format!("[{}] {analysis}\n", index + 1));
+        let _ = writeln!(out, "[{}] {analysis}", index + 1);
     }
     out
 }
@@ -222,16 +226,17 @@ fn credential_report(tool: &str, text: &str) -> String {
         out.push_str("No candidate passwords found (one credential per line).\n");
         return out;
     }
-    out.push_str(&format!(
+    let _ = writeln!(
+        out,
         "Passwords assessed: {} (live brute force is disabled offline; \
-         this ranks candidates by resistance)\n\n",
+         this ranks candidates by resistance)\n",
         creds.len()
-    ));
+    );
     for (index, cred) in creds.iter().take(200).enumerate() {
         // Accept `user:pass` pairs as well as bare passwords.
         let password = cred.rsplit(':').next().unwrap_or(cred);
         let strength = analyze_password_strength(password);
-        out.push_str(&format!("[{}] {strength}\n", index + 1));
+        let _ = writeln!(out, "[{}] {strength}", index + 1);
     }
     out
 }
@@ -247,11 +252,12 @@ fn wordlist_report(tool: &str, text: &str) -> String {
         return out;
     };
     let wordlist = generate_targeted_wordlist(target, None, None, extra);
-    out.push_str(&format!(
-        "Seed target    : {target}\nExtra seeds    : {}\nGenerated words: {}\n\n",
+    let _ = writeln!(
+        out,
+        "Seed target    : {target}\nExtra seeds    : {}\nGenerated words: {}\n",
         extra.len(),
         wordlist.len()
-    ));
+    );
     for word in wordlist.iter().take(1000) {
         out.push_str(word);
         out.push('\n');
@@ -279,7 +285,7 @@ fn web_report(tool: &str, text: &str) -> String {
         out.push_str("No missing/weak security headers detected.\n");
     } else {
         for finding in &findings {
-            out.push_str(&format!("{finding}\n"));
+            let _ = writeln!(out, "{finding}");
         }
     }
 
@@ -289,18 +295,25 @@ fn web_report(tool: &str, text: &str) -> String {
         out.push_str("No database error signatures observed in body.\n");
     } else {
         for signature in &sqli {
-            out.push_str(&format!("- {signature}\n"));
+            let _ = writeln!(out, "- {signature}");
         }
     }
 
     // Heuristic reflected-input scan for XSS-prone contexts.
     out.push_str("\nReflection / Injection Heuristics\n---------------------------------\n");
     let mut hits = 0_usize;
-    for marker in ["<script", "onerror=", "onload=", "javascript:", "<img", "%3Cscript"] {
+    for marker in [
+        "<script",
+        "onerror=",
+        "onload=",
+        "javascript:",
+        "<img",
+        "%3Cscript",
+    ] {
         let count = text.matches(marker).count();
         if count > 0 {
             hits += 1;
-            out.push_str(&format!("Potential XSS sink '{marker}': {count} occurrence(s)\n"));
+            let _ = writeln!(out, "Potential XSS sink '{marker}': {count} occurrence(s)");
         }
     }
     if hits == 0 {
@@ -322,7 +335,7 @@ fn wireless_audit_report(tool: &str, text: &str) -> String {
         let security = fields.get(1).copied().unwrap_or("Open");
         let encryption = fields.get(2).copied().unwrap_or("None");
         let audit = audit_wireless_security(essid, security, encryption);
-        out.push_str(&format!("{audit}\n"));
+        let _ = writeln!(out, "{audit}");
         networks += 1;
         if networks >= 100 {
             break;
@@ -350,7 +363,7 @@ fn handshake_report(tool: &str, input: &Path) -> Result<String, ArsenalError> {
         frames.push(read_bytes(input)?);
     }
     let info = analyze_eapol_frames(&frames);
-    out.push_str(&format!("Frames parsed  : {}\n\n{info}\n", frames.len()));
+    let _ = writeln!(out, "Frames parsed  : {}\n\n{info}", frames.len());
     Ok(out)
 }
 
@@ -359,12 +372,11 @@ fn wps_report(tool: &str, text: &str) -> String {
         "{tool} — WPS PIN Analysis\n{underline}\nTool           : {tool} (built-in substitute)\nNetwork used   : No\n\n",
         underline = "=".repeat(22),
     );
-    match payload_lines(text).first() {
-        Some(pin) => {
-            let info = analyze_wps_pin(pin);
-            out.push_str(&format!("{info}\n"));
-        }
-        None => out.push_str("Provide an 8-digit WPS PIN on the first line.\n"),
+    if let Some(pin) = payload_lines(text).first() {
+        let info = analyze_wps_pin(pin);
+        let _ = writeln!(out, "{info}");
+    } else {
+        out.push_str("Provide an 8-digit WPS PIN on the first line.\n");
     }
     out
 }
@@ -386,16 +398,17 @@ fn scan_inventory_report(tool: &str, text: &str) -> String {
         let risk = risky_service(&lower, port);
         if let Some((service, reason)) = risk {
             risky += 1;
-            out.push_str(&format!("[RISK] {line}\n       {service}: {reason}\n"));
+            let _ = writeln!(out, "[RISK] {line}\n       {service}: {reason}");
         }
         services += 1;
         if services >= 500 {
             break;
         }
     }
-    out.push_str(&format!(
-        "\nSummary\n-------\nEntries analyzed : {services}\nFlagged exposures: {risky}\n"
-    ));
+    let _ = writeln!(
+        out,
+        "\nSummary\n-------\nEntries analyzed : {services}\nFlagged exposures: {risky}"
+    );
     if services == 0 {
         out.push_str("No inventory entries found.\n");
     }
@@ -409,15 +422,30 @@ fn risky_service(lower: &str, port: Option<u16>) -> Option<(&'static str, &'stat
         ("ftp", 21, "FTP", "cleartext credentials and data"),
         ("rlogin", 513, "rlogin", "legacy trust-based auth"),
         ("smb", 445, "SMB", "lateral movement / ransomware target"),
-        ("microsoft-ds", 445, "SMB", "lateral movement / ransomware target"),
+        (
+            "microsoft-ds",
+            445,
+            "SMB",
+            "lateral movement / ransomware target",
+        ),
         ("rdp", 3389, "RDP", "brute-force and BlueKeep exposure"),
         ("vnc", 5900, "VNC", "often unauthenticated remote desktop"),
         ("mysql", 3306, "MySQL", "database exposed to the network"),
         ("mssql", 1433, "MSSQL", "database exposed to the network"),
         ("mongodb", 27017, "MongoDB", "frequently unauthenticated"),
         ("redis", 6379, "Redis", "frequently unauthenticated"),
-        ("elasticsearch", 9200, "Elasticsearch", "frequently unauthenticated"),
-        ("snmp", 161, "SNMP", "default community strings leak topology"),
+        (
+            "elasticsearch",
+            9200,
+            "Elasticsearch",
+            "frequently unauthenticated",
+        ),
+        (
+            "snmp",
+            161,
+            "SNMP",
+            "default community strings leak topology",
+        ),
         ("ldap", 389, "LDAP", "directory enumeration"),
         ("smtp", 25, "SMTP", "open relay / user enumeration"),
         ("nfs", 2049, "NFS", "world-readable exports"),
@@ -441,13 +469,16 @@ fn payload_report(tool: &str, text: &str) -> String {
         return out;
     }
     let analysis = analyze_payload(sample);
-    out.push_str(&format!("{analysis}\n\nEvasion Suggestions\n-------------------\n"));
+    let _ = write!(
+        out,
+        "{analysis}\n\nEvasion Suggestions\n-------------------\n"
+    );
     let suggestions = suggest_evasion(&analysis);
     if suggestions.is_empty() {
         out.push_str("No additional evasion transforms recommended.\n");
     } else {
         for suggestion in &suggestions {
-            out.push_str(&format!("{suggestion}\n"));
+            let _ = writeln!(out, "{suggestion}");
         }
     }
     out
@@ -462,51 +493,63 @@ fn privesc_report(tool: &str, text: &str) -> String {
     total += push_section(
         &mut out,
         "Password Database (/etc/passwd)",
-        analyze_passwd_file(text).iter().map(ToString::to_string).collect(),
+        analyze_passwd_file(text)
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
     );
     total += push_section(
         &mut out,
         "Shadow Database (/etc/shadow)",
-        analyze_shadow_file(text).iter().map(ToString::to_string).collect(),
+        analyze_shadow_file(text)
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
     );
     total += push_section(
         &mut out,
         "Sudo Policy (/etc/sudoers)",
-        analyze_sudoers(text).iter().map(ToString::to_string).collect(),
+        analyze_sudoers(text)
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
     );
     total += push_section(
         &mut out,
         "Authorized Keys",
-        analyze_authorized_keys(text).iter().map(ToString::to_string).collect(),
+        analyze_authorized_keys(text)
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
     );
     total += push_section(
         &mut out,
         "Hosts / Trust File",
-        analyze_hosts_file(text).iter().map(ToString::to_string).collect(),
+        analyze_hosts_file(text)
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
     );
-    out.push_str(&format!("Total indicators: {total}\n"));
+    let _ = writeln!(out, "Total indicators: {total}");
     out
 }
 
 /// Appends a titled section and returns the number of indicator lines.
 fn push_section(out: &mut String, title: &str, lines: Vec<String>) -> usize {
-    out.push_str(&format!("{title}\n{}\n", "-".repeat(title.len())));
+    let count = lines.len();
+    let _ = writeln!(out, "{title}\n{}", "-".repeat(title.len()));
     if lines.is_empty() {
         out.push_str("No indicators.\n\n");
     } else {
-        for line in &lines {
-            out.push_str(&format!("{line}\n"));
+        for line in lines {
+            let _ = writeln!(out, "{line}");
         }
         out.push('\n');
     }
-    lines.len()
+    count
 }
 
 fn source_scan_report(tool: &str, text: &str) -> String {
-    let mut out = format!(
-        "{tool} — Static Source Pattern Scan\n{underline}\nTool           : {tool} (built-in substitute)\nNetwork used   : No\n\n",
-        underline = "=".repeat(32),
-    );
     // (needle, severity, description)
     const RULES: &[(&str, &str, &str)] = &[
         ("eval(", "HIGH", "dynamic code evaluation"),
@@ -528,16 +571,21 @@ fn source_scan_report(tool: &str, text: &str) -> String {
         ("api_key", "MEDIUM", "possible embedded API key"),
         ("TODO", "INFO", "unfinished code marker"),
     ];
+    let mut out = format!(
+        "{tool} — Static Source Pattern Scan\n{underline}\nTool           : {tool} (built-in substitute)\nNetwork used   : No\n\n",
+        underline = "=".repeat(32),
+    );
     let mut total = 0_usize;
     for (number, line) in text.lines().enumerate().take(200_000) {
         let lower = line.to_lowercase();
         for (needle, severity, description) in RULES {
             if lower.contains(&needle.to_lowercase()) {
                 total += 1;
-                out.push_str(&format!(
-                    "[{severity}] line {}: {description} ({needle})\n",
+                let _ = writeln!(
+                    out,
+                    "[{severity}] line {}: {description} ({needle})",
                     number + 1
-                ));
+                );
                 if total >= 1000 {
                     out.push_str("... (truncated at 1000 findings)\n");
                     return out;
@@ -545,7 +593,7 @@ fn source_scan_report(tool: &str, text: &str) -> String {
             }
         }
     }
-    out.push_str(&format!("\nTotal findings: {total}\n"));
+    let _ = writeln!(out, "\nTotal findings: {total}");
     if total == 0 {
         out.push_str("No matching insecure patterns found.\n");
     }
@@ -564,7 +612,7 @@ fn evasion_report(tool: &str, text: &str) -> String {
     }
     out.push_str("PowerShell Obfuscation\n----------------------\n");
     for result in obfuscate_powershell(sample).iter().take(10) {
-        out.push_str(&format!("{result}\n"));
+        let _ = writeln!(out, "{result}");
     }
     out.push_str("\nDecoy Traffic Plan\n------------------\n");
     // Use the first token that looks like an IP as the real source.
@@ -572,20 +620,22 @@ fn evasion_report(tool: &str, text: &str) -> String {
         .split_whitespace()
         .find(|t| t.split('.').filter(|o| o.parse::<u8>().is_ok()).count() == 4)
         .unwrap_or("10.0.0.1");
-    out.push_str(&format!("{}\n", generate_decoys(real_ip, 5)));
+    let _ = writeln!(out, "{}", generate_decoys(real_ip, 5));
     out
 }
 
 fn sniffer_report(tool: &str, input: &Path) -> Result<String, ArsenalError> {
     // A pcap file has a genuine builtin analyzer; reuse it. Otherwise fall
     // back to a generic binary analysis of the capture bytes.
-    match crate::pcap::run_wireshark(input) {
-        Ok(report) => Ok(format!(
-            "{}{report}\n",
-            banner(tool, &format!("{tool} — Passive Capture Analysis"), input)
-        )),
-        Err(_) => binary_report(tool, input),
-    }
+    crate::pcap::run_wireshark(input).map_or_else(
+        |_| binary_report(tool, input),
+        |report| {
+            Ok(format!(
+                "{}{report}\n",
+                banner(tool, &format!("{tool} — Passive Capture Analysis"), input)
+            ))
+        },
+    )
 }
 
 fn binary_report(tool: &str, input: &Path) -> Result<String, ArsenalError> {
@@ -602,13 +652,13 @@ fn binary_report(tool: &str, input: &Path) -> Result<String, ArsenalError> {
 fn forensic_report(tool: &str, input: &Path) -> Result<String, ArsenalError> {
     let bytes = read_bytes(input)?;
     let mut out = banner(tool, &format!("{tool} — Local Artifact Analysis"), input);
-    out.push_str(&format!("Size           : {} bytes\n", bytes.len()));
-    out.push_str(&format!("Detected type  : {}\n\n", detect_file_type(&bytes)));
+    let _ = writeln!(out, "Size           : {} bytes", bytes.len());
+    let _ = writeln!(out, "Detected type  : {}\n", detect_file_type(&bytes));
 
     out.push_str("ASCII Strings (first 60)\n------------------------\n");
     let mut count = 0_usize;
     for text in extract_strings(&bytes, 4).into_iter().take(60) {
-        out.push_str(&format!("- {text}\n"));
+        let _ = writeln!(out, "- {text}");
         count += 1;
     }
     if count == 0 {
@@ -620,8 +670,13 @@ fn forensic_report(tool: &str, input: &Path) -> Result<String, ArsenalError> {
 // ── Small offline utilities ──────────────────────────────────────────────────
 
 fn decode_hex(text: &str) -> Option<Vec<u8>> {
-    let cleaned: String = text.chars().filter(|c| !c.is_whitespace() && *c != ':').collect();
-    if cleaned.is_empty() || cleaned.len() % 2 != 0 || !cleaned.chars().all(|c| c.is_ascii_hexdigit())
+    let cleaned: String = text
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != ':')
+        .collect();
+    if cleaned.is_empty()
+        || cleaned.len() % 2 != 0
+        || !cleaned.chars().all(|c| c.is_ascii_hexdigit())
     {
         return None;
     }
@@ -631,7 +686,7 @@ fn decode_hex(text: &str) -> Option<Vec<u8>> {
     while index < raw.len() {
         let hi = (raw[index] as char).to_digit(16)?;
         let lo = (raw[index + 1] as char).to_digit(16)?;
-        bytes.push(((hi << 4) | lo) as u8);
+        bytes.push(u8::try_from((hi << 4) | lo).unwrap_or(0));
         index += 2;
     }
     Some(bytes)
@@ -659,12 +714,10 @@ fn extract_strings(bytes: &[u8], min_len: usize) -> Vec<String> {
     for &byte in bytes {
         if byte.is_ascii_graphic() || byte == b' ' {
             current.push(byte as char);
+        } else if current.len() >= min_len {
+            strings.push(std::mem::take(&mut current));
         } else {
-            if current.len() >= min_len {
-                strings.push(std::mem::take(&mut current));
-            } else {
-                current.clear();
-            }
+            current.clear();
         }
         if strings.len() >= 4096 {
             break;
@@ -675,14 +728,6 @@ fn extract_strings(bytes: &[u8], min_len: usize) -> Vec<String> {
     }
     strings
 }
-
-/// Tiny helper so `run` reads as a pipeline.
-trait Pipe: Sized {
-    fn pipe<T>(self, f: impl FnOnce(Self) -> T) -> T {
-        f(self)
-    }
-}
-impl<T> Pipe for T {}
 
 #[cfg(test)]
 mod tests {
@@ -704,7 +749,10 @@ mod tests {
             if bespoke.contains(&name.as_str()) {
                 continue;
             }
-            assert!(handles(&name), "no arsenal handler for cataloged tool '{name}'");
+            assert!(
+                handles(&name),
+                "no arsenal handler for cataloged tool '{name}'"
+            );
         }
     }
 
@@ -723,7 +771,10 @@ mod tests {
 
     #[test]
     fn hex_decoder_roundtrips() {
-        assert_eq!(decode_hex("de:ad:be:ef"), Some(vec![0xDE, 0xAD, 0xBE, 0xEF]));
+        assert_eq!(
+            decode_hex("de:ad:be:ef"),
+            Some(vec![0xDE, 0xAD, 0xBE, 0xEF])
+        );
         assert_eq!(decode_hex("xyz"), None);
     }
 }

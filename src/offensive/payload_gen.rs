@@ -48,73 +48,73 @@ impl ShellType {
     pub const fn catalog() -> &'static [ShellTypeEntry] {
         &[
             ShellTypeEntry {
-                shell_type: ShellType::ReverseBash,
+                shell_type: Self::ReverseBash,
                 aliases: &["bash", "sh"],
                 platform: "Linux / Unix",
                 description: "One-line bash reverse shell using /dev/tcp. Best when bash is present (almost always on Linux).",
             },
             ShellTypeEntry {
-                shell_type: ShellType::ReverseNetcat,
+                shell_type: Self::ReverseNetcat,
                 aliases: &["netcat", "nc"],
                 platform: "Linux / Unix (nc with -e support or ncat)",
                 description: "Reverse shell via netcat + named pipe. Reliable on many distros, but some nc builds lack -e.",
             },
             ShellTypeEntry {
-                shell_type: ShellType::ReversePython,
+                shell_type: Self::ReversePython,
                 aliases: &["python", "python3", "py"],
                 platform: "Linux / Unix / Windows (with python3)",
                 description: "Reverse shell via python3's socket + os.dup2. Broad compatibility; often present on modern systems.",
             },
             ShellTypeEntry {
-                shell_type: ShellType::ReversePerl,
+                shell_type: Self::ReversePerl,
                 aliases: &["perl"],
                 platform: "Linux / Unix",
                 description: "Reverse shell via perl's Socket module. Useful when perl is present but bash is restricted.",
             },
             ShellTypeEntry {
-                shell_type: ShellType::ReverseRuby,
+                shell_type: Self::ReverseRuby,
                 aliases: &["ruby"],
                 platform: "Linux / Unix",
                 description: "Reverse shell via ruby -rsocket. Handy on systems with a Ruby toolchain installed.",
             },
             ShellTypeEntry {
-                shell_type: ShellType::ReversePhp,
+                shell_type: Self::ReversePhp,
                 aliases: &["php"],
                 platform: "Linux / Unix (php-cli)",
                 description: "Reverse shell via php's fsockopen. Good on web hosts that ship php-cli.",
             },
             ShellTypeEntry {
-                shell_type: ShellType::ReverseTcp,
+                shell_type: Self::ReverseTcp,
                 aliases: &["tcp"],
                 platform: "Linux x86_64",
                 description: "Raw x86_64 reverse TCP shellcode (syscall-based). Use where a compiled stub is preferred.",
             },
             ShellTypeEntry {
-                shell_type: ShellType::PowerShellMsf,
+                shell_type: Self::PowerShellMsf,
                 aliases: &["powershell", "ps", "ps1"],
                 platform: "Windows (PowerShell 2.0+)",
                 description: "One-liner PowerShell reverse shell (plain TCP client + process launch). No external tools required.",
             },
             ShellTypeEntry {
-                shell_type: ShellType::BindTcp,
+                shell_type: Self::BindTcp,
                 aliases: &["bind", "bindtcp"],
                 platform: "Linux / Unix (nc with -e support or ncat)",
                 description: "Bind shell: the target listens and you connect to it. Only works when you can reach the target directly.",
             },
             ShellTypeEntry {
-                shell_type: ShellType::MeterpreterReverseTcp,
+                shell_type: Self::MeterpreterReverseTcp,
                 aliases: &["meterpreter", "msf"],
                 platform: "Windows / Linux (requires Metasploit)",
                 description: "Meterpreter reverse TCP stage. Requires the local msfvenom binary — prints the exact command.",
             },
             ShellTypeEntry {
-                shell_type: ShellType::ReverseHttp,
+                shell_type: Self::ReverseHttp,
                 aliases: &["http"],
                 platform: "Windows / Linux (requires Metasploit)",
                 description: "Meterpreter reverse HTTP stager. Requires the local msfvenom binary — prints the exact command.",
             },
             ShellTypeEntry {
-                shell_type: ShellType::ReverseHttps,
+                shell_type: Self::ReverseHttps,
                 aliases: &["https"],
                 platform: "Windows / Linux (requires Metasploit)",
                 description: "Meterpreter reverse HTTPS stager. Requires the local msfvenom binary — prints the exact command.",
@@ -125,9 +125,9 @@ impl ShellType {
     /// Resolve a user-supplied type name (e.g. `"bash"`, `"py"`) to a
     /// [`ShellType`], or `None` when the name matches no alias.
     #[must_use]
-    pub fn parse(name: &str) -> Option<ShellType> {
+    pub fn parse(name: &str) -> Option<Self> {
         let normalized = name.trim().to_ascii_lowercase();
-        ShellType::catalog()
+        Self::catalog()
             .iter()
             .find(|entry| entry.aliases.iter().any(|alias| *alias == normalized))
             .map(|entry| entry.shell_type)
@@ -632,9 +632,15 @@ mod tests {
         assert_eq!(ShellType::parse("sh"), Some(ShellType::ReverseBash));
         assert_eq!(ShellType::parse("python3"), Some(ShellType::ReversePython));
         assert_eq!(ShellType::parse("nc"), Some(ShellType::ReverseNetcat));
-        assert_eq!(ShellType::parse("powershell"), Some(ShellType::PowerShellMsf));
+        assert_eq!(
+            ShellType::parse("powershell"),
+            Some(ShellType::PowerShellMsf)
+        );
         assert_eq!(ShellType::parse("bind"), Some(ShellType::BindTcp));
-        assert_eq!(ShellType::parse("meterpreter"), Some(ShellType::MeterpreterReverseTcp));
+        assert_eq!(
+            ShellType::parse("meterpreter"),
+            Some(ShellType::MeterpreterReverseTcp)
+        );
         assert_eq!(ShellType::parse("http"), Some(ShellType::ReverseHttp));
         assert_eq!(ShellType::parse("https"), Some(ShellType::ReverseHttps));
         assert_eq!(ShellType::parse("BASH"), Some(ShellType::ReverseBash));

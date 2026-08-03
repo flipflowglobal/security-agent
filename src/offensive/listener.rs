@@ -171,11 +171,12 @@ impl fmt::Display for ListenerSummary {
     }
 }
 
-/// A persisted record of one completed shell session, written as a JSON
-/// Lines line to the listener's `session_log` (when configured). The format
-/// reuses the crate-wide [`CompatibilityEnvelope`] wire shape, so a session
-/// log is interoperable with the audit/findings tooling already in the
-/// binary.
+/// A persisted record of one completed shell session.
+///
+/// Written as a JSON Lines line to the listener's `session_log` (when
+/// configured). The format reuses the crate-wide [`CompatibilityEnvelope`]
+/// wire shape, so a session log is interoperable with the audit/findings
+/// tooling already in the binary.
 #[derive(Debug, Clone)]
 pub struct SessionRecord {
     pub session_id: String,
@@ -199,11 +200,17 @@ impl SessionRecord {
             "connection_number".to_string(),
             self.connection_number.to_string(),
         );
-        fields.insert("started_at_unix".to_string(), self.started_at_unix.to_string());
+        fields.insert(
+            "started_at_unix".to_string(),
+            self.started_at_unix.to_string(),
+        );
         fields.insert("ended_at_unix".to_string(), self.ended_at_unix.to_string());
         fields.insert("duration_ms".to_string(), self.duration_ms.to_string());
         fields.insert("bytes_sent".to_string(), self.bytes_sent.to_string());
-        fields.insert("bytes_received".to_string(), self.bytes_received.to_string());
+        fields.insert(
+            "bytes_received".to_string(),
+            self.bytes_received.to_string(),
+        );
         let envelope = CompatibilityEnvelope {
             protocol_version: "1".to_string(),
             producer: "security-agent-listener".to_string(),
@@ -314,7 +321,8 @@ fn run_accept_loop(listener: &TcpListener, config: &ListenerConfig) -> AcceptLoo
                                 connection_number: state.total_connections,
                                 started_at_unix: conn_data.started_at_unix,
                                 ended_at_unix: unix_now(),
-                                duration_ms: conn_data.duration.as_millis() as u64,
+                                duration_ms: u64::try_from(conn_data.duration.as_millis())
+                                    .unwrap_or(u64::MAX),
                                 bytes_sent: conn_data.bytes_sent,
                                 bytes_received: conn_data.bytes_received,
                             },
