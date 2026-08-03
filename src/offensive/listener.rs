@@ -25,10 +25,14 @@
 //! - **Graceful shutdown**: `Ctrl-C` (SIGINT) closes the listener socket
 //!   and returns cleanly.
 
+use crate::compat::CompatibilityEnvelope;
+use std::collections::BTreeMap;
 use std::fmt;
+use std::fs::OpenOptions;
 use std::io::{self, BufRead, Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
-use std::time::{Duration, Instant};
+use std::path::PathBuf;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -45,6 +49,11 @@ pub struct ListenerConfig {
     /// Timeout for individual read/write operations on the shell socket.
     /// `None` means block indefinitely.
     pub io_timeout: Option<Duration>,
+    /// Append-only JSON Lines file for session records. When set, every
+    /// completed shell session (and the final listener summary) is persisted
+    /// as a structured [`SessionRecord`] line, giving engagements an audit
+    /// trail that survives Ctrl-C and machine restarts.
+    pub session_log: Option<PathBuf>,
 }
 
 impl Default for ListenerConfig {
@@ -54,6 +63,7 @@ impl Default for ListenerConfig {
             port: 4444,
             max_connections: None,
             io_timeout: Some(Duration::from_secs(300)),
+            session_log: None,
         }
     }
 }
@@ -82,16 +92,22 @@ pub enum ListenerEvent {
     Connected {
         peer_addr: String,
         connection_number: u32,
+        session_id: String,
     },
     /// An interactive shell session was established for a connection.
     SessionActive {
         peer_addr: String,
         connection_number: u32,
+        session_id: String,
+        started_at_unix: u64,
     },
     /// A shell session ended (client disconnected or error).
     SessionEnded {
         peer_addr: String,
         connection_number: u32,
+        session_id: String,
+        started_at_unix: u64,
+        ended_at_unix: u64,
         duration: Duration,
         bytes_sent: u64,
         bytes_received: u64,
@@ -155,6 +171,68 @@ impl fmt::Display for ListenerSummary {
     }
 }
 
+/// A persisted record of one completed shell session, written as a JSON
+/// Lines line to the listener's `session_log` (when configured). The format
+/// reuses the crate-wide [`CompatibilityEnvelope`] wire shape, so a session
+/// log is interoperable with the audit/findings tooling already in the
+/// binary.
+#[derive(Debug, Clone)]
+pub struct SessionRecord {
+    pub session_id: String,
+    pub peer_addr: String,
+    pub connection_number: u32,
+    pub started_at_unix: u64,
+    pub ended_at_unix: u64,
+    pub duration_ms: u64,
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+}
+
+impl SessionRecord {
+    /// Serialize this record as one JSON Lines line.
+    #[must_use]
+    pub fn to_wire_line(&self) -> String {
+        let mut fields = BTreeMap::new();
+        fields.insert("session_id".to_string(), self.session_id.clone());
+        fields.insert("peer_addr".to_string(), self.peer_addr.clone());
+        fields.insert(
+            "connection_number".to_string(),
+            self.connection_number.to_string(),
+        );
+        fields.insert("started_at_unix".to_string(), self.started_at_unix.to_string());
+        fields.insert("ended_at_unix".to_string(), self.ended_at_unix.to_string());
+        fields.insert("duration_ms".to_string(), self.duration_ms.to_string());
+        fields.insert("bytes_sent".to_string(), self.bytes_sent.to_string());
+        fields.insert("bytes_received".to_string(), self.bytes_received.to_string());
+        let envelope = CompatibilityEnvelope {
+            protocol_version: "1".to_string(),
+            producer: "security-agent-listener".to_string(),
+            payload_kind: "listener-session".to_string(),
+            fields,
+        };
+        envelope.to_wire_format()
+    }
+}
+
+/// Appends one session record to the configured session log (append-only,
+/// best-effort: log failures are surfaced as warnings, never fatal).
+fn append_session_record(config: &ListenerConfig, record: &SessionRecord) {
+    let Some(path) = &config.session_log else {
+        return;
+    };
+    let line = record.to_wire_line();
+    match OpenOptions::new().create(true).append(true).open(path) {
+        Ok(mut file) => {
+            if let Err(e) = file.write_all(line.as_bytes()) {
+                eprintln!("[!] session log write failed: {e}");
+            }
+        }
+        Err(e) => {
+            eprintln!("[!] session log open failed: {e}");
+        }
+    }
+}
+
 // ─── Core Listener ───────────────────────────────────────────────────────────
 
 struct AcceptLoopState {
@@ -186,19 +264,30 @@ fn run_accept_loop(listener: &TcpListener, config: &ListenerConfig) -> AcceptLoo
             Ok((stream, peer_addr)) => {
                 state.total_connections += 1;
                 let peer = peer_addr.to_string();
+                let session_id = new_session_id(state.total_connections);
 
                 emit(&ListenerEvent::Connected {
                     peer_addr: peer.clone(),
                     connection_number: state.total_connections,
+                    session_id: session_id.clone(),
                 });
 
-                eprintln!("[+] Connection #{} from {peer}", state.total_connections);
+                eprintln!(
+                    "[+] Connection #{} from {peer} (session {session_id})",
+                    state.total_connections
+                );
 
                 let timeout = config.io_timeout.unwrap_or(Duration::from_secs(300));
                 let _ = stream.set_read_timeout(Some(timeout));
                 let _ = stream.set_write_timeout(Some(timeout));
 
-                match handle_connection(stream, &peer, state.total_connections, config.io_timeout) {
+                match handle_connection(
+                    stream,
+                    &peer,
+                    state.total_connections,
+                    &session_id,
+                    config.io_timeout,
+                ) {
                     Ok(conn_data) => {
                         state.total_sessions += 1;
                         state.total_bytes_sent += conn_data.bytes_sent;
@@ -207,10 +296,29 @@ fn run_accept_loop(listener: &TcpListener, config: &ListenerConfig) -> AcceptLoo
                         emit(&ListenerEvent::SessionEnded {
                             peer_addr: peer.clone(),
                             connection_number: state.total_connections,
+                            session_id: session_id.clone(),
+                            started_at_unix: conn_data.started_at_unix,
+                            ended_at_unix: unix_now(),
                             duration: conn_data.duration,
                             bytes_sent: conn_data.bytes_sent,
                             bytes_received: conn_data.bytes_received,
                         });
+
+                        // Persist the completed session to the audit-style log
+                        // when a session_log path is configured.
+                        append_session_record(
+                            config,
+                            &SessionRecord {
+                                session_id: session_id.clone(),
+                                peer_addr: peer.clone(),
+                                connection_number: state.total_connections,
+                                started_at_unix: conn_data.started_at_unix,
+                                ended_at_unix: unix_now(),
+                                duration_ms: conn_data.duration.as_millis() as u64,
+                                bytes_sent: conn_data.bytes_sent,
+                                bytes_received: conn_data.bytes_received,
+                            },
+                        );
 
                         eprintln!(
                             "[*] Session #{} ended — {:.1}s, {}↑ {}↓",
@@ -312,6 +420,7 @@ pub fn start_listener(config: &ListenerConfig) -> Result<ListenerSummary, Listen
 /// Statistics from a single shell session.
 #[derive(Debug, Clone)]
 struct SessionStats {
+    started_at_unix: u64,
     duration: Duration,
     bytes_sent: u64,
     bytes_received: u64,
@@ -326,11 +435,15 @@ fn handle_connection(
     mut stream: TcpStream,
     peer: &str,
     connection_number: u32,
+    session_id: &str,
     _io_timeout: Option<Duration>,
 ) -> Result<SessionStats, ListenerError> {
+    let started_at_unix = unix_now();
     emit(&ListenerEvent::SessionActive {
         peer_addr: peer.to_string(),
         connection_number,
+        session_id: session_id.to_string(),
+        started_at_unix,
     });
 
     eprintln!("[+] Shell session active — type commands, press Ctrl-D or type 'exit' to close\n");
@@ -436,6 +549,7 @@ fn handle_connection(
     }
 
     Ok(SessionStats {
+        started_at_unix,
         duration: session_start.elapsed(),
         bytes_sent,
         bytes_received,
@@ -481,25 +595,34 @@ fn emit(event: &ListenerEvent) {
         ListenerEvent::Connected {
             peer_addr,
             connection_number,
+            session_id,
         } => {
-            eprintln!("[*] CONNECTED #{connection_number} {peer_addr}");
+            eprintln!("[*] CONNECTED #{connection_number} {peer_addr} ({session_id})");
         }
         ListenerEvent::SessionActive {
             peer_addr,
             connection_number,
+            session_id,
+            started_at_unix,
         } => {
-            eprintln!("[*] SESSION_ACTIVE #{connection_number} {peer_addr}");
+            eprintln!(
+                "[*] SESSION_ACTIVE #{connection_number} {peer_addr} ({session_id}) t0={started_at_unix}"
+            );
         }
         ListenerEvent::SessionEnded {
             peer_addr,
             connection_number,
+            session_id,
+            started_at_unix,
+            ended_at_unix,
             duration,
             bytes_sent,
             bytes_received,
         } => {
             eprintln!(
-                "[*] SESSION_ENDED #{connection_number} {peer_addr} \
-                 duration={:.1}s sent={bytes_sent} recv={bytes_received}",
+                "[*] SESSION_ENDED #{connection_number} {peer_addr} ({session_id}) \
+                 t0={started_at_unix} t1={ended_at_unix} duration={:.1}s \
+                 sent={bytes_sent} recv={bytes_received}",
                 duration.as_secs_f64(),
             );
         }
@@ -513,6 +636,19 @@ fn emit(event: &ListenerEvent) {
             eprintln!("[*] LISTENER_SHUTDOWN connections={total_connections} reason={reason}");
         }
     }
+}
+
+/// Current Unix time in whole seconds (0 on clock failure — callers treat
+/// it as best-effort metadata, never a correctness gate).
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// Deterministic, unique session identifier: `sess-<unix>-<n>`.
+fn new_session_id(connection_number: u32) -> String {
+    format!("sess-{}-{connection_number}", unix_now())
 }
 
 /// Human-readable byte count formatter.
@@ -621,6 +757,7 @@ mod tests {
             port: 1,
             max_connections: Some(1),
             io_timeout: Some(Duration::from_secs(1)),
+            session_log: None,
         };
         let result = start_listener(&config);
         assert!(result.is_err());
@@ -633,6 +770,7 @@ mod tests {
             port: 49152,
             max_connections: Some(1),
             io_timeout: Some(Duration::from_secs(2)),
+            session_log: None,
         };
 
         // Spawn the listener in a thread.
@@ -659,5 +797,64 @@ mod tests {
             summary.shutdown_reason,
             ShutdownReason::MaxConnectionsReached
         );
+    }
+
+    #[test]
+    fn session_record_serializes_as_json_line() {
+        let record = SessionRecord {
+            session_id: "sess-1700000000-1".to_string(),
+            peer_addr: "192.168.1.10:5555".to_string(),
+            connection_number: 1,
+            started_at_unix: 1_700_000_000,
+            ended_at_unix: 1_700_000_042,
+            duration_ms: 42_000,
+            bytes_sent: 1024,
+            bytes_received: 2048,
+        };
+        let line = record.to_wire_line();
+        assert!(line.starts_with('{'));
+        assert!(line.ends_with("}\n"));
+        assert!(line.contains("\"kind\":\"listener-session\""));
+        assert!(line.contains("\"session_id\":\"sess-1700000000-1\""));
+        assert!(line.contains("\"bytes_sent\":\"1024\""));
+        assert!(line.contains("\"bytes_received\":\"2048\""));
+        assert!(line.contains("\"duration_ms\":\"42000\""));
+    }
+
+    #[test]
+    fn session_record_round_trips_through_wire_format() {
+        let record = SessionRecord {
+            session_id: "sess-1700000000-2".to_string(),
+            peer_addr: "10.0.0.5:4444".to_string(),
+            connection_number: 2,
+            started_at_unix: 1_700_000_000,
+            ended_at_unix: 1_700_000_090,
+            duration_ms: 90_000,
+            bytes_sent: 512,
+            bytes_received: 256,
+        };
+        let line = record.to_wire_line();
+        let envelope = CompatibilityEnvelope::from_wire_format(line.trim());
+        assert!(envelope.is_some());
+        let envelope = envelope.unwrap();
+        assert_eq!(envelope.producer, "security-agent-listener");
+        assert_eq!(envelope.payload_kind, "listener-session");
+        assert_eq!(
+            envelope.fields.get("session_id").map(String::as_str),
+            Some("sess-1700000000-2")
+        );
+        assert_eq!(
+            envelope.fields.get("peer_addr").map(String::as_str),
+            Some("10.0.0.5:4444")
+        );
+    }
+
+    #[test]
+    fn session_ids_are_unique_and_prefixed() {
+        let a = new_session_id(1);
+        let b = new_session_id(2);
+        assert!(a.starts_with("sess-"));
+        assert!(b.starts_with("sess-"));
+        assert_ne!(a, b);
     }
 }

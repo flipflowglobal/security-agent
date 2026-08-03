@@ -22,6 +22,7 @@ pub mod findings;
 pub mod findings_db;
 pub mod findings_log;
 pub mod governance;
+pub mod help;
 pub mod ingest;
 pub mod integrity;
 pub mod intensity_guard;
@@ -96,6 +97,10 @@ pub use execution::{
 pub use findings::{Finding, RiskScoreCalculator, Severity};
 pub use findings_log::{FindingsLogError, append_findings, load_findings};
 pub use governance::{AuditLedger, AuditRecord, Role};
+pub use help::{
+    ALL_COMMANDS, CommandHelp, GUIDE_SECTIONS, render_all_help, render_help_for,
+    render_reverse_shell_guide, render_section,
+};
 pub use integrity::{IntegrityManifest, IntegrityStatus, verify};
 pub use intensity_guard::{IntensityAdvisory, advise};
 pub use language_model::{LanguageModel, NeuralLanguageModel};

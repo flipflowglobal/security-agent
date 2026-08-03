@@ -15,7 +15,18 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 fn main() -> ExitCode {
     let assets = LocalAgentAssets::bundled();
-    let mut arguments = std::env::args().skip(1);
+    let mut arguments = std::env::args().skip(1).peekable();
+
+    // Global online opt-in: a leading `--allow-network` enables the
+    // live-network commands (currently `--listen`) for this invocation, as
+    // documented (`security-agent --allow-network --listen 4444`). The flag
+    // is consumed here so per-command handlers never see it; commands that
+    // do not open sockets ignore it. `--run-external-tool` and `--plan-scan`
+    // additionally accept the flag in their own documented positions.
+    let allow_network = arguments.peek().map(String::as_str) == Some("--allow-network");
+    if allow_network {
+        arguments.next();
+    }
 
     match arguments.next().as_deref() {
         None | Some("--offline-status") => {
@@ -55,7 +66,10 @@ fn main() -> ExitCode {
         Some("--analyze-passwd") => analyze_passwd_command(&mut arguments),
         Some("--analyze-sudoers") => analyze_sudoers_command(&mut arguments),
         Some("--analyze-keys") => analyze_keys_command(&mut arguments),
-        Some("--listen") => listen_command(&mut arguments),
+        Some("--guide") => guide_command(&mut arguments),
+        Some("--tool-help") => tool_help_command(&mut arguments),
+        Some("--shell-guide") => shell_guide_command(),
+        Some("--listen") => listen_command(&mut arguments, allow_network),
         Some(command) => {
             eprintln!("unknown command: {command}");
             ExitCode::from(2)
@@ -77,6 +91,64 @@ fn print_about() -> ExitCode {
     for phase in security_agent::ROADMAP_PHASES {
         println!("{:<9} {}", phase.phase, phase.focus);
     }
+    ExitCode::SUCCESS
+}
+
+/// `--guide [section]` — print the complete plain-language guide, or one
+/// named section (e.g. `reverse-shell`, `tools`).
+fn guide_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    let Some(section) = arguments.next() else {
+        print!("{}", security_agent::render_all_help());
+        return ExitCode::SUCCESS;
+    };
+    if let Some(extra) = arguments.next() {
+        eprintln!("unexpected argument: {extra}");
+        return ExitCode::from(2);
+    }
+    match security_agent::render_section(&section) {
+        Some(rendered) => {
+            print!("{rendered}");
+            ExitCode::SUCCESS
+        }
+        None => {
+            eprintln!("unknown guide section: {section}");
+            eprintln!("available sections:");
+            for (name, blurb, _) in security_agent::GUIDE_SECTIONS {
+                println!("  {name}: {blurb}");
+            }
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// `--tool-help <command-or-tool>` — print the plain-language guide entry
+/// for a single command or tool.
+fn tool_help_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    let Some(name) = arguments.next() else {
+        eprintln!("usage: --tool-help <command-or-tool>");
+        eprintln!("example: --tool-help --listen");
+        return ExitCode::from(2);
+    };
+    if let Some(extra) = arguments.next() {
+        eprintln!("unexpected argument: {extra}");
+        return ExitCode::from(2);
+    }
+    match security_agent::render_help_for(&name) {
+        Some(rendered) => {
+            print!("{rendered}");
+            ExitCode::SUCCESS
+        }
+        None => {
+            eprintln!("no guide entry for: {name}");
+            eprintln!("use --guide to list every documented command.");
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// `--shell-guide` — print the end-to-end reverse shell tutorial.
+fn shell_guide_command() -> ExitCode {
+    print!("{}", security_agent::render_reverse_shell_guide());
     ExitCode::SUCCESS
 }
 
@@ -1038,11 +1110,16 @@ fn ask_command(
         Intent::ShowSkill => ask_show_skill(assets, slot),
         Intent::Generate => ask_generate(&model, slot),
         Intent::AnomalyCheck => ask_anomaly(&model, slot),
-        // Help, PlanScan, ScheduleRetest, every ViewAudit/ViewAudit-Db-style
+        // Help prints the full plain-language guide (it's read-only, in scope,
+        // and the natural answer to "help" / "what can you do").
+        Intent::Help => {
+            println!();
+            guide_command(&mut std::iter::empty())
+        }
+        // PlanScan, ScheduleRetest, every ViewAudit/ViewAudit-Db-style
         // intent, OutOfScope: the reply already told the operator what to
         // do next; nothing to execute.
-        Intent::Help
-        | Intent::PlanScan
+        Intent::PlanScan
         | Intent::ScheduleRetest
         | Intent::ViewAudit
         | Intent::ViewAuditDb
@@ -1233,6 +1310,23 @@ fn dispatch_tui_choice(
             "reasoning log database path: ",
             view_reasoning_log_db_command,
         ),
+        "19" => {
+            let _ = guide_command(&mut std::iter::empty());
+        }
+        "20" => {
+            let _ = shell_guide_command();
+        }
+        "21" => {
+            let Some(name) = tui_prompt(lines, "command or tool name (e.g. --listen, nmap): ")
+            else {
+                return;
+            };
+            if name.trim().is_empty() {
+                println!("cancelled.");
+                return;
+            }
+            let _ = tool_help_command(&mut std::iter::once(name));
+        }
         // The chat bar: anything else typed is a plain-English instruction,
         // routed through the same grounded router as `--ask`. Passed as one
         // already-trimmed line (not split into words) — `ask_command` joins
@@ -1493,6 +1587,17 @@ fn tui_record_findings(lines: &mut impl Iterator<Item = io::Result<String>>) {
 }
 
 fn tui_listen(lines: &mut impl Iterator<Item = io::Result<String>>) {
+    let online = tui_prompt(
+        lines,
+        "opt into live network (opens a listening socket)? (y/N): ",
+    );
+    let Some(online) = online else {
+        return;
+    };
+    if !tui_answered_yes(&online) {
+        println!("cancelled — listener requires the --allow-network opt-in.");
+        return;
+    }
     let Some(port_str) = tui_prompt(lines, "port to listen on: ") else {
         return;
     };
@@ -1509,7 +1614,15 @@ fn tui_listen(lines: &mut impl Iterator<Item = io::Result<String>>) {
             args.push(max);
         }
     }
-    let _ = listen_command(&mut args.into_iter());
+    let log_str = tui_prompt(lines, "session log path (empty to skip; JSON Lines): ");
+    if let Some(log) = log_str {
+        let log = log.trim().to_string();
+        if !log.is_empty() {
+            args.push("--log".to_string());
+            args.push(log);
+        }
+    }
+    let _ = listen_command(&mut args.into_iter(), true);
 }
 
 fn tui_banner() -> String {
@@ -1535,7 +1648,9 @@ fn tui_menu() -> String {
      [13] Score text for anomaly (LLM) [14] Reverse shell listener\n\
      [15] View audit database          [16] View findings database\n\
      [17] View calibration database    [18] View reasoning log database\n\
-     [0]  Help / full capability summary          [q] Quit"
+     [19] Plain-language guide          [20] Reverse shell tutorial\n\
+     [21] Guide for one tool/command   [0]  Help / full capability summary\n\
+     [q] Quit"
         .to_string()
 }
 
@@ -1632,6 +1747,21 @@ const CAPABILITY_ROWS: &[(&str, &str, &str)] = &[
         "Plain-English router",
         "--ask <instruction>",
         "any of the above, in your own words",
+    ),
+    (
+        "Plain-language guide (all commands)",
+        "--guide [section]",
+        "\"show me the guide\"",
+    ),
+    (
+        "Reverse shell tutorial",
+        "--shell-guide",
+        "\"how do i use a reverse shell\"",
+    ),
+    (
+        "Guide for one tool/command",
+        "--tool-help <command-or-tool>",
+        "\"how do i use --listen\"",
     ),
 ];
 
@@ -2117,20 +2247,41 @@ fn gen_wordlist_command(arguments: &mut impl Iterator<Item = String>) -> ExitCod
 }
 
 /// `--gen-shell <type> <lhost> <lport>` — generate a reverse/bind shell payload.
+/// `--gen-shell --list` — print the full shell-type catalog.
 fn gen_shell_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
     use security_agent::offensive::payload_gen::ShellType;
 
     let Some(shell_type) = arguments.next() else {
         eprintln!("usage: --gen-shell <type> <lhost> <lport>");
-        eprintln!("types: bash, netcat, python, perl, ruby, php, tcp");
+        eprintln!("       --gen-shell --list");
+        eprintln!();
+        eprintln!("types: bash, netcat, python, perl, ruby, php, tcp, powershell, bind,");
+        eprintln!("       meterpreter, http, https");
+        eprintln!("run `--gen-shell --list` for the full catalog with descriptions.");
         return ExitCode::from(2);
     };
+
+    // `--gen-shell --list` prints the catalog without needing lhost/lport.
+    if shell_type == "--list" {
+        println!("Shell Payload Catalog");
+        println!("=====================");
+        for entry in ShellType::catalog() {
+            println!("  {:<12} aliases: {}", entry.shell_type, entry.aliases.join(", "));
+            println!("  {:<12} platform: {}", "", entry.platform);
+            println!("  {:<12} {}", "", entry.description);
+            println!();
+        }
+        return ExitCode::SUCCESS;
+    }
+
     let Some(lhost) = arguments.next() else {
         eprintln!("missing lhost");
+        eprintln!("usage: --gen-shell <type> <lhost> <lport>");
         return ExitCode::from(2);
     };
     let Some(lport_str) = arguments.next() else {
         eprintln!("missing lport");
+        eprintln!("usage: --gen-shell <type> <lhost> <lport>");
         return ExitCode::from(2);
     };
     if let Some(extra) = arguments.next() {
@@ -2144,17 +2295,18 @@ fn gen_shell_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
         return ExitCode::from(2);
     };
 
-    let st = match shell_type.as_str() {
-        "bash" => ShellType::ReverseBash,
-        "netcat" => ShellType::ReverseNetcat,
-        "python" => ShellType::ReversePython,
-        "perl" => ShellType::ReversePerl,
-        "ruby" => ShellType::ReverseRuby,
-        "php" => ShellType::ReversePhp,
-        "tcp" => ShellType::ReverseTcp,
-        other => {
-            eprintln!("unknown shell type: {other}");
-            eprintln!("valid types: bash, netcat, python, perl, ruby, php, tcp");
+    let st = match ShellType::parse(&shell_type) {
+        Some(st) => st,
+        None => {
+            eprintln!("unknown shell type: {shell_type}");
+            eprintln!(
+                "valid types: {}",
+                ShellType::catalog()
+                    .iter()
+                    .flat_map(|entry| entry.aliases.iter().copied())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
             return ExitCode::from(2);
         }
     };
@@ -2219,12 +2371,28 @@ fn gen_decoys_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode 
     ExitCode::SUCCESS
 }
 
-/// `--listen <port> [max-connections] [bind-address]` — start a reverse shell listener.
-fn listen_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+/// `--listen <port> [max-connections] [bind-address] [--log <path>]` —
+/// start a reverse shell listener.
+///
+/// The listener opens a listening socket, so it runs only with the explicit
+/// `--allow-network` opt-in for the invocation (fail-closed otherwise): the
+/// caller's `main` consumed the leading flag and passes `allow_network`.
+fn listen_command(
+    arguments: &mut impl Iterator<Item = String>,
+    allow_network: bool,
+) -> ExitCode {
     use security_agent::offensive::listener::{ListenerConfig, start_listener};
 
+    if !allow_network {
+        eprintln!("--listen requires the explicit --allow-network opt-in.");
+        eprintln!("re-run as: security-agent --allow-network --listen <port>");
+        eprintln!("the runtime is offline by default; opening a listener is a deliberate,");
+        eprintln!("per-invocation, auditable choice.");
+        return ExitCode::from(2);
+    }
+
     let Some(port_str) = arguments.next() else {
-        eprintln!("usage: --listen <port> [max-connections] [bind-address]");
+        eprintln!("usage: --listen <port> [max-connections] [bind-address] [--log <path>]");
         eprintln!();
         eprintln!("Starts a TCP reverse shell listener that catches inbound connections");
         eprintln!("from targets where a payload (generated by --gen-shell) has been executed.");
@@ -2235,6 +2403,7 @@ fn listen_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
         );
         eprintln!("  --listen 4444 5                      # accept at most 5 connections");
         eprintln!("  --listen 4444 5 192.168.1.100         # bind to a specific interface");
+        eprintln!("  --listen 4444 --log sessions.jsonl    # persist session records (JSON Lines)");
         eprintln!();
         eprintln!("requires --allow-network (opens a listening socket)");
         return ExitCode::from(2);
@@ -2246,13 +2415,38 @@ fn listen_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
         return ExitCode::from(2);
     };
 
-    let max_conn: Option<u32> = arguments.next().and_then(|s| s.parse().ok());
-
-    let bind_addr = arguments.next().unwrap_or_else(|| "0.0.0.0".to_string());
-
-    if let Some(extra) = arguments.next() {
-        eprintln!("unexpected argument: {extra}");
-        return ExitCode::from(2);
+    // Parse optional positionals (max-connections, bind-address) and the
+    // optional `--log <path>` flag in any order.
+    let mut max_conn: Option<u32> = None;
+    let mut bind_addr = "0.0.0.0".to_string();
+    let mut session_log: Option<std::path::PathBuf> = None;
+    let mut seen_bind = false;
+    while let Some(arg) = arguments.next() {
+        match arg.as_str() {
+            "--log" => {
+                let Some(path) = arguments.next() else {
+                    eprintln!("--log requires a path");
+                    return ExitCode::from(2);
+                };
+                session_log = Some(std::path::PathBuf::from(path));
+            }
+            other => {
+                if let Ok(n) = other.parse::<u32>() {
+                    if max_conn.is_none() {
+                        max_conn = Some(n);
+                        continue;
+                    }
+                    eprintln!("duplicate max-connections: {other}");
+                    return ExitCode::from(2);
+                }
+                if seen_bind {
+                    eprintln!("unexpected argument: {other}");
+                    return ExitCode::from(2);
+                }
+                bind_addr = other.to_string();
+                seen_bind = true;
+            }
+        }
     }
 
     let config = ListenerConfig {
@@ -2260,6 +2454,7 @@ fn listen_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
         port,
         max_connections: max_conn,
         io_timeout: Some(std::time::Duration::from_secs(300)),
+        session_log,
     };
 
     match start_listener(&config) {

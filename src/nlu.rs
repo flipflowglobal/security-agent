@@ -500,8 +500,8 @@ fn build_reply(intent: Intent, slot: Option<&str>, assets: &LocalAgentAssets) ->
         Intent::OfflineStatus => "Reporting local runtime status.".to_string(),
         Intent::About => "Here is who I am and my roadmap.".to_string(),
         Intent::Help => {
-            "I can list tools/skills, explain a skill, report status, plan an authorized scan, \
-             generate text, and score text for anomalies. Ask me in plain English."
+            "Printing the plain-language guide: every command, what it does, \
+             what it achieves, how to run it, and when to use it."
                 .to_string()
         }
         Intent::ListTools => format!(
