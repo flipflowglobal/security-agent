@@ -151,6 +151,14 @@ pub struct PerplexityEval {
     /// confirms the byte-fallback tokenizer lets the detector see it at all
     /// (before byte-fallback such text was dropped and scored nothing).
     pub oov_surprise_ratio: f32,
+    /// `mean_oov_gibberish_perplexity / mean_realistic_finding_perplexity`.
+    /// Both populations are dominated by out-of-vocabulary tokens, but real
+    /// finding text (`nmap detected openssh 8.2p1 …`) shares the learned word
+    /// skeleton of the corpus while random letter-salad does not, so above 1
+    /// means the detector still ranks a plausible finding as less anomalous
+    /// than gibberish. This is the residual signal the corpus scale-up bought
+    /// on identifier-heavy text; gating it keeps that from silently eroding.
+    pub structured_vs_gibberish_ratio: f32,
 }
 
 /// Intent-routing results (NLU quality).
@@ -239,6 +247,16 @@ pub mod floors {
     /// This is the byte-fallback tokenizer's guarantee that unfamiliar finding
     /// text is scored as surprising rather than silently dropped.
     pub const MIN_OOV_SURPRISE_RATIO: f32 = 1.50;
+    /// Gibberish must be at least this many times as perplexing as realistic,
+    /// identifier-heavy finding text.
+    ///
+    /// Both are out-of-vocabulary-dominated, so this is the residual ability —
+    /// bought by the finding-style corpus — to rank a plausible finding as
+    /// less anomalous than random letter-salad. The floor sits below the
+    /// current ratio with headroom; it guards against that signal eroding, and
+    /// is deliberately modest because a tiny model cannot fully separate the
+    /// two populations (documented limitation).
+    pub const MIN_STRUCTURED_VS_GIBBERISH_RATIO: f32 = 1.30;
 }
 
 impl LmEvalReport {
@@ -253,6 +271,8 @@ impl LmEvalReport {
             && self.perplexity.separation_ratio >= floors::MIN_SEPARATION_RATIO
             && self.perplexity.ranking_auc >= floors::MIN_RANKING_AUC
             && self.perplexity.oov_surprise_ratio >= floors::MIN_OOV_SURPRISE_RATIO
+            && self.perplexity.structured_vs_gibberish_ratio
+                >= floors::MIN_STRUCTURED_VS_GIBBERISH_RATIO
             && self.routing.accuracy() >= floors::MIN_ROUTING_ACCURACY
     }
 
@@ -293,6 +313,12 @@ impl LmEvalReport {
             "  OOV-surprise ratio",
             self.perplexity.oov_surprise_ratio,
             Some(floors::MIN_OOV_SURPRISE_RATIO),
+        );
+        push_metric(
+            &mut out,
+            "  structured-vs-gibberish",
+            self.perplexity.structured_vs_gibberish_ratio,
+            Some(floors::MIN_STRUCTURED_VS_GIBBERISH_RATIO),
         );
 
         out.push_str("\nIntent routing (NLU)\n");
@@ -417,6 +443,18 @@ fn evaluate_perplexity(model: &NeuralLanguageModel) -> PerplexityEval {
         0.0
     };
 
+    let realistic: Vec<f32> = REALISTIC_FINDINGS
+        .iter()
+        .map(|s| model.perplexity(s))
+        .filter(|p| p.is_finite())
+        .collect();
+    let mean_realistic = mean(&realistic);
+    let structured_vs_gibberish_ratio = if mean_realistic > 0.0 {
+        mean_oov / mean_realistic
+    } else {
+        0.0
+    };
+
     PerplexityEval {
         mean_in_domain,
         mean_scrambled,
@@ -424,6 +462,7 @@ fn evaluate_perplexity(model: &NeuralLanguageModel) -> PerplexityEval {
         ranking_auc,
         pairs,
         oov_surprise_ratio,
+        structured_vs_gibberish_ratio,
     }
 }
 
@@ -630,6 +669,21 @@ mod tests {
             "OOV gibberish should be far more perplexing than in-domain text: ratio {:.3} < floor {:.3}",
             p.oov_surprise_ratio,
             floors::MIN_OOV_SURPRISE_RATIO,
+        );
+    }
+
+    #[test]
+    fn realistic_findings_rank_below_gibberish() {
+        // Both are out-of-vocabulary-dominated, but real finding text shares
+        // the learned corpus word skeleton, so it must still be scored as less
+        // anomalous than random letter-salad. This guards the residual
+        // identifier-text signal the finding-style corpus bought.
+        let p = report().perplexity;
+        assert!(
+            p.structured_vs_gibberish_ratio >= floors::MIN_STRUCTURED_VS_GIBBERISH_RATIO,
+            "realistic findings should be less perplexing than gibberish: ratio {:.3} < floor {:.3}",
+            p.structured_vs_gibberish_ratio,
+            floors::MIN_STRUCTURED_VS_GIBBERISH_RATIO,
         );
     }
 
