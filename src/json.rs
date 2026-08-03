@@ -75,7 +75,7 @@ impl JsonValue {
 
     /// Returns `true` when the value is `JsonValue::Bool(true)`.
     #[must_use]
-    pub fn as_bool(&self) -> Option<bool> {
+    pub const fn as_bool(&self) -> Option<bool> {
         match self {
             Self::Bool(b) => Some(*b),
             _ => None,
@@ -84,7 +84,7 @@ impl JsonValue {
 
     /// Returns `true` when the value is `JsonValue::Null`.
     #[must_use]
-    pub fn is_null(&self) -> bool {
+    pub const fn is_null(&self) -> bool {
         matches!(self, Self::Null)
     }
 

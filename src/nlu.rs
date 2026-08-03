@@ -499,11 +499,9 @@ fn build_reply(intent: Intent, slot: Option<&str>, assets: &LocalAgentAssets) ->
     match intent {
         Intent::OfflineStatus => "Reporting local runtime status.".to_string(),
         Intent::About => "Here is who I am and my roadmap.".to_string(),
-        Intent::Help => {
-            "Printing the plain-language guide: every command, what it does, \
+        Intent::Help => "Printing the plain-language guide: every command, what it does, \
              what it achieves, how to run it, and when to use it."
-                .to_string()
-        }
+            .to_string(),
         Intent::ListTools => format!(
             "I have {} cataloged tools; listing them.",
             assets.tools().len()

