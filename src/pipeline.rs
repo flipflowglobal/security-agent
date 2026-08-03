@@ -22,10 +22,14 @@ use crate::execution::{TaskExecutionOutcome, ToolExecutionReport};
 use crate::json::{self, JsonValue};
 use crate::local_assets::LocalAgentAssets;
 use crate::network_policy::NetworkMode;
+use crate::observability::EventSink;
 use crate::orchestrator::{OrchestrationSchedule, ToolOrchestrator};
 use crate::registry::ExecutionClass;
-use crate::runtime::ExecutionRuntime;
+use crate::runtime::{ExecutionRuntime, RunInputs};
+use crate::scope::ScopePolicy;
+use crate::secrets::SecretStore;
 use crate::tool_adapter::AdapterRegistry;
+use std::sync::atomic::AtomicBool;
 
 /// The order stages run in — least invasive first, mirroring the runtime's
 /// class barrier. Discovery (static + active-network) precedes exploitation,
@@ -70,12 +74,32 @@ impl EngagementReport {
     }
 }
 
+/// Optional safety guards threaded through every stage of an engagement.
+///
+/// Egress-scope enforcement, secret resolution/redaction, and a live event
+/// sink. All default to `None`, giving an unguarded run; the `--run-engagement`
+/// command populates them from its flags and the engagement's declared scope.
+#[derive(Clone, Copy, Default)]
+pub struct EngagementGuards<'a> {
+    /// Refuses any step whose resolved arguments carry an out-of-scope
+    /// network target before it spawns (see [`crate::scope`]).
+    pub scope: Option<&'a ScopePolicy>,
+    /// Resolves `${secret:NAME}` references before spawning and redacts secret
+    /// values from recorded output (see [`crate::secrets`]).
+    pub secrets: Option<&'a SecretStore>,
+    /// Receives stage/step lifecycle events as the run progresses (see
+    /// [`crate::observability`]).
+    pub events: Option<&'a dyn EventSink>,
+}
+
 /// Runs `plan` as a staged, result-driven engagement.
 ///
 /// Each execution class runs in turn through `runtime`; between classes, the
 /// completed stage's tool output is folded into the [`EngagementContext`] so
-/// the next class's adapters target the discovered assets. Returns the
-/// accumulated context and the per-stage outcomes.
+/// the next class's adapters target the discovered assets. `guards` are
+/// applied to every stage — scope enforcement, secret resolution/redaction,
+/// and live event emission. Returns the accumulated context and the per-stage
+/// outcomes.
 #[must_use]
 pub fn run_engagement_pipeline(
     plan: &ExecutionPlan,
@@ -84,17 +108,19 @@ pub fn run_engagement_pipeline(
     assets: &LocalAgentAssets,
     operator_args: &[String],
     mode: NetworkMode,
+    guards: EngagementGuards,
 ) -> EngagementReport {
     let full = ToolOrchestrator::new().schedule(plan);
     let mut context = EngagementContext::new();
     let mut stages = Vec::with_capacity(STAGE_ORDER.len());
+    let never_cancel = AtomicBool::new(false);
 
     for class in STAGE_ORDER {
         let class_schedule = schedule_for_class(&full, class);
         if class_schedule.is_empty() {
             continue;
         }
-        let outcomes = runtime.run(
+        let mut inputs = RunInputs::new(
             &class_schedule,
             adapters,
             assets,
@@ -102,6 +128,16 @@ pub fn run_engagement_pipeline(
             operator_args,
             mode,
         );
+        if let Some(scope) = guards.scope {
+            inputs = inputs.with_scope(scope);
+        }
+        if let Some(secrets) = guards.secrets {
+            inputs = inputs.with_secrets(secrets);
+        }
+        if let Some(events) = guards.events {
+            inputs = inputs.with_events(events);
+        }
+        let outcomes = runtime.run_with_cancel(&inputs, &never_cancel);
         // Fold this stage's discoveries in before the next stage plans.
         for outcome in &outcomes {
             if let Ok(report) = &outcome.result {
@@ -347,6 +383,7 @@ mod tests {
             &assets,
             &[],
             NetworkMode::Offline,
+            EngagementGuards::default(),
         );
         assert!(report.context.is_empty());
         assert!(report.all_outcomes().is_empty());

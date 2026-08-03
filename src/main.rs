@@ -11,7 +11,7 @@ use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::process::ExitCode;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn main() -> ExitCode {
     let assets = LocalAgentAssets::bundled();
@@ -29,6 +29,7 @@ fn main() -> ExitCode {
         Some("--run-tool") => run_tool_command(&mut arguments),
         Some("--run-external-tool") => run_external_tool_command(&assets, &mut arguments),
         Some("--plan-scan") => plan_scan_command(&mut arguments),
+        Some("--run-engagement") => run_engagement_command(&mut arguments),
         Some("--record-findings") => record_findings_command(&mut arguments),
         Some("--view-audit") => view_audit_command(&mut arguments),
         Some("--view-audit-db") => view_audit_db_command(&mut arguments),
@@ -807,6 +808,261 @@ fn plan_scan_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+/// The parsed flags of a `--run-engagement` invocation.
+struct RunEngagementArgs {
+    config_path: String,
+    max_concurrency: Option<usize>,
+    per_tool_timeout: Option<Duration>,
+    min_spawn_interval: Option<Duration>,
+    secrets_path: Option<String>,
+    events_path: Option<String>,
+    findings_log_path: Option<String>,
+    findings_db_path: Option<String>,
+    network_mode: security_agent::NetworkMode,
+    operator_args: Vec<String>,
+}
+
+/// Parses `<config-file>` followed by the optional `--run-engagement` flags.
+/// A bare `--` ends flag parsing; everything after it is passed through to
+/// every tool invocation as operator arguments.
+fn parse_run_engagement_args(
+    arguments: &mut impl Iterator<Item = String>,
+) -> Result<RunEngagementArgs, String> {
+    let config_path = arguments
+        .next()
+        .ok_or("missing config file path for --run-engagement")?;
+    let mut args = RunEngagementArgs {
+        config_path,
+        max_concurrency: None,
+        per_tool_timeout: None,
+        min_spawn_interval: None,
+        secrets_path: None,
+        events_path: None,
+        findings_log_path: None,
+        findings_db_path: None,
+        network_mode: security_agent::NetworkMode::Offline,
+        operator_args: Vec::new(),
+    };
+
+    let value = |arguments: &mut dyn Iterator<Item = String>, flag: &str| {
+        arguments
+            .next()
+            .ok_or_else(|| format!("missing value after {flag}"))
+    };
+    let seconds = |raw: &str, flag: &str| {
+        raw.parse::<u64>()
+            .map(Duration::from_secs)
+            .map_err(|_| format!("{flag} expects a whole number of seconds, got '{raw}'"))
+    };
+
+    while let Some(flag) = arguments.next() {
+        match flag.as_str() {
+            "--allow-network" => args.network_mode = security_agent::NetworkMode::Online,
+            "--max-concurrency" => {
+                let raw = value(arguments, "--max-concurrency")?;
+                args.max_concurrency =
+                    Some(raw.parse::<usize>().map_err(|_| {
+                        format!("--max-concurrency expects an integer, got '{raw}'")
+                    })?);
+            }
+            "--per-tool-timeout" => {
+                args.per_tool_timeout = Some(seconds(
+                    &value(arguments, "--per-tool-timeout")?,
+                    "--per-tool-timeout",
+                )?);
+            }
+            "--min-spawn-interval" => {
+                args.min_spawn_interval = Some(seconds(
+                    &value(arguments, "--min-spawn-interval")?,
+                    "--min-spawn-interval",
+                )?);
+            }
+            "--secrets" => args.secrets_path = Some(value(arguments, "--secrets")?),
+            "--events" => args.events_path = Some(value(arguments, "--events")?),
+            "--findings-log" => args.findings_log_path = Some(value(arguments, "--findings-log")?),
+            "--findings-db" => args.findings_db_path = Some(value(arguments, "--findings-db")?),
+            "--" => {
+                args.operator_args.extend(arguments.by_ref());
+                break;
+            }
+            other => return Err(format!("unexpected argument for --run-engagement: {other}")),
+        }
+    }
+    Ok(args)
+}
+
+/// CLI entry point for
+/// `--run-engagement <config-file> [--max-concurrency N] [--per-tool-timeout S]
+/// [--min-spawn-interval S] [--secrets <file>] [--events <file>]
+/// [--findings-log <path>] [--findings-db <path>] [--allow-network]
+/// [-- <operator args>...]`.
+///
+/// Drives the concurrent, staged engagement engine
+/// ([`security_agent::run_engagement_pipeline`]) — the orchestrator, the
+/// bounded-concurrency runtime with its least-invasive-first class barrier,
+/// and the discovery feedback loop — rather than the sequential
+/// `--plan-scan --execute` path. Egress scope is derived automatically from
+/// the engagement's declared target addresses, so the engine can only touch
+/// what the engagement authorized; `--secrets` resolves `${secret:NAME}`
+/// references and redacts them from output; `--events` streams the run's
+/// lifecycle as JSON lines.
+fn run_engagement_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    match run_engagement(arguments) {
+        Ok(code) => code,
+        Err(message) => {
+            eprintln!("{message}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn run_engagement(arguments: &mut impl Iterator<Item = String>) -> Result<ExitCode, String> {
+    let args = parse_run_engagement_args(arguments)?;
+
+    let (profile, targets) = load_engagement_config(Path::new(&args.config_path))
+        .map_err(|error| format!("failed to load config: {error}"))?;
+
+    // Scope defaults to the engagement's declared target addresses: the engine
+    // may only reach what the engagement authorized.
+    let scope_targets: Vec<String> = targets
+        .iter()
+        .filter_map(|target| target.network_address.clone())
+        .collect();
+    let scope = security_agent::ScopePolicy::from_targets(&scope_targets);
+
+    let mut coordinator = Coordinator::new(
+        CapabilityRegistry::default(),
+        ToolchainPackRegistry::default(),
+        PolicyEngine::default(),
+    );
+    let plan = coordinator
+        .plan_authorized_scan(profile, targets, current_epoch_seconds())
+        .map_err(|error| format!("authorization denied: {error}"))?;
+
+    let secrets = match &args.secrets_path {
+        Some(path) => {
+            let mut store = security_agent::SecretStore::from_env();
+            store
+                .load_file(Path::new(path))
+                .map_err(|error| format!("failed to load secrets: {error}"))?;
+            Some(store)
+        }
+        None => None,
+    };
+
+    let event_sink = match &args.events_path {
+        Some(path) => {
+            let file = fs::File::create(path)
+                .map_err(|error| format!("failed to open events file '{path}': {error}"))?;
+            Some(security_agent::WriterSink::new(file))
+        }
+        None => None,
+    };
+
+    let mut config = security_agent::RuntimeConfig::default();
+    if let Some(concurrency) = args.max_concurrency {
+        config.max_concurrency = concurrency.max(1);
+    }
+    if let Some(timeout) = args.per_tool_timeout {
+        config.per_tool_timeout = timeout;
+    }
+    config.min_spawn_interval = args.min_spawn_interval;
+    let runtime = security_agent::ExecutionRuntime::new(config);
+
+    let adapters = security_agent::AdapterRegistry::with_defaults();
+    let assets = LocalAgentAssets::bundled();
+
+    let guards = security_agent::EngagementGuards {
+        scope: Some(&scope),
+        secrets: secrets.as_ref(),
+        events: event_sink
+            .as_ref()
+            .map(|sink| sink as &dyn security_agent::EventSink),
+    };
+
+    if args.network_mode.allows_active() {
+        eprintln!(
+            "online mode engaged (--allow-network): live tools approved by this engagement \
+             may run against in-scope targets"
+        );
+    }
+
+    let report = security_agent::run_engagement_pipeline(
+        &plan,
+        &adapters,
+        &runtime,
+        &assets,
+        &args.operator_args,
+        args.network_mode,
+        guards,
+    );
+
+    let findings: Vec<security_agent::Finding> = report
+        .all_outcomes()
+        .iter()
+        .filter_map(|outcome| outcome.result.as_ref().ok().map(|report| (outcome, report)))
+        .flat_map(|(outcome, report)| security_agent::ingest::ingest(&outcome.target_id, report))
+        .collect();
+
+    if let Some(path) = &args.findings_log_path {
+        security_agent::append_findings(Path::new(path), &findings)
+            .map_err(|error| format!("failed to write findings log: {error}"))?;
+    }
+    if let Some(path) = &args.findings_db_path {
+        security_agent::findings_db::append_findings(Path::new(path), &findings)
+            .map_err(|error| format!("failed to write findings database: {error}"))?;
+    }
+
+    print_engagement_report(&report, &findings);
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Prints the staged engagement's outcomes: each stage's per-tool results,
+/// the discovery blackboard totals, and the ingested-findings count.
+fn print_engagement_report(
+    report: &security_agent::EngagementReport,
+    findings: &[security_agent::Finding],
+) {
+    println!("Engagement Execution (concurrent staged pipeline)");
+    println!("=================================================");
+
+    if report.stages.is_empty() {
+        println!("\nNo tools scheduled — the plan produced no executable steps.");
+    }
+    for stage in &report.stages {
+        let mut ok = 0usize;
+        let mut refused = 0usize;
+        let mut failed = 0usize;
+        for outcome in &stage.outcomes {
+            match &outcome.result {
+                Ok(_) => ok += 1,
+                Err(security_agent::ToolExecutionError::Refused(_)) => refused += 1,
+                Err(_) => failed += 1,
+            }
+        }
+        println!(
+            "\nStage {:?}: {ok} ok, {failed} failed, {refused} refused",
+            stage.class
+        );
+        for outcome in &stage.outcomes {
+            let status = match &outcome.result {
+                Ok(_) => "ok".to_string(),
+                Err(error) => error.to_string(),
+            };
+            println!("  [{}] {} -> {status}", outcome.tool, outcome.target_id);
+        }
+    }
+
+    let context = &report.context;
+    println!(
+        "\nDiscovery: {} host(s), {} service(s), {} endpoint(s)",
+        context.hosts().len(),
+        context.services().len(),
+        context.endpoints().len()
+    );
+    println!("Findings ingested: {}", findings.len());
 }
 
 /// Prints a summary of findings ingested from `--execute`'s tool output:
