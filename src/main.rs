@@ -106,20 +106,20 @@ fn guide_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
         eprintln!("unexpected argument: {extra}");
         return ExitCode::from(2);
     }
-    match security_agent::render_section(&section) {
-        Some(rendered) => {
-            print!("{rendered}");
-            ExitCode::SUCCESS
-        }
-        None => {
+    security_agent::render_section(&section).map_or_else(
+        || {
             eprintln!("unknown guide section: {section}");
             eprintln!("available sections:");
             for (name, blurb, _) in security_agent::GUIDE_SECTIONS {
                 println!("  {name}: {blurb}");
             }
             ExitCode::from(2)
-        }
-    }
+        },
+        |rendered| {
+            print!("{rendered}");
+            ExitCode::SUCCESS
+        },
+    )
 }
 
 /// `--tool-help <command-or-tool>` — print the plain-language guide entry
@@ -134,17 +134,17 @@ fn tool_help_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
         eprintln!("unexpected argument: {extra}");
         return ExitCode::from(2);
     }
-    match security_agent::render_help_for(&name) {
-        Some(rendered) => {
-            print!("{rendered}");
-            ExitCode::SUCCESS
-        }
-        None => {
+    security_agent::render_help_for(&name).map_or_else(
+        || {
             eprintln!("no guide entry for: {name}");
             eprintln!("use --guide to list every documented command.");
             ExitCode::from(2)
-        }
-    }
+        },
+        |rendered| {
+            print!("{rendered}");
+            ExitCode::SUCCESS
+        },
+    )
 }
 
 /// `--shell-guide` — print the end-to-end reverse shell tutorial.
@@ -2522,7 +2522,11 @@ fn gen_shell_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
         println!("Shell Payload Catalog");
         println!("=====================");
         for entry in ShellType::catalog() {
-            println!("  {:<12} aliases: {}", entry.shell_type, entry.aliases.join(", "));
+            println!(
+                "  {:<12} aliases: {}",
+                entry.shell_type,
+                entry.aliases.join(", ")
+            );
             println!("  {:<12} platform: {}", "", entry.platform);
             println!("  {:<12} {}", "", entry.description);
             println!();
@@ -2551,20 +2555,17 @@ fn gen_shell_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
         return ExitCode::from(2);
     };
 
-    let st = match ShellType::parse(&shell_type) {
-        Some(st) => st,
-        None => {
-            eprintln!("unknown shell type: {shell_type}");
-            eprintln!(
-                "valid types: {}",
-                ShellType::catalog()
-                    .iter()
-                    .flat_map(|entry| entry.aliases.iter().copied())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-            return ExitCode::from(2);
-        }
+    let Some(st) = ShellType::parse(&shell_type) else {
+        eprintln!("unknown shell type: {shell_type}");
+        eprintln!(
+            "valid types: {}",
+            ShellType::catalog()
+                .iter()
+                .flat_map(|entry| entry.aliases.iter().copied())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        return ExitCode::from(2);
     };
 
     let payload = security_agent::offensive::payload_gen::generate_reverse_shell(st, &lhost, lport);
@@ -2633,10 +2634,7 @@ fn gen_decoys_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode 
 /// The listener opens a listening socket, so it runs only with the explicit
 /// `--allow-network` opt-in for the invocation (fail-closed otherwise): the
 /// caller's `main` consumed the leading flag and passes `allow_network`.
-fn listen_command(
-    arguments: &mut impl Iterator<Item = String>,
-    allow_network: bool,
-) -> ExitCode {
+fn listen_command(arguments: &mut impl Iterator<Item = String>, allow_network: bool) -> ExitCode {
     use security_agent::offensive::listener::{ListenerConfig, start_listener};
 
     if !allow_network {

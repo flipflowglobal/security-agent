@@ -138,8 +138,13 @@ impl fmt::Display for VolatilityReport {
 pub enum BuiltInToolError {
     UnsupportedTool(String),
     InvalidInput(String),
-    Io { path: PathBuf, source: io::Error },
-    FileLimitExceeded { limit: usize },
+    Io {
+        path: PathBuf,
+        source: io::Error,
+    },
+    FileLimitExceeded {
+        limit: usize,
+    },
     SizeOverflow,
     /// A native offline arsenal substitute failed (see [`crate::arsenal`]).
     Arsenal(String),
@@ -149,13 +154,12 @@ impl fmt::Display for BuiltInToolError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnsupportedTool(name) => write!(formatter, "no built-in substitute for {name}"),
-            Self::InvalidInput(message) => formatter.write_str(message),
+            Self::InvalidInput(message) | Self::Arsenal(message) => formatter.write_str(message),
             Self::Io { path, source } => write!(formatter, "{}: {source}", path.display()),
             Self::FileLimitExceeded { limit } => {
                 write!(formatter, "evidence file limit exceeded: {limit}")
             }
             Self::SizeOverflow => formatter.write_str("evidence byte total overflowed"),
-            Self::Arsenal(message) => formatter.write_str(message),
         }
     }
 }

@@ -375,7 +375,7 @@ fn parse_nmap_xml(target_id: &str, xml: &str) -> Vec<Finding> {
     findings
 }
 
-fn is_risky_port(port: u64) -> bool {
+const fn is_risky_port(port: u64) -> bool {
     matches!(
         port,
         21 | 22
@@ -702,9 +702,7 @@ impl FindingParser for GobusterJsonParser {
             let size = extract_u64(entry, "size").unwrap_or(0);
 
             let severity = match status {
-                200 => Severity::Informational,
-                301 | 302 | 307 | 308 => Severity::Low,
-                403 => Severity::Low,
+                301 | 302 | 307 | 308 | 403 => Severity::Low,
                 500 => Severity::Medium,
                 _ => Severity::Informational,
             };
@@ -762,10 +760,8 @@ impl FindingParser for FfufJsonParser {
             };
 
             let severity = match status {
-                200 => Severity::Low,
-                301 | 302 | 307 | 308 => Severity::Low,
-                403 => Severity::Medium,
-                500 => Severity::Medium,
+                200 | 301 | 302 | 307 | 308 => Severity::Low,
+                403 | 500 => Severity::Medium,
                 _ => Severity::Informational,
             };
 
@@ -814,10 +810,10 @@ impl FindingParser for WpscanJsonParser {
                     let fixed_in = extract_str(entry, "fixed_in").unwrap_or("");
                     let _references = extract_str(entry, "references").unwrap_or("");
 
-                    let remediation = if !fixed_in.is_empty() {
-                        format!("Update to version {fixed_in}")
-                    } else {
+                    let remediation = if fixed_in.is_empty() {
                         "update-plugin".to_string()
+                    } else {
+                        format!("Update to version {fixed_in}")
                     };
 
                     let index = findings.len();
@@ -848,7 +844,7 @@ impl FindingParser for WpscanJsonParser {
                 index,
                 format!("{msg} at {url}"),
                 Severity::Low,
-                confidence as u8,
+                u8::try_from(confidence.min(100)).unwrap_or(100),
                 url.to_string(),
             ));
         }
@@ -1222,10 +1218,14 @@ impl FindingParser for LynisJsonParser {
         // Also parse hardening index
         if let Some(hardening) = root.get("hardening_index") {
             let score = extract_u64(hardening, "score")
-                .or({
-                    // Sometimes it's just a number
+                .or_else(|| {
+                    // Sometimes it's just a number. A hardening index is a
+                    // small non-negative score, so truncating the JSON double
+                    // to an integer is the intended conversion here.
                     if let JsonValue::Number(n) = hardening {
-                        Some(*n as u64)
+                        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                        let score = n.max(0.0) as u64;
+                        Some(score)
                     } else {
                         None
                     }
@@ -1544,11 +1544,9 @@ impl FindingParser for MarianaTrenchJsonParser {
             JsonValue::Array(arr) => arr.iter().collect::<Vec<_>>(),
             JsonValue::Object(_) => {
                 // May be wrapped in a "results" key
-                if let Some(res) = root.get("results").and_then(JsonValue::as_array) {
-                    res.iter().collect::<Vec<_>>()
-                } else {
-                    vec![&root]
-                }
+                root.get("results")
+                    .and_then(JsonValue::as_array)
+                    .map_or_else(|| vec![&root], |res| res.iter().collect::<Vec<_>>())
             }
             _ => return Vec::new(),
         };
@@ -1823,10 +1821,10 @@ impl FindingParser for MobSfJsonParser {
                 title,
                 severity_from_label(severity_label),
                 60,
-                if !description.is_empty() {
-                    description.to_string()
-                } else {
+                if description.is_empty() {
                     "review-binary-analysis".to_string()
+                } else {
+                    description.to_string()
                 },
             ));
         }
