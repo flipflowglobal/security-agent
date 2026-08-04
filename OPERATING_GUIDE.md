@@ -112,11 +112,39 @@ This keeps your changes safe and consistent.
 
 ---
 
-## 7) Running on Android (quick path summary)
+## 7) Running on Android
 
-You have two common options:
+### Easiest: the guided one-command installer ⭐
 
-### Option A: Run natively in Termux
+From the repo root, run:
+
+```bash
+make android-install
+# or, directly:  ./scripts/android-install.sh
+```
+
+It figures out the rest for you:
+
+- **On a phone (Termux):** installs Rust if needed, builds, and puts
+  `security-agent` on your `PATH`.
+- **On a desktop with a device attached (USB debugging on):** detects the
+  device's CPU ABI, adds the matching Rust target, locates the Android NDK
+  (or uses `cargo-ndk` if installed), cross-compiles, pushes over ADB, and
+  runs an on-device smoke test.
+
+Preview exactly what it will do without changing anything:
+
+```bash
+./scripts/android-install.sh --check
+```
+
+Useful flags: `--method termux|adb`, `--device <serial>`, `--dest <path>`,
+`--abi <arm64-v8a|armeabi-v7a|x86_64|x86>`, `--yes` (non-interactive),
+`--check` (dry run). Run `./scripts/android-install.sh --help` for all of them.
+
+### Manual paths (if you prefer)
+
+**Run natively in Termux:**
 
 ```bash
 pkg install rust
@@ -125,20 +153,11 @@ cd security-agent
 cargo run --release
 ```
 
-### Option B: Cross-compile from desktop
-
-1. Install Android NDK.
-2. Add Rust Android targets.
-3. Add NDK LLVM tools to `PATH`.
-4. Build with:
-
-```bash
-cargo build --release --target aarch64-linux-android
-```
-
-5. Push with ADB and execute on device.
-
-For full command details, see [`README.md`](./README.md).
+**Cross-compile from a desktop:** install the Android NDK, add the Rust
+target(s), put the NDK LLVM tools on `PATH`, then
+`cargo build --release --target aarch64-linux-android` and push with ADB.
+See [`.cargo/config.toml`](./.cargo/config.toml) for the exact prerequisites
+and linker settings, or [`README.md`](./README.md) for full details.
 
 ---
 

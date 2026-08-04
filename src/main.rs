@@ -893,6 +893,8 @@ struct RunEngagementArgs {
     findings_log_path: Option<String>,
     findings_db_path: Option<String>,
     network_mode: security_agent::NetworkMode,
+    allow_tools: Vec<String>,
+    deny_tools: Vec<String>,
     operator_args: Vec<String>,
 }
 
@@ -915,6 +917,8 @@ fn parse_run_engagement_args(
         findings_log_path: None,
         findings_db_path: None,
         network_mode: security_agent::NetworkMode::Offline,
+        allow_tools: Vec::new(),
+        deny_tools: Vec::new(),
         operator_args: Vec::new(),
     };
 
@@ -951,6 +955,8 @@ fn parse_run_engagement_args(
                     "--min-spawn-interval",
                 )?);
             }
+            "--allow-tool" => args.allow_tools.push(value(arguments, "--allow-tool")?),
+            "--deny-tool" => args.deny_tools.push(value(arguments, "--deny-tool")?),
             "--secrets" => args.secrets_path = Some(value(arguments, "--secrets")?),
             "--events" => args.events_path = Some(value(arguments, "--events")?),
             "--findings-log" => args.findings_log_path = Some(value(arguments, "--findings-log")?),
@@ -967,9 +973,9 @@ fn parse_run_engagement_args(
 
 /// CLI entry point for
 /// `--run-engagement <config-file> [--max-concurrency N] [--per-tool-timeout S]
-/// [--min-spawn-interval S] [--secrets <file>] [--events <file>]
-/// [--findings-log <path>] [--findings-db <path>] [--allow-network]
-/// [-- <operator args>...]`.
+/// [--min-spawn-interval S] [--allow-tool <name>]... [--deny-tool <name>]...
+/// [--secrets <file>] [--events <file>] [--findings-log <path>]
+/// [--findings-db <path>] [--allow-network] [-- <operator args>...]`.
 ///
 /// Drives the concurrent, staged engagement engine
 /// ([`security_agent::run_engagement_pipeline`]) — the orchestrator, the
@@ -977,9 +983,12 @@ fn parse_run_engagement_args(
 /// and the discovery feedback loop — rather than the sequential
 /// `--plan-scan --execute` path. Egress scope is derived automatically from
 /// the engagement's declared target addresses, so the engine can only touch
-/// what the engagement authorized; `--secrets` resolves `${secret:NAME}`
-/// references and redacts them from output; `--events` streams the run's
-/// lifecycle as JSON lines.
+/// what the engagement authorized. The active-tool gate additionally refuses,
+/// before spawn, any tool the engagement did not approve; `--allow-tool`
+/// narrows that authorized set to a subset and `--deny-tool` blocks specific
+/// tools (both repeatable, and both can only further restrict). `--secrets`
+/// resolves `${secret:NAME}` references and redacts them from output;
+/// `--events` streams the run's lifecycle as JSON lines.
 fn run_engagement_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
     match run_engagement(arguments) {
         Ok(code) => code,
@@ -988,6 +997,28 @@ fn run_engagement_command(arguments: &mut impl Iterator<Item = String>) -> ExitC
             ExitCode::from(2)
         }
     }
+}
+
+/// Builds the engagement's active-tool gate: the allow-list is the union of
+/// every task's approved tools, optionally narrowed by `--allow-tool` and
+/// blocked by `--deny-tool`. Fails closed (see [`security_agent::tool_gate`]).
+fn build_tool_gate(
+    plan: &security_agent::ExecutionPlan,
+    allow_tools: &[String],
+    deny_tools: &[String],
+) -> security_agent::ToolGate {
+    let approved = plan
+        .tasks
+        .iter()
+        .flat_map(|task| task.approved_tools.iter().cloned());
+    let mut gate = security_agent::ToolGate::allow_only(approved);
+    if !allow_tools.is_empty() {
+        gate = gate.restrict_to(allow_tools.iter().cloned());
+    }
+    if !deny_tools.is_empty() {
+        gate = gate.deny(deny_tools.iter().cloned());
+    }
+    gate
 }
 
 fn run_engagement(arguments: &mut impl Iterator<Item = String>) -> Result<ExitCode, String> {
@@ -1046,12 +1077,23 @@ fn run_engagement(arguments: &mut impl Iterator<Item = String>) -> Result<ExitCo
     let adapters = security_agent::AdapterRegistry::with_defaults();
     let assets = LocalAgentAssets::bundled();
 
+    // Active-tool gate: the runtime may run only tools this engagement's
+    // authorization approved (narrowed by --allow-tool / --deny-tool).
+    let gate = build_tool_gate(&plan, &args.allow_tools, &args.deny_tools);
+    if let Some(count) = gate.allowed_count() {
+        eprintln!(
+            "active-tool gate: {count} tool(s) authorized for this engagement; \
+             any other tool is refused before spawn"
+        );
+    }
+
     let guards = security_agent::EngagementGuards {
         scope: Some(&scope),
         secrets: secrets.as_ref(),
         events: event_sink
             .as_ref()
             .map(|sink| sink as &dyn security_agent::EventSink),
+        gate: Some(&gate),
     };
 
     if args.network_mode.allows_active() {

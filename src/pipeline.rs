@@ -29,6 +29,7 @@ use crate::runtime::{ExecutionRuntime, RunInputs};
 use crate::scope::ScopePolicy;
 use crate::secrets::SecretStore;
 use crate::tool_adapter::AdapterRegistry;
+use crate::tool_gate::ToolGate;
 use std::sync::atomic::AtomicBool;
 
 /// The order stages run in — least invasive first, mirroring the runtime's
@@ -90,6 +91,9 @@ pub struct EngagementGuards<'a> {
     /// Receives stage/step lifecycle events as the run progresses (see
     /// [`crate::observability`]).
     pub events: Option<&'a dyn EventSink>,
+    /// Refuses any step whose tool is not authorized for the engagement,
+    /// before it spawns, failing closed (see [`crate::tool_gate`]).
+    pub gate: Option<&'a ToolGate>,
 }
 
 /// Runs `plan` as a staged, result-driven engagement.
@@ -136,6 +140,9 @@ pub fn run_engagement_pipeline(
         }
         if let Some(events) = guards.events {
             inputs = inputs.with_events(events);
+        }
+        if let Some(gate) = guards.gate {
+            inputs = inputs.with_gate(gate);
         }
         let outcomes = runtime.run_with_cancel(&inputs, &never_cancel);
         // Fold this stage's discoveries in before the next stage plans.

@@ -3,7 +3,7 @@
 # All targets are thin wrappers around `cargo`; they do not hide errors.
 # Run `make help` to list available targets.
 
-.PHONY: all help fmt clippy test build check status clean android deploy electron electron-install electron-pack electron-icons electron-installer electron-installer-win electron-installer-mac electron-installer-linux
+.PHONY: all help fmt clippy test build check status clean android android-install deploy electron electron-install electron-pack electron-icons electron-installer electron-installer-win electron-installer-mac electron-installer-linux
 
 CARGO ?= cargo
 RELEASE_BIN := target/release/security-agent
@@ -60,6 +60,13 @@ android:
 	$(CARGO) build --release --target $(ANDROID_TARGET)
 	@echo ""
 	@echo "Android binary: target/$(ANDROID_TARGET)/release/security-agent"
+
+## android-install: Guided one-command install onto an Android device.
+#  Auto-detects Termux vs. ADB, the device ABI, the Rust target, and the NDK,
+#  then cross-compiles, pushes, and smoke-tests on the device. Pass flags via
+#  ANDROID_INSTALL_FLAGS, e.g. `make android-install ANDROID_INSTALL_FLAGS=--check`.
+android-install:
+	./scripts/android-install.sh $(ANDROID_INSTALL_FLAGS)
 
 ## deploy: Run the full gate, build a release binary, and package it into
 #  a checksummed dist/ archive (scripts/deploy.sh). Pass extra flags via
