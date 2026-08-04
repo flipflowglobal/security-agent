@@ -13,6 +13,7 @@ Defensive and offensive security orchestration agent for authorized vulnerabilit
 For a beginner-friendly, step-by-step operations manual, read:
 
 - [`OPERATING_GUIDE.md`](./OPERATING_GUIDE.md)
+- [`COMMAND.md`](./COMMAND.md) — every command with a one-line description and a copy-paste example (new users start here)
 - [`CONTRIBUTING.md`](./CONTRIBUTING.md) — developer workflow and CI gates
 - [`CHANGELOG.md`](./CHANGELOG.md) — version history
 
