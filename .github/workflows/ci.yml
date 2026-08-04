@@ -92,7 +92,15 @@ jobs:
         # (candle / tokenizers) is not enabled here; it requires a separate
         # build with `--features inference` and an environment with GPU or
         # model weights.
+        #
+        # SECURITY_AGENT_WEIGHT_DRIFT enables the opt-in weight-drift check
+        # (that the committed model_weights.bin still equals a freshly trained
+        # model). Float training is only bit-reproducible on the canonical
+        # platform, so this guard runs in CI but is skipped on developer
+        # machines to keep a fresh-clone `cargo test` green everywhere.
         run: cargo test --lib
+        env:
+          SECURITY_AGENT_WEIGHT_DRIFT: "1"
 
   # ── Release build ───────────────────────────────────────────────────────────
   build:
