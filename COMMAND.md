@@ -11,6 +11,8 @@ example you can run as-is.
   `[square brackets]` is optional.
 - The same commands are available inside the interactive menu — run
   `security-agent --tui` if you'd rather point-and-pick than type flags.
+- **On Android?** Install it in one guided step with `make android-install`
+  (or `./scripts/android-install.sh`). See [Running on Android](OPERATING_GUIDE.md#7-running-on-android).
 
 ---
 
