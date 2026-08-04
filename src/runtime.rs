@@ -38,6 +38,7 @@ use crate::registry::ExecutionClass;
 use crate::scope::ScopePolicy;
 use crate::secrets::SecretStore;
 use crate::tool_adapter::{AdapterRegistry, InvocationContext};
+use crate::tool_gate::{GateDecision, ToolGate};
 use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::io::Write as _;
@@ -104,6 +105,10 @@ pub struct RunInputs<'a> {
     /// stage/step lifecycle events as the run progresses (see
     /// [`crate::observability`]).
     pub events: Option<&'a dyn EventSink>,
+    /// Optional active-tool gate: when set, a step whose tool is not
+    /// authorized for the engagement is refused before it spawns, failing
+    /// closed (see [`crate::tool_gate`]).
+    pub gate: Option<&'a ToolGate>,
 }
 
 impl<'a> RunInputs<'a> {
@@ -127,6 +132,7 @@ impl<'a> RunInputs<'a> {
             scope: None,
             secrets: None,
             events: None,
+            gate: None,
         }
     }
 
@@ -148,6 +154,13 @@ impl<'a> RunInputs<'a> {
     #[must_use]
     pub const fn with_events(mut self, events: &'a dyn EventSink) -> Self {
         self.events = Some(events);
+        self
+    }
+
+    /// Adds an active-tool gate: unauthorized tools are refused before spawn.
+    #[must_use]
+    pub const fn with_gate(mut self, gate: &'a ToolGate) -> Self {
+        self.gate = Some(gate);
         self
     }
 }
@@ -296,13 +309,7 @@ impl ExecutionRuntime {
             if indices.is_empty() {
                 continue;
             }
-            emit(
-                inputs.events,
-                &EngagementEvent::StageStarted {
-                    class: format!("{class:?}"),
-                    steps: indices.len(),
-                },
-            );
+            emit_stage_started(inputs.events, class, indices.len());
             let queue = Mutex::new(indices.into_iter());
             let worker_count = workers.min(steps.len().max(1));
             std::thread::scope(|scope| {
@@ -317,6 +324,10 @@ impl ExecutionRuntime {
                             };
                             let step = steps[index];
                             if already_done.contains(&(step.target_id.clone(), step.tool.clone())) {
+                                continue;
+                            }
+                            // Active-tool gate: refuse unauthorized tools before spawn.
+                            if refuse_if_gated(inputs, step, index, &results, checkpoint.as_ref()) {
                                 continue;
                             }
                             let Some(tool) = inputs.assets.tool(&step.tool) else {
@@ -407,6 +418,55 @@ fn preflight(inputs: &RunInputs, argv: &[String]) -> Result<Vec<String>, ToolExe
             .map_err(|violation| ToolExecutionError::Refused(violation.to_string()))?;
     }
     Ok(resolved)
+}
+
+/// Applies the active-tool gate to `step`. When the gate denies the tool,
+/// records the refusal — emits the start/refused lifecycle events,
+/// checkpoints the step, stores the refused outcome — and returns `true` so
+/// the worker skips it. Returns `false` (and does nothing) when there is no
+/// gate or the tool is allowed. Factored out so the worker loop stays short.
+fn refuse_if_gated(
+    inputs: &RunInputs,
+    step: &crate::orchestrator::OrchestrationStep,
+    index: usize,
+    results: &Mutex<Vec<Option<TaskExecutionOutcome>>>,
+    checkpoint: Option<&Mutex<Option<std::fs::File>>>,
+) -> bool {
+    let Some(gate) = inputs.gate else {
+        return false;
+    };
+    let GateDecision::Denied(reason) = gate.decision(&step.tool) else {
+        return false;
+    };
+    emit(
+        inputs.events,
+        &EngagementEvent::StepStarted {
+            target: step.target_id.clone(),
+            tool: step.tool.clone(),
+        },
+    );
+    let result = Err(ToolExecutionError::Refused(reason));
+    emit_step_result(inputs.events, &step.target_id, &step.tool, &result);
+    if let Some(writer) = checkpoint {
+        record_completed(writer, &step.target_id, &step.tool);
+    }
+    results.lock().expect("results poisoned")[index] = Some(TaskExecutionOutcome {
+        target_id: step.target_id.clone(),
+        tool: step.tool.clone(),
+        result,
+    });
+    true
+}
+
+/// Emits a `StageStarted` event for `class` with its step count.
+fn emit_stage_started(sink: Option<&dyn EventSink>, class: ExecutionClass, steps: usize) {
+    emit(
+        sink,
+        &EngagementEvent::StageStarted {
+            class: format!("{class:?}"),
+            steps,
+        },
+    );
 }
 
 /// Emits a `StageCompleted` event tallying the outcomes recorded for `class`.
@@ -769,6 +829,53 @@ mod tests {
             outcomes[0].result,
             Err(ToolExecutionError::Refused(_)),
         ));
+    }
+
+    #[test]
+    fn unauthorized_tool_is_refused_before_spawn() {
+        // 'sqlmap' is scheduled and installed, but is not on the engagement
+        // allow-list, so the gate refuses it before it can spawn.
+        let asset = assets(vec![tool(
+            "sqlmap",
+            "/nonexistent/sqlmap",
+            ExecutionClass::ActiveNetwork,
+        )]);
+        let sched = schedule(vec![step(1, "t", "sqlmap", ExecutionClass::ActiveNetwork)]);
+        let adapters = AdapterRegistry::with_defaults();
+        let eng = EngagementContext::new();
+        let args: Vec<String> = Vec::new();
+        let gate = ToolGate::allow_only(["nmap"]);
+        let ins = inputs(&sched, &adapters, &asset, &eng, &args).with_gate(&gate);
+
+        let outcomes = ExecutionRuntime::default().run_with_cancel(&ins, &AtomicBool::new(false));
+        assert_eq!(outcomes.len(), 1);
+        assert!(matches!(
+            outcomes[0].result,
+            Err(ToolExecutionError::Refused(_)),
+        ));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn allow_listed_tool_is_permitted_to_run() {
+        if !Path::new("/bin/true").exists() {
+            return;
+        }
+        let asset = assets(vec![tool(
+            "nmap",
+            "/bin/true",
+            ExecutionClass::ActiveNetwork,
+        )]);
+        let sched = schedule(vec![step(1, "t", "nmap", ExecutionClass::ActiveNetwork)]);
+        let adapters = AdapterRegistry::with_defaults();
+        let eng = EngagementContext::new();
+        let args: Vec<String> = Vec::new();
+        let gate = ToolGate::allow_only(["nmap", "gobuster"]);
+        let ins = inputs(&sched, &adapters, &asset, &eng, &args).with_gate(&gate);
+
+        let outcomes = ExecutionRuntime::default().run_with_cancel(&ins, &AtomicBool::new(false));
+        assert_eq!(outcomes.len(), 1);
+        assert!(outcomes[0].result.is_ok());
     }
 
     #[test]
