@@ -16,12 +16,16 @@ example you can run as-is.
 
 ## The one rule to remember: offline by default 🔌
 
-security-agent does **nothing over the network** unless you explicitly add the
-`--allow-network` flag. Every command that could send live traffic is marked
-**🌐 NETWORK** below and refuses to run without that opt-in. Everything else runs
-fully offline, reads only the files you point it at, and is safe to explore.
+security-agent performs **no live network activity** unless you explicitly add
+the `--allow-network` flag. Commands that *can* reach the network are marked
+**🌐 NETWORK** below; without the flag they still run, but stay offline — they
+simply skip the live-network actions (for example `--run-engagement` plans and
+runs its offline stages, and `--run-external-tool` still runs local-only
+tools). The one exception is `--listen`, whose only job is to open a socket, so
+it refuses to start without the flag. Everything else reads only the files you
+point it at and is safe to explore.
 
-> Only run the network commands against systems **you are authorized to test.**
+> Only use `--allow-network` against systems **you are authorized to test.**
 
 ---
 
