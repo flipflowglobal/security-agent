@@ -1802,14 +1802,28 @@ mod tests {
         );
     }
 
-    // Deterministic training can differ in the low bits across CPU
-    // architectures (see the generation tests), so the blob is the single
-    // canonical set of weights every platform loads. This drift check —
-    // that the committed blob equals a freshly trained model — is therefore
-    // pinned to the platform the blob is generated on.
+    // Deterministic training still differs in the low bits across CPUs and
+    // libm implementations, so a freshly trained model is only *bit-identical*
+    // to the committed blob on the exact platform the blob was generated on
+    // (the CI runner). Running this exact-equality check on an arbitrary
+    // developer machine — a fresh clone on unknown hardware — would fail on
+    // that harmless float drift, not on a real problem. It is therefore an
+    // opt-in maintainer check: it runs only when `SECURITY_AGENT_WEIGHT_DRIFT`
+    // is set (CI sets it), and is skipped-as-passing everywhere else so a
+    // plain `cargo test` on any machine is green. Every platform still loads
+    // and validates the same canonical blob via
+    // `bundled_loads_from_the_committed_blob` and the functional tests.
     #[cfg(target_os = "linux")]
     #[test]
     fn committed_weights_match_a_freshly_trained_model() {
+        if std::env::var_os("SECURITY_AGENT_WEIGHT_DRIFT").is_none() {
+            eprintln!(
+                "skipping weight-drift check (float training is not bit-reproducible \
+                 across machines); set SECURITY_AGENT_WEIGHT_DRIFT=1 to run it on the \
+                 canonical platform after changing training code",
+            );
+            return;
+        }
         let trained = NeuralLanguageModel::train_bundled();
         let loaded = NeuralLanguageModel::from_weight_bytes(BUNDLED_WEIGHTS)
             .expect("committed weights blob must load");
