@@ -361,6 +361,10 @@ fn wait_with_timeout(child: &mut Child, timeout: Duration) -> Option<ExitStatus>
 
 #[cfg(test)]
 mod tests {
+    // Several integration tests (and their helper `tool_at`/`Path` import) are
+    // `#[cfg(unix)]`; on non-unix platforms those tests are excluded, so the
+    // helpers would otherwise be flagged dead. Linux CI keeps the strict lints.
+    #![cfg_attr(not(unix), allow(dead_code, unused_imports))]
     use super::*;
     use crate::registry::ToolDefinition;
     use std::path::{Path, PathBuf};

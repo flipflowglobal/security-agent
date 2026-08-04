@@ -41,8 +41,8 @@
     ],
     "extraResources": [
       {
-        "from": "../target/release/security-agent",
-        "to": "security-agent",
+        "from": "../target/release/security-agent${ext}",
+        "to": "security-agent${ext}",
         "filter": [
           "**/*"
         ]
