@@ -65,3 +65,16 @@ __pycache__/
 *.pyc
 node_modules/
 opencode/
+
+# User-generated engagement artifacts (safe to delete and regenerate)
+# Findings / events / session / audit logs written by the CLI (see COMMAND.md).
+*findings*.jsonl
+*events*.jsonl
+sessions*.jsonl
+audit*.jsonl
+# Embedded append-only stores (--findings-db, --audit-db, etc.)
+*.sadb
+# Real secrets copied from examples/secrets.example.env
+# (the committed *.example.env templates stay tracked).
+secrets.env
+*.secrets.env
