@@ -52,6 +52,7 @@ pub mod scope;
 pub mod secrets;
 pub mod tagged_run;
 pub mod tool_adapter;
+pub mod tool_gate;
 pub mod workflow;
 
 pub use advanced::{
@@ -146,6 +147,7 @@ pub use tagged_run::{TaggedTestRun, TestEnvironment, TestRunReport};
 pub use tool_adapter::{
     AdapterRegistry, InvocationContext, OutputChannel, OutputFormat, ToolAdapter, ToolInvocation,
 };
+pub use tool_gate::{GateDecision, ToolGate};
 pub use workflow::WorkflowStage;
 
 #[cfg(test)]
