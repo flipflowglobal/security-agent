@@ -50,6 +50,12 @@ pub enum EngagementEvent {
         completed: usize,
         failed: usize,
     },
+    /// The operator paused the run: in-flight tools finish, no new steps launch.
+    RunPaused,
+    /// The operator resumed a paused run.
+    RunResumed,
+    /// The operator cancelled the run (terminal).
+    RunCancelled,
 }
 
 impl EngagementEvent {
@@ -63,6 +69,9 @@ impl EngagementEvent {
             Self::StepFailed { .. } => "step_failed",
             Self::StepRefused { .. } => "step_refused",
             Self::StageCompleted { .. } => "stage_completed",
+            Self::RunPaused => "run_paused",
+            Self::RunResumed => "run_resumed",
+            Self::RunCancelled => "run_cancelled",
         }
     }
 
@@ -117,6 +126,7 @@ impl EngagementEvent {
                 ",\"class\":\"{}\",\"completed\":{completed},\"failed\":{failed}",
                 esc(class),
             ),
+            Self::RunPaused | Self::RunResumed | Self::RunCancelled => String::new(),
         };
         format!("{{\"event\":\"{}\"{body}}}", self.kind())
     }
@@ -285,6 +295,19 @@ mod tests {
             Some("step_refused")
         );
         assert!(parsed.get("reason").and_then(|v| v.as_str()).is_some());
+    }
+
+    #[test]
+    fn control_events_serialize_with_only_the_kind() {
+        for (event, kind) in [
+            (EngagementEvent::RunPaused, "run_paused"),
+            (EngagementEvent::RunResumed, "run_resumed"),
+            (EngagementEvent::RunCancelled, "run_cancelled"),
+        ] {
+            let line = event.to_json_line();
+            let parsed = crate::json::parse(&line).expect("valid JSON");
+            assert_eq!(parsed.get("event").and_then(|v| v.as_str()), Some(kind));
+        }
     }
 
     #[test]

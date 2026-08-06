@@ -46,6 +46,7 @@ pub mod reasoning_log_db;
 pub mod registry;
 pub mod report;
 pub mod roadmap;
+pub mod run_control;
 pub mod runtime;
 pub mod sadb;
 pub mod scope;
@@ -140,6 +141,9 @@ pub use report::{
     ReportInputs, SeverityRollup, render_json as render_report_json, render_markdown, render_sarif,
 };
 pub use roadmap::{ROADMAP_PHASES, RoadmapPhase};
+pub use run_control::{
+    ControlCommand, RunController, RunPhase, parse_command as parse_control_command,
+};
 pub use runtime::{ExecutionRuntime, RunInputs, RuntimeConfig};
 pub use scope::{ScopePolicy, ScopeViolation};
 pub use secrets::{Secret, SecretError, SecretStore};

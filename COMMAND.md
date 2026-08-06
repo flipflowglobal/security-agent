@@ -139,9 +139,30 @@ Start from [`examples/engagement.example.conf`](examples/engagement.example.conf
 | `--secrets <file>` | Resolve `${secret:NAME}` refs and redact them from output. See [`examples/secrets.example.env`](examples/secrets.example.env). |
 | `--events <file>` | Stream the run's lifecycle as JSON lines to a file. |
 | `--findings-log <path>` / `--findings-db <path>` | Persist findings to a log / embedded store. |
+| `--control-file <path>` | Enable **real-time control**: steer the run live from another terminal (see below). |
 
 The engine only ever runs tools the engagement approved (the **active-tool
 gate**), and only reaches the target addresses your config declares.
+
+### Steering a running engagement (real-time control) 🎛️
+
+Start the run with a control file, then drive it from a second terminal:
+
+```sh
+# terminal 1 — start the engagement, watching a control file
+security-agent --run-engagement engagement.conf --control-file run.ctl
+
+# terminal 2 — steer it live
+security-agent --engagement-control run.ctl pause      # hold: finish in-flight tools, launch no more
+security-agent --engagement-control run.ctl resume     # carry on
+security-agent --engagement-control run.ctl rate 5     # min 5s between tool launches
+security-agent --engagement-control run.ctl rate off   # remove the rate limit
+security-agent --engagement-control run.ctl cancel      # stop (in-flight tools finish, then it ends)
+```
+
+`cancel` is final. Pause/resume and rate changes take effect within a moment.
+With `--events`, each action is recorded (`run_paused` / `run_resumed` /
+`run_cancelled`).
 
 ## 9. Reports & findings 📄
 

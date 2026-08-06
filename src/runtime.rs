@@ -35,6 +35,7 @@ use crate::network_policy::NetworkMode;
 use crate::observability::{EngagementEvent, EventSink};
 use crate::orchestrator::OrchestrationSchedule;
 use crate::registry::ExecutionClass;
+use crate::run_control::RunController;
 use crate::scope::ScopePolicy;
 use crate::secrets::SecretStore;
 use crate::tool_adapter::{AdapterRegistry, InvocationContext};
@@ -166,16 +167,42 @@ impl<'a> RunInputs<'a> {
 }
 
 /// Runtime controls layered on top of a plain run: cancellation, a mid-run
-/// authorization guard, and an optional checkpoint file.
+/// authorization guard, an optional checkpoint file, and an optional live
+/// [`RunController`] (pause/resume/cancel/rate).
 struct RunControl<'c> {
     cancel: &'c AtomicBool,
     still_authorized: &'c (dyn Fn() -> bool + Sync),
     checkpoint: Option<&'c Path>,
+    controller: Option<&'c RunController>,
 }
 
+/// How long a paused worker sleeps between checks for resume/cancel.
+const PAUSE_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
 impl RunControl<'_> {
+    /// `true` when the run must stop launching new steps: an explicit cancel,
+    /// a failed authorization re-check, or a live controller cancellation.
     fn should_stop(&self) -> bool {
-        self.cancel.load(Ordering::Relaxed) || !(self.still_authorized)()
+        self.cancel.load(Ordering::Relaxed)
+            || !(self.still_authorized)()
+            || self.controller.is_some_and(RunController::is_cancelled)
+    }
+
+    /// Blocks while the live controller is paused, returning as soon as it is
+    /// resumed or the run must stop. A no-op without a controller.
+    fn wait_while_paused(&self) {
+        if let Some(controller) = self.controller {
+            while controller.is_paused() && !self.should_stop() {
+                std::thread::sleep(PAUSE_POLL_INTERVAL);
+            }
+        }
+    }
+
+    /// The effective minimum spawn interval: a live controller override when
+    /// set, otherwise the runtime's configured `default`.
+    fn effective_min_spawn_interval(&self, default: Option<Duration>) -> Option<Duration> {
+        self.controller
+            .map_or(default, |controller| controller.min_spawn_interval(default))
     }
 }
 
@@ -221,6 +248,7 @@ impl ExecutionRuntime {
                 cancel: &never_cancel,
                 still_authorized: &always,
                 checkpoint: None,
+                controller: None,
             },
         )
     }
@@ -240,6 +268,29 @@ impl ExecutionRuntime {
                 cancel,
                 still_authorized: &always,
                 checkpoint: None,
+                controller: None,
+            },
+        )
+    }
+
+    /// Like [`run`](Self::run) but driven by a live [`RunController`]: the run
+    /// can be paused (in-flight tools finish, no new steps launch), resumed,
+    /// cancelled, or have its spawn rate adjusted while it runs.
+    #[must_use]
+    pub fn run_controlled(
+        &self,
+        inputs: &RunInputs,
+        controller: &RunController,
+    ) -> Vec<TaskExecutionOutcome> {
+        let never_cancel = AtomicBool::new(false);
+        let always = || true;
+        self.execute(
+            inputs,
+            &RunControl {
+                cancel: &never_cancel,
+                still_authorized: &always,
+                checkpoint: None,
+                controller: Some(controller),
             },
         )
     }
@@ -260,6 +311,7 @@ impl ExecutionRuntime {
                 cancel: &never_cancel,
                 still_authorized,
                 checkpoint: None,
+                controller: None,
             },
         )
     }
@@ -283,6 +335,7 @@ impl ExecutionRuntime {
                 cancel: &never_cancel,
                 still_authorized: &always,
                 checkpoint: Some(checkpoint_path),
+                controller: None,
             },
         )
     }
@@ -316,6 +369,9 @@ impl ExecutionRuntime {
                 for _ in 0..worker_count {
                     scope.spawn(|| {
                         loop {
+                            // Live control: block while paused, then bail if the
+                            // run was cancelled (or lost authorization).
+                            control.wait_while_paused();
                             if control.should_stop() {
                                 break;
                             }
@@ -333,7 +389,7 @@ impl ExecutionRuntime {
                             let Some(tool) = inputs.assets.tool(&step.tool) else {
                                 continue;
                             };
-                            self.rate_limit(&last_spawn);
+                            self.rate_limit(&last_spawn, control);
                             let ctx = InvocationContext {
                                 target_id: &step.target_id,
                                 network_address: step.network_address.as_deref(),
@@ -383,11 +439,13 @@ impl ExecutionRuntime {
         collect_ordered(results, &steps)
     }
 
-    /// Enforces `min_spawn_interval` between spawns by holding the spacing
-    /// lock while it sleeps out any remaining interval, then stamping the
-    /// spawn time.
-    fn rate_limit(&self, last_spawn: &Mutex<Option<Instant>>) {
-        let Some(interval) = self.config.min_spawn_interval else {
+    /// Enforces the effective minimum interval between spawns by holding the
+    /// spacing lock while it sleeps out any remaining interval, then stamping
+    /// the spawn time. The interval is a live [`RunController`] override when
+    /// set, otherwise the runtime's configured `min_spawn_interval`.
+    fn rate_limit(&self, last_spawn: &Mutex<Option<Instant>>, control: &RunControl) {
+        let Some(interval) = control.effective_min_spawn_interval(self.config.min_spawn_interval)
+        else {
             return;
         };
         let mut guard = last_spawn.lock().expect("spawn clock poisoned");
@@ -731,6 +789,52 @@ mod tests {
         let cancel = AtomicBool::new(true);
         let outcomes = ExecutionRuntime::default().run_with_cancel(&ins, &cancel);
         assert!(outcomes.is_empty());
+    }
+
+    #[test]
+    fn controller_cancel_launches_nothing() {
+        let asset = assets(vec![tool(
+            "n",
+            "/nonexistent/n",
+            ExecutionClass::ActiveNetwork,
+        )]);
+        let sched = schedule(vec![step(1, "a", "n", ExecutionClass::ActiveNetwork)]);
+        let adapters = AdapterRegistry::with_defaults();
+        let eng = EngagementContext::new();
+        let args: Vec<String> = Vec::new();
+        let ins = inputs(&sched, &adapters, &asset, &eng, &args);
+        let controller = RunController::new();
+        controller.cancel();
+        let outcomes = ExecutionRuntime::default().run_controlled(&ins, &controller);
+        assert!(outcomes.is_empty());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn paused_run_resumes_and_completes() {
+        if !Path::new("/bin/true").exists() {
+            return;
+        }
+        let asset = assets(vec![tool("n", "/bin/true", ExecutionClass::ActiveNetwork)]);
+        let sched = schedule(vec![step(1, "a", "n", ExecutionClass::ActiveNetwork)]);
+        let adapters = AdapterRegistry::with_defaults();
+        let eng = EngagementContext::new();
+        let args: Vec<String> = Vec::new();
+        let ins = inputs(&sched, &adapters, &asset, &eng, &args);
+        let controller = RunController::new();
+        controller.pause();
+        // A helper resumes shortly after the run starts (and blocks on pause);
+        // the run must then complete its one step. Deterministic: the run
+        // cannot finish until resume is observed, and resume always arrives.
+        let outcomes = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(50));
+                controller.resume();
+            });
+            ExecutionRuntime::default().run_controlled(&ins, &controller)
+        });
+        assert_eq!(outcomes.len(), 1);
+        assert!(outcomes[0].result.is_ok());
     }
 
     #[test]
