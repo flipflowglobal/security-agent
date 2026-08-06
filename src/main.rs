@@ -11,6 +11,7 @@ use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn main() -> ExitCode {
@@ -41,6 +42,7 @@ fn main() -> ExitCode {
         Some("--run-external-tool") => run_external_tool_command(&assets, &mut arguments),
         Some("--plan-scan") => plan_scan_command(&mut arguments),
         Some("--run-engagement") => run_engagement_command(&mut arguments),
+        Some("--engagement-control") => engagement_control_command(&mut arguments),
         Some("--record-findings") => record_findings_command(&mut arguments),
         Some("--view-audit") => view_audit_command(&mut arguments),
         Some("--view-audit-db") => view_audit_db_command(&mut arguments),
@@ -895,6 +897,7 @@ struct RunEngagementArgs {
     network_mode: security_agent::NetworkMode,
     allow_tools: Vec<String>,
     deny_tools: Vec<String>,
+    control_file: Option<String>,
     operator_args: Vec<String>,
 }
 
@@ -919,6 +922,7 @@ fn parse_run_engagement_args(
         network_mode: security_agent::NetworkMode::Offline,
         allow_tools: Vec::new(),
         deny_tools: Vec::new(),
+        control_file: None,
         operator_args: Vec::new(),
     };
 
@@ -957,6 +961,7 @@ fn parse_run_engagement_args(
             }
             "--allow-tool" => args.allow_tools.push(value(arguments, "--allow-tool")?),
             "--deny-tool" => args.deny_tools.push(value(arguments, "--deny-tool")?),
+            "--control-file" => args.control_file = Some(value(arguments, "--control-file")?),
             "--secrets" => args.secrets_path = Some(value(arguments, "--secrets")?),
             "--events" => args.events_path = Some(value(arguments, "--events")?),
             "--findings-log" => args.findings_log_path = Some(value(arguments, "--findings-log")?),
@@ -975,7 +980,12 @@ fn parse_run_engagement_args(
 /// `--run-engagement <config-file> [--max-concurrency N] [--per-tool-timeout S]
 /// [--min-spawn-interval S] [--allow-tool <name>]... [--deny-tool <name>]...
 /// [--secrets <file>] [--events <file>] [--findings-log <path>]
-/// [--findings-db <path>] [--allow-network] [-- <operator args>...]`.
+/// [--findings-db <path>] [--control-file <path>] [--allow-network]
+/// [-- <operator args>...]`.
+///
+/// `--control-file <path>` enables real-time control: while the engagement
+/// runs, another terminal can `--engagement-control <path> pause|resume|cancel`
+/// (or `rate <secs>` / `rate off`) to steer it live.
 ///
 /// Drives the concurrent, staged engagement engine
 /// ([`security_agent::run_engagement_pipeline`]) — the orchestrator, the
@@ -997,6 +1007,142 @@ fn run_engagement_command(arguments: &mut impl Iterator<Item = String>) -> ExitC
             ExitCode::from(2)
         }
     }
+}
+
+/// The inputs to one engagement execution, bundled so the optional live-control
+/// wrapper stays readable (and under clippy's argument limit).
+#[derive(Clone, Copy)]
+struct RunEngagementCall<'a> {
+    plan: &'a security_agent::ExecutionPlan,
+    adapters: &'a security_agent::AdapterRegistry,
+    runtime: &'a security_agent::ExecutionRuntime,
+    assets: &'a LocalAgentAssets,
+    operator_args: &'a [String],
+    network_mode: security_agent::NetworkMode,
+    guards: security_agent::EngagementGuards<'a>,
+    control_file: Option<&'a str>,
+    controller: &'a security_agent::RunController,
+    event_sink: Option<&'a dyn security_agent::EventSink>,
+}
+
+/// Runs the engagement pipeline. With a control file configured, a poller
+/// thread watches it and applies pause/resume/cancel/rate commands to the
+/// shared [`security_agent::RunController`] while the pipeline runs.
+fn run_engagement_with_optional_control(
+    call: RunEngagementCall,
+) -> security_agent::EngagementReport {
+    let pipeline = || {
+        security_agent::run_engagement_pipeline(
+            call.plan,
+            call.adapters,
+            call.runtime,
+            call.assets,
+            call.operator_args,
+            call.network_mode,
+            call.guards,
+        )
+    };
+    let Some(control_path) = call.control_file else {
+        return pipeline();
+    };
+    eprintln!(
+        "live control enabled — drive it from another terminal with \
+         `--engagement-control {control_path} <command>`:"
+    );
+    eprintln!("  pause | resume | cancel | rate <seconds> | rate off");
+    let run_done = AtomicBool::new(false);
+    let path = Path::new(control_path);
+    std::thread::scope(|scope| {
+        scope.spawn(|| poll_control_file(path, call.controller, call.event_sink, &run_done));
+        let report = pipeline();
+        run_done.store(true, Ordering::Relaxed);
+        report
+    })
+}
+
+/// Polls the control file until the run finishes (or is cancelled), applying
+/// each newly written command to the shared controller. Best effort: an
+/// unreadable file or an unparseable line is reported and skipped, never fatal.
+fn poll_control_file(
+    path: &Path,
+    controller: &security_agent::RunController,
+    sink: Option<&dyn security_agent::EventSink>,
+    run_done: &AtomicBool,
+) {
+    let mut last = String::new();
+    while !run_done.load(Ordering::Relaxed) && !controller.is_cancelled() {
+        if let Ok(text) = fs::read_to_string(path) {
+            if text != last {
+                last.clone_from(&text);
+                if let Some(line) = text.lines().rev().find(|line| !line.trim().is_empty()) {
+                    apply_control_line(line.trim(), controller, sink);
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// Applies one control line to the controller and mirrors the transition to
+/// the event sink (so `--events` records pause/resume/cancel).
+fn apply_control_line(
+    line: &str,
+    controller: &security_agent::RunController,
+    sink: Option<&dyn security_agent::EventSink>,
+) {
+    match security_agent::parse_control_command(line) {
+        Ok(command) => {
+            controller.apply(command);
+            eprintln!("control: applied '{line}'");
+            let event = match command {
+                security_agent::ControlCommand::Pause => {
+                    Some(security_agent::EngagementEvent::RunPaused)
+                }
+                security_agent::ControlCommand::Resume => {
+                    Some(security_agent::EngagementEvent::RunResumed)
+                }
+                security_agent::ControlCommand::Cancel => {
+                    Some(security_agent::EngagementEvent::RunCancelled)
+                }
+                security_agent::ControlCommand::SetRate(_) => None,
+            };
+            if let (Some(event), Some(sink)) = (event, sink) {
+                sink.emit(&event);
+            }
+        }
+        Err(error) => eprintln!("control: ignoring '{line}': {error}"),
+    }
+}
+
+/// `--engagement-control <control-file> <pause|resume|cancel|rate SECS|rate off>`
+/// — write a command a running `--run-engagement --control-file` picks up.
+fn engagement_control_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    match engagement_control(arguments) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(message) => {
+            eprintln!("{message}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn engagement_control(arguments: &mut impl Iterator<Item = String>) -> Result<(), String> {
+    let path = arguments.next().ok_or(
+        "usage: --engagement-control <control-file> <pause|resume|cancel|rate SECS|rate off>",
+    )?;
+    let words: Vec<String> = arguments.collect();
+    if words.is_empty() {
+        return Err(
+            "missing control command (pause, resume, cancel, rate <secs>, rate off)".to_string(),
+        );
+    }
+    let line = words.join(" ");
+    security_agent::parse_control_command(&line)
+        .map_err(|error| format!("invalid control command: {error}"))?;
+    fs::write(&path, format!("{line}\n"))
+        .map_err(|error| format!("failed to write control file '{path}': {error}"))?;
+    println!("control command '{line}' written to {path}");
+    Ok(())
 }
 
 /// Builds the engagement's active-tool gate: the allow-list is the union of
@@ -1087,6 +1233,10 @@ fn run_engagement(arguments: &mut impl Iterator<Item = String>) -> Result<ExitCo
         );
     }
 
+    // Live run control: when a control file is given, the run can be paused,
+    // resumed, cancelled, or rate-adjusted while it runs (see `--engagement-control`).
+    let controller = security_agent::RunController::new();
+
     let guards = security_agent::EngagementGuards {
         scope: Some(&scope),
         secrets: secrets.as_ref(),
@@ -1094,6 +1244,7 @@ fn run_engagement(arguments: &mut impl Iterator<Item = String>) -> Result<ExitCo
             .as_ref()
             .map(|sink| sink as &dyn security_agent::EventSink),
         gate: Some(&gate),
+        controller: args.control_file.as_ref().map(|_| &controller),
     };
 
     if args.network_mode.allows_active() {
@@ -1103,15 +1254,20 @@ fn run_engagement(arguments: &mut impl Iterator<Item = String>) -> Result<ExitCo
         );
     }
 
-    let report = security_agent::run_engagement_pipeline(
-        &plan,
-        &adapters,
-        &runtime,
-        &assets,
-        &args.operator_args,
-        args.network_mode,
+    let report = run_engagement_with_optional_control(RunEngagementCall {
+        plan: &plan,
+        adapters: &adapters,
+        runtime: &runtime,
+        assets: &assets,
+        operator_args: &args.operator_args,
+        network_mode: args.network_mode,
         guards,
-    );
+        control_file: args.control_file.as_deref(),
+        controller: &controller,
+        event_sink: event_sink
+            .as_ref()
+            .map(|sink| sink as &dyn security_agent::EventSink),
+    });
 
     let findings: Vec<security_agent::Finding> = report
         .all_outcomes()

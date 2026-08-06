@@ -25,6 +25,7 @@ use crate::network_policy::NetworkMode;
 use crate::observability::EventSink;
 use crate::orchestrator::{OrchestrationSchedule, ToolOrchestrator};
 use crate::registry::ExecutionClass;
+use crate::run_control::RunController;
 use crate::runtime::{ExecutionRuntime, RunInputs};
 use crate::scope::ScopePolicy;
 use crate::secrets::SecretStore;
@@ -94,6 +95,9 @@ pub struct EngagementGuards<'a> {
     /// Refuses any step whose tool is not authorized for the engagement,
     /// before it spawns, failing closed (see [`crate::tool_gate`]).
     pub gate: Option<&'a ToolGate>,
+    /// Live run control: when set, the engagement can be paused, resumed,
+    /// cancelled, or rate-adjusted while it runs (see [`crate::run_control`]).
+    pub controller: Option<&'a RunController>,
 }
 
 /// Runs `plan` as a staged, result-driven engagement.
@@ -144,7 +148,10 @@ pub fn run_engagement_pipeline(
         if let Some(gate) = guards.gate {
             inputs = inputs.with_gate(gate);
         }
-        let outcomes = runtime.run_with_cancel(&inputs, &never_cancel);
+        let outcomes = guards.controller.map_or_else(
+            || runtime.run_with_cancel(&inputs, &never_cancel),
+            |controller| runtime.run_controlled(&inputs, controller),
+        );
         // Fold this stage's discoveries in before the next stage plans.
         for outcome in &outcomes {
             if let Ok(report) = &outcome.result {
