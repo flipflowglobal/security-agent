@@ -898,6 +898,7 @@ struct RunEngagementArgs {
     allow_tools: Vec<String>,
     deny_tools: Vec<String>,
     control_file: Option<String>,
+    no_expand: bool,
     operator_args: Vec<String>,
 }
 
@@ -923,6 +924,7 @@ fn parse_run_engagement_args(
         allow_tools: Vec::new(),
         deny_tools: Vec::new(),
         control_file: None,
+        no_expand: false,
         operator_args: Vec::new(),
     };
 
@@ -962,6 +964,7 @@ fn parse_run_engagement_args(
             "--allow-tool" => args.allow_tools.push(value(arguments, "--allow-tool")?),
             "--deny-tool" => args.deny_tools.push(value(arguments, "--deny-tool")?),
             "--control-file" => args.control_file = Some(value(arguments, "--control-file")?),
+            "--no-expand" => args.no_expand = true,
             "--secrets" => args.secrets_path = Some(value(arguments, "--secrets")?),
             "--events" => args.events_path = Some(value(arguments, "--events")?),
             "--findings-log" => args.findings_log_path = Some(value(arguments, "--findings-log")?),
@@ -986,6 +989,10 @@ fn parse_run_engagement_args(
 /// `--control-file <path>` enables real-time control: while the engagement
 /// runs, another terminal can `--engagement-control <path> pause|resume|cancel`
 /// (or `rate <secs>` / `rate off`) to steer it live.
+///
+/// Result-driven expansion is on by default: discovered services and URLs
+/// propose authorized, in-scope follow-up tools that run in later rounds. Pass
+/// `--no-expand` to run only the initially planned steps.
 ///
 /// Drives the concurrent, staged engagement engine
 /// ([`security_agent::run_engagement_pipeline`]) — the orchestrator, the
@@ -1245,6 +1252,7 @@ fn run_engagement(arguments: &mut impl Iterator<Item = String>) -> Result<ExitCo
             .map(|sink| sink as &dyn security_agent::EventSink),
         gate: Some(&gate),
         controller: args.control_file.as_ref().map(|_| &controller),
+        expand: !args.no_expand,
     };
 
     if args.network_mode.allows_active() {
@@ -1331,6 +1339,10 @@ fn print_engagement_report(
         context.hosts().len(),
         context.services().len(),
         context.endpoints().len()
+    );
+    println!(
+        "Result-driven expansion: {} follow-up step(s) added",
+        report.expansion_added
     );
     println!("Findings ingested: {}", findings.len());
 }

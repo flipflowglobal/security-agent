@@ -140,9 +140,18 @@ Start from [`examples/engagement.example.conf`](examples/engagement.example.conf
 | `--events <file>` | Stream the run's lifecycle as JSON lines to a file. |
 | `--findings-log <path>` / `--findings-db <path>` | Persist findings to a log / embedded store. |
 | `--control-file <path>` | Enable **real-time control**: steer the run live from another terminal (see below). |
+| `--no-expand` | Disable result-driven expansion (run only the initially planned steps). |
 
 The engine only ever runs tools the engagement approved (the **active-tool
 gate**), and only reaches the target addresses your config declares.
+
+**Result-driven expansion (on by default).** As discovery finds live services
+and URLs, the engine automatically schedules the right authorized follow-up
+tools — e.g. an open web service gets web scanners, an SMB share gets
+enumeration — and runs them in a later round, repeating until nothing new is
+found. Every added step still passes the active-tool gate and scope checks, so
+expansion can never exceed the engagement's authorization. Use `--no-expand` to
+turn it off. The run summary reports how many follow-up steps were added.
 
 ### Steering a running engagement (real-time control) 🎛️
 

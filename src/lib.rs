@@ -18,6 +18,7 @@ pub mod engagement_config;
 pub mod engagement_context;
 pub mod evidence;
 pub mod execution;
+pub mod expansion;
 pub mod findings;
 pub mod findings_db;
 pub mod findings_log;
@@ -96,6 +97,7 @@ pub use execution::{
     DEFAULT_TIMEOUT, TaskExecutionOutcome, ToolExecutionError, ToolExecutionReport, execute_plan,
     run_external_tool, run_external_tool_with_default_timeout,
 };
+pub use expansion::FollowUpPlanner;
 pub use findings::{Finding, RiskScoreCalculator, Severity};
 pub use findings_log::{FindingsLogError, append_findings, load_findings};
 pub use governance::{AuditLedger, AuditRecord, Role};
