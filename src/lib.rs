@@ -14,6 +14,7 @@ pub mod compat;
 pub mod coordinator;
 pub mod corpus_gen;
 pub mod correlation;
+pub mod engagement_audit;
 pub mod engagement_config;
 pub mod engagement_context;
 pub mod evidence;
@@ -88,6 +89,7 @@ pub use compat::{
 };
 pub use coordinator::{Coordinator, ExecutionPlan, ScanTask};
 pub use correlation::correlate;
+pub use engagement_audit::{EngagementAuditContext, audit_records_for_engagement};
 pub use engagement_config::{
     EngagementConfigError, load_engagement_config, parse_engagement_config,
 };
@@ -140,7 +142,8 @@ pub use registry::{
     ToolchainPackRegistry, UseCase, cataloged_tool_names, classify_execution,
 };
 pub use report::{
-    ReportInputs, SeverityRollup, render_json as render_report_json, render_markdown, render_sarif,
+    EngagementDeliverable, ReportInputs, SeverityRollup, render_engagement_json,
+    render_engagement_markdown, render_json as render_report_json, render_markdown, render_sarif,
 };
 pub use roadmap::{ROADMAP_PHASES, RoadmapPhase};
 pub use run_control::{
