@@ -139,6 +139,9 @@ Start from [`examples/engagement.example.conf`](examples/engagement.example.conf
 | `--secrets <file>` | Resolve `${secret:NAME}` refs and redact them from output. See [`examples/secrets.example.env`](examples/secrets.example.env). |
 | `--events <file>` | Stream the run's lifecycle as JSON lines to a file. |
 | `--findings-log <path>` / `--findings-db <path>` | Persist findings to a log / embedded store. |
+| `--audit-log <path>` / `--audit-db <path>` | Write the run's **audit trail** (every tool completed/failed/refused, plus discovery/expansion/completion summaries) to a JSON Lines log / `.sadb` store. |
+| `--report-out <path>` | Write the full **engagement deliverable** (run summary, discovery inventory, execution timeline, findings) to a file. |
+| `--report-format markdown\|json` | Format for `--report-out` (default `markdown`). |
 | `--control-file <path>` | Enable **real-time control**: steer the run live from another terminal (see below). |
 | `--no-expand` | Disable result-driven expansion (run only the initially planned steps). |
 
@@ -152,6 +155,17 @@ enumeration — and runs them in a later round, repeating until nothing new is
 found. Every added step still passes the active-tool gate and scope checks, so
 expansion can never exceed the engagement's authorization. Use `--no-expand` to
 turn it off. The run summary reports how many follow-up steps were added.
+
+**Deliverable & audit trail.** Two outputs turn a run into a hand-off record.
+`--report-out <file>` writes the full **engagement deliverable** — run summary,
+discovery inventory (hosts/services/endpoints), the per-stage execution
+timeline, and the findings rollup — in Markdown (default) or JSON
+(`--report-format json`). `--audit-log <file>` (and/or `--audit-db <file>`)
+writes an append-only **audit trail**: one record for every tool that
+completed, failed, or was refused (with the reason), plus discovery,
+expansion, and completion summaries — each keyed to the engagement id and
+stamped with who authorized it. Read it back any time with `--view-audit` /
+`--view-audit-db`.
 
 ### Steering a running engagement (real-time control) 🎛️
 
@@ -213,9 +227,15 @@ directory, so a first-time run stays self-contained:
 cd ~/my-engagement
 security-agent --run-engagement engagement.conf \
   --events run-events.jsonl \
-  --findings-log findings.jsonl
-security-agent --report findings.jsonl --format markdown > report.md
+  --findings-log findings.jsonl \
+  --audit-log audit.jsonl \
+  --report-out deliverable.md
+security-agent --report findings.jsonl --format markdown > findings-report.md
 ```
+
+The `--run-engagement --report-out` deliverable covers the *whole run*
+(what ran, what was discovered, the findings); the standalone `--report`
+command renders a findings-only report from any findings log.
 
 ## Getting unstuck 🆘
 

@@ -894,6 +894,10 @@ struct RunEngagementArgs {
     events_path: Option<String>,
     findings_log_path: Option<String>,
     findings_db_path: Option<String>,
+    audit_log_path: Option<String>,
+    audit_db_path: Option<String>,
+    report_out_path: Option<String>,
+    report_format: String,
     network_mode: security_agent::NetworkMode,
     allow_tools: Vec<String>,
     deny_tools: Vec<String>,
@@ -920,6 +924,10 @@ fn parse_run_engagement_args(
         events_path: None,
         findings_log_path: None,
         findings_db_path: None,
+        audit_log_path: None,
+        audit_db_path: None,
+        report_out_path: None,
+        report_format: "markdown".to_string(),
         network_mode: security_agent::NetworkMode::Offline,
         allow_tools: Vec::new(),
         deny_tools: Vec::new(),
@@ -969,6 +977,10 @@ fn parse_run_engagement_args(
             "--events" => args.events_path = Some(value(arguments, "--events")?),
             "--findings-log" => args.findings_log_path = Some(value(arguments, "--findings-log")?),
             "--findings-db" => args.findings_db_path = Some(value(arguments, "--findings-db")?),
+            "--audit-log" => args.audit_log_path = Some(value(arguments, "--audit-log")?),
+            "--audit-db" => args.audit_db_path = Some(value(arguments, "--audit-db")?),
+            "--report-out" => args.report_out_path = Some(value(arguments, "--report-out")?),
+            "--report-format" => args.report_format = value(arguments, "--report-format")?,
             "--" => {
                 args.operator_args.extend(arguments.by_ref());
                 break;
@@ -1180,6 +1192,12 @@ fn run_engagement(arguments: &mut impl Iterator<Item = String>) -> Result<ExitCo
     let (profile, targets) = load_engagement_config(Path::new(&args.config_path))
         .map_err(|error| format!("failed to load config: {error}"))?;
 
+    // The engagement's authorizer and their role are stamped onto every audit
+    // record derived from this run; capture them before the profile is consumed
+    // by planning.
+    let authorized_by = profile.authorized_by.clone();
+    let authorized_by_role = profile.authorized_by_role;
+
     // Scope defaults to the engagement's declared target addresses: the engine
     // may only reach what the engagement authorized.
     let scope_targets: Vec<String> = targets
@@ -1277,24 +1295,156 @@ fn run_engagement(arguments: &mut impl Iterator<Item = String>) -> Result<ExitCo
             .map(|sink| sink as &dyn security_agent::EventSink),
     });
 
-    let findings: Vec<security_agent::Finding> = report
+    let findings = ingest_engagement_findings(&report);
+
+    persist_engagement_outputs(
+        &report,
+        &findings,
+        EngagementAuthorizer {
+            engagement_id: &plan.engagement_id,
+            actor: &authorized_by,
+            role: authorized_by_role,
+        },
+        &args,
+    )?;
+
+    print_engagement_report(&report, &findings);
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Ingests findings from every successful tool outcome across the run's stages.
+fn ingest_engagement_findings(
+    report: &security_agent::EngagementReport,
+) -> Vec<security_agent::Finding> {
+    report
         .all_outcomes()
         .iter()
         .filter_map(|outcome| outcome.result.as_ref().ok().map(|report| (outcome, report)))
         .flat_map(|(outcome, report)| security_agent::ingest::ingest(&outcome.target_id, report))
-        .collect();
+        .collect()
+}
 
+/// The engagement's accountable identity, threaded into the derived audit trail.
+#[derive(Clone, Copy)]
+struct EngagementAuthorizer<'a> {
+    engagement_id: &'a str,
+    actor: &'a str,
+    role: security_agent::Role,
+}
+
+/// Persists everything a finished run produces: findings (log / `.sadb`), the
+/// derived audit trail (Stage 14), and the full engagement deliverable
+/// (Stage 13). Each output is written only when its flag was given.
+fn persist_engagement_outputs(
+    report: &security_agent::EngagementReport,
+    findings: &[security_agent::Finding],
+    authorizer: EngagementAuthorizer,
+    args: &RunEngagementArgs,
+) -> Result<(), String> {
     if let Some(path) = &args.findings_log_path {
-        security_agent::append_findings(Path::new(path), &findings)
+        security_agent::append_findings(Path::new(path), findings)
             .map_err(|error| format!("failed to write findings log: {error}"))?;
     }
     if let Some(path) = &args.findings_db_path {
-        security_agent::findings_db::append_findings(Path::new(path), &findings)
+        security_agent::findings_db::append_findings(Path::new(path), findings)
             .map_err(|error| format!("failed to write findings database: {error}"))?;
     }
 
-    print_engagement_report(&report, &findings);
-    Ok(ExitCode::SUCCESS)
+    // Stage 14: derive and persist the run's audit trail — one record per tool
+    // outcome (completed / failed / refused) plus discovery, expansion, and
+    // completion summaries, all keyed to this engagement's id.
+    persist_engagement_audit(
+        report,
+        authorizer.engagement_id,
+        authorizer.actor,
+        authorizer.role,
+        args.audit_log_path.as_deref(),
+        args.audit_db_path.as_deref(),
+    )?;
+
+    // Stage 13: render the full engagement deliverable to a file when asked.
+    if let Some(path) = &args.report_out_path {
+        write_engagement_deliverable(
+            authorizer.engagement_id,
+            report,
+            findings,
+            path,
+            &args.report_format,
+        )?;
+    }
+    Ok(())
+}
+
+/// Derives the run's audit records (see [`security_agent::engagement_audit`])
+/// and appends them to the JSON Lines log and/or `.sadb` store the operator
+/// named. A no-op when neither `--audit-log` nor `--audit-db` was given.
+fn persist_engagement_audit(
+    report: &security_agent::EngagementReport,
+    engagement_id: &str,
+    actor: &str,
+    role: security_agent::Role,
+    audit_log_path: Option<&str>,
+    audit_db_path: Option<&str>,
+) -> Result<(), String> {
+    if audit_log_path.is_none() && audit_db_path.is_none() {
+        return Ok(());
+    }
+    let records = security_agent::audit_records_for_engagement(
+        &security_agent::EngagementAuditContext {
+            engagement_id,
+            actor,
+            role,
+            timestamp_epoch_seconds: current_epoch_seconds(),
+        },
+        report,
+    );
+    if let Some(path) = audit_log_path {
+        security_agent::append_audit_records(Path::new(path), &records)
+            .map_err(|error| format!("failed to write audit log: {error}"))?;
+        eprintln!(
+            "audit trail: {} record(s) appended to {path}",
+            records.len()
+        );
+    }
+    if let Some(path) = audit_db_path {
+        security_agent::audit_db::append_audit_records(Path::new(path), &records)
+            .map_err(|error| format!("failed to write audit database: {error}"))?;
+        eprintln!(
+            "audit trail: {} record(s) appended to {path}",
+            records.len()
+        );
+    }
+    Ok(())
+}
+
+/// Renders the full engagement deliverable (see [`security_agent::report`]) in
+/// the requested format and writes it to `path`.
+fn write_engagement_deliverable(
+    engagement_id: &str,
+    report: &security_agent::EngagementReport,
+    findings: &[security_agent::Finding],
+    path: &str,
+    format: &str,
+) -> Result<(), String> {
+    let deliverable = security_agent::EngagementDeliverable {
+        engagement_id,
+        generated_at_epoch: current_epoch_seconds(),
+        report,
+        findings,
+    };
+    let rendered = match format {
+        "json" => security_agent::render_engagement_json(&deliverable),
+        "markdown" | "md" => security_agent::render_engagement_markdown(&deliverable),
+        other => {
+            return Err(format!(
+                "unknown --report-format: {other} (want markdown|json)"
+            ));
+        }
+    };
+    fs::write(path, rendered)
+        .map_err(|error| format!("failed to write engagement report '{path}': {error}"))?;
+    eprintln!("engagement deliverable ({format}) written to {path}");
+    Ok(())
 }
 
 /// Prints the staged engagement's outcomes: each stage's per-tool results,

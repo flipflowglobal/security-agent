@@ -19,8 +19,11 @@
 //! without pulling in a date library.
 
 use crate::advanced::AttackPathGraph;
+use crate::engagement_context::EngagementContext;
 use crate::evidence::EvidenceRecord;
+use crate::execution::{TaskExecutionOutcome, ToolExecutionError};
 use crate::findings::{Finding, Severity};
+use crate::pipeline::EngagementReport;
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
@@ -452,6 +455,436 @@ fn render_evidence_section(out: &mut String, evidence: &[EvidenceRecord]) {
     let _ = writeln!(out);
 }
 
+/// The inputs to a full engagement deliverable: the run-level report that
+/// combines execution outcomes, discovery, result-driven expansion, and the
+/// ingested findings into a single hand-off document.
+///
+/// Where [`ReportInputs`] renders *findings and evidence*, this renders the
+/// whole engagement — what ran, in what stages, what discovery turned up, how
+/// far expansion reached, and the findings that resulted — for an operator or
+/// client to read as the record of the run.
+pub struct EngagementDeliverable<'a> {
+    /// The engagement identifier the deliverable is for.
+    pub engagement_id: &'a str,
+    /// Unix epoch seconds the deliverable was generated at (caller-supplied so
+    /// output is deterministic and testable).
+    pub generated_at_epoch: u64,
+    /// The completed engagement run (stages, discovery, expansion count).
+    pub report: &'a EngagementReport,
+    /// The findings ingested from the run's tool output.
+    pub findings: &'a [Finding],
+}
+
+/// A tool's terminal status within a stage, classified for rendering.
+enum OutcomeStatus {
+    Completed {
+        exit_code: Option<i32>,
+        duration_ms: u64,
+    },
+    Failed(String),
+    Refused(String),
+}
+
+/// Classifies one outcome into a stable terminal status.
+fn outcome_status(outcome: &TaskExecutionOutcome) -> OutcomeStatus {
+    match &outcome.result {
+        Ok(execution) => OutcomeStatus::Completed {
+            exit_code: execution.exit_code,
+            duration_ms: u64::try_from(execution.duration.as_millis()).unwrap_or(u64::MAX),
+        },
+        Err(ToolExecutionError::Refused(reason)) => OutcomeStatus::Refused(reason.clone()),
+        Err(error) => OutcomeStatus::Failed(error.to_string()),
+    }
+}
+
+/// Whole-run outcome tallies.
+#[derive(Default, Clone, Copy)]
+struct RunCounts {
+    tools: usize,
+    completed: usize,
+    failed: usize,
+    refused: usize,
+}
+
+/// Tallies every outcome across all stages by terminal status.
+fn run_counts(report: &EngagementReport) -> RunCounts {
+    let mut counts = RunCounts::default();
+    for outcome in report.all_outcomes() {
+        counts.tools += 1;
+        match &outcome.result {
+            Ok(_) => counts.completed += 1,
+            Err(ToolExecutionError::Refused(_)) => counts.refused += 1,
+            Err(_) => counts.failed += 1,
+        }
+    }
+    counts
+}
+
+/// Sanitizes a value for a single Markdown table cell: no pipes, no newlines.
+fn md_cell(value: &str) -> String {
+    value.replace('|', "\\|").replace(['\n', '\r'], " ")
+}
+
+/// Renders the human-facing Markdown **engagement deliverable**: run summary,
+/// discovery inventory, per-stage execution timeline, and a findings overview.
+#[must_use]
+pub fn render_engagement_markdown(deliverable: &EngagementDeliverable) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "# Security Engagement Deliverable");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "- **Engagement:** {}", deliverable.engagement_id);
+    let _ = writeln!(
+        out,
+        "- **Generated:** {}",
+        format_utc(deliverable.generated_at_epoch)
+    );
+    let _ = writeln!(out, "- **Tool:** {TOOL_NAME} {}", env!("CARGO_PKG_VERSION"));
+    let _ = writeln!(out);
+
+    render_run_summary_section(&mut out, deliverable);
+    render_discovery_section(&mut out, &deliverable.report.context);
+    render_timeline_section(&mut out, deliverable.report);
+    render_findings_overview_section(&mut out, deliverable.findings);
+    out
+}
+
+/// Appends the run-summary bullet list.
+fn render_run_summary_section(out: &mut String, deliverable: &EngagementDeliverable) {
+    let counts = run_counts(deliverable.report);
+    let discovery = &deliverable.report.context;
+    let rollup = SeverityRollup::of(deliverable.findings);
+    let _ = writeln!(out, "## Run Summary");
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "- **Stages executed:** {}",
+        deliverable.report.stages.len()
+    );
+    let _ = writeln!(
+        out,
+        "- **Tools executed:** {} ({} succeeded, {} failed, {} refused)",
+        counts.tools, counts.completed, counts.failed, counts.refused,
+    );
+    let _ = writeln!(
+        out,
+        "- **Follow-up steps added by expansion:** {}",
+        deliverable.report.expansion_added
+    );
+    let _ = writeln!(
+        out,
+        "- **Assets discovered:** {} host(s), {} service(s), {} endpoint(s)",
+        discovery.hosts().len(),
+        discovery.services().len(),
+        discovery.endpoints().len(),
+    );
+    let _ = writeln!(
+        out,
+        "- **Findings:** {} total ({} critical, {} high, {} medium, {} low, {} informational)",
+        rollup.total(),
+        rollup.critical,
+        rollup.high,
+        rollup.medium,
+        rollup.low,
+        rollup.informational,
+    );
+    let _ = writeln!(out);
+}
+
+/// Appends the discovery inventory: hosts, open services, and web endpoints.
+fn render_discovery_section(out: &mut String, context: &EngagementContext) {
+    let _ = writeln!(out, "## Discovery");
+    let _ = writeln!(out);
+
+    let _ = writeln!(out, "### Hosts ({})", context.hosts().len());
+    let _ = writeln!(out);
+    if context.hosts().is_empty() {
+        let _ = writeln!(out, "_No hosts discovered._");
+    } else {
+        let _ = writeln!(out, "| Address | Hostname |");
+        let _ = writeln!(out, "|---|---|");
+        for host in context.hosts() {
+            let hostname = host.hostname.as_deref().unwrap_or("—");
+            let _ = writeln!(
+                out,
+                "| `{}` | {} |",
+                md_cell(&host.address),
+                md_cell(hostname)
+            );
+        }
+    }
+    let _ = writeln!(out);
+
+    let _ = writeln!(out, "### Open Services ({})", context.services().len());
+    let _ = writeln!(out);
+    if context.services().is_empty() {
+        let _ = writeln!(out, "_No services discovered._");
+    } else {
+        let _ = writeln!(out, "| Host | Port | Protocol | Service |");
+        let _ = writeln!(out, "|---|---|---|---|");
+        for service in context.services() {
+            let name = service.service.as_deref().unwrap_or("—");
+            let _ = writeln!(
+                out,
+                "| `{}` | {} | {} | {} |",
+                md_cell(&service.host),
+                service.port,
+                md_cell(&service.protocol),
+                md_cell(name),
+            );
+        }
+    }
+    let _ = writeln!(out);
+
+    let _ = writeln!(out, "### Web Endpoints ({})", context.endpoints().len());
+    let _ = writeln!(out);
+    if context.endpoints().is_empty() {
+        let _ = writeln!(out, "_No endpoints discovered._");
+    } else {
+        for endpoint in context.endpoints() {
+            let _ = writeln!(out, "- `{}`", md_cell(&endpoint.url));
+        }
+    }
+    let _ = writeln!(out);
+}
+
+/// Renders one outcome's status as a Markdown table cell.
+fn status_cell(status: &OutcomeStatus) -> String {
+    match status {
+        OutcomeStatus::Completed {
+            exit_code,
+            duration_ms,
+        } => {
+            let exit = exit_code.map_or_else(|| "signal".to_string(), |code| code.to_string());
+            format!("ok (exit {exit}, {duration_ms} ms)")
+        }
+        OutcomeStatus::Failed(error) => format!("failed: {}", md_cell(error)),
+        OutcomeStatus::Refused(reason) => format!("refused: {}", md_cell(reason)),
+    }
+}
+
+/// Appends the per-stage execution timeline table.
+fn render_timeline_section(out: &mut String, report: &EngagementReport) {
+    let _ = writeln!(out, "## Execution Timeline");
+    let _ = writeln!(out);
+    if report.stages.iter().all(|stage| stage.outcomes.is_empty()) {
+        let _ = writeln!(out, "_No tools were executed._");
+        let _ = writeln!(out);
+        return;
+    }
+    let _ = writeln!(out, "| Stage | Tool | Target | Result |");
+    let _ = writeln!(out, "|---|---|---|---|");
+    for stage in &report.stages {
+        let class = format!("{:?}", stage.class);
+        for outcome in &stage.outcomes {
+            let _ = writeln!(
+                out,
+                "| {} | {} | `{}` | {} |",
+                md_cell(&class),
+                md_cell(&outcome.tool),
+                md_cell(&outcome.target_id),
+                status_cell(&outcome_status(outcome)),
+            );
+        }
+    }
+    let _ = writeln!(out);
+}
+
+/// Appends the findings overview: the severity rollup and the ranked findings.
+fn render_findings_overview_section(out: &mut String, findings: &[Finding]) {
+    let rollup = SeverityRollup::of(findings);
+    let ordered = ranked(findings);
+    let _ = writeln!(out, "## Findings");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "| Severity | Count |");
+    let _ = writeln!(out, "|---|---|");
+    let _ = writeln!(out, "| Critical | {} |", rollup.critical);
+    let _ = writeln!(out, "| High | {} |", rollup.high);
+    let _ = writeln!(out, "| Medium | {} |", rollup.medium);
+    let _ = writeln!(out, "| Low | {} |", rollup.low);
+    let _ = writeln!(out, "| Informational | {} |", rollup.informational);
+    let _ = writeln!(out, "| **Total** | **{}** |", rollup.total());
+    let _ = writeln!(out);
+
+    if ordered.is_empty() {
+        let _ = writeln!(out, "_No findings were reported for this engagement._");
+        let _ = writeln!(out);
+        return;
+    }
+    let _ = writeln!(out, "| # | Title | Severity | Target | Risk |");
+    let _ = writeln!(out, "|---|---|---|---|---|");
+    for (index, finding) in ordered.iter().enumerate() {
+        let _ = writeln!(
+            out,
+            "| {} | {} | {} | `{}` | {:.1} |",
+            index + 1,
+            md_cell(&finding.title),
+            finding.severity,
+            md_cell(&finding.target_id),
+            finding.normalized_risk_score,
+        );
+    }
+    let _ = writeln!(out);
+}
+
+/// Renders the machine-readable JSON **engagement deliverable**: run summary,
+/// discovery inventory, execution timeline, and a findings summary.
+#[must_use]
+pub fn render_engagement_json(deliverable: &EngagementDeliverable) -> String {
+    let report = deliverable.report;
+    let counts = run_counts(report);
+    let discovery = &report.context;
+    let rollup = SeverityRollup::of(deliverable.findings);
+
+    let root = Json::Obj(vec![
+        ("engagement_id", Json::str(deliverable.engagement_id)),
+        (
+            "generated_at",
+            Json::str(&format_utc(deliverable.generated_at_epoch)),
+        ),
+        ("tool", Json::str(TOOL_NAME)),
+        (
+            "summary",
+            Json::Obj(vec![
+                ("stages", json_usize(report.stages.len())),
+                ("tools_executed", json_usize(counts.tools)),
+                ("completed", json_usize(counts.completed)),
+                ("failed", json_usize(counts.failed)),
+                ("refused", json_usize(counts.refused)),
+                ("expansion_added", json_usize(report.expansion_added)),
+                ("hosts", json_usize(discovery.hosts().len())),
+                ("services", json_usize(discovery.services().len())),
+                ("endpoints", json_usize(discovery.endpoints().len())),
+                ("findings_total", json_usize(rollup.total())),
+                ("findings_critical", json_usize(rollup.critical)),
+                ("findings_high", json_usize(rollup.high)),
+                ("findings_medium", json_usize(rollup.medium)),
+                ("findings_low", json_usize(rollup.low)),
+                ("findings_informational", json_usize(rollup.informational)),
+            ]),
+        ),
+        ("discovery", discovery_json(discovery)),
+        ("timeline", timeline_json(report)),
+        ("findings", findings_json(deliverable.findings)),
+    ]);
+
+    let mut out = root.render();
+    out.push('\n');
+    out
+}
+
+/// Wraps a `usize` as a JSON integer, saturating on overflow.
+fn json_usize(value: usize) -> Json {
+    Json::Int(i64::try_from(value).unwrap_or(i64::MAX))
+}
+
+/// Builds the `discovery` object of the JSON deliverable.
+fn discovery_json(context: &EngagementContext) -> Json {
+    let hosts = context
+        .hosts()
+        .iter()
+        .map(|host| {
+            Json::Obj(vec![
+                ("address", Json::str(&host.address)),
+                (
+                    "hostname",
+                    host.hostname.as_deref().map_or(Json::Null, Json::str),
+                ),
+            ])
+        })
+        .collect();
+    let services = context
+        .services()
+        .iter()
+        .map(|service| {
+            Json::Obj(vec![
+                ("host", Json::str(&service.host)),
+                ("port", Json::Int(i64::from(service.port))),
+                ("protocol", Json::str(&service.protocol)),
+                (
+                    "service",
+                    service.service.as_deref().map_or(Json::Null, Json::str),
+                ),
+            ])
+        })
+        .collect();
+    let endpoints = context
+        .endpoints()
+        .iter()
+        .map(|endpoint| Json::str(&endpoint.url))
+        .collect();
+    Json::Obj(vec![
+        ("hosts", Json::Arr(hosts)),
+        ("services", Json::Arr(services)),
+        ("endpoints", Json::Arr(endpoints)),
+    ])
+}
+
+/// Builds the `timeline` array of the JSON deliverable, one object per outcome.
+fn timeline_json(report: &EngagementReport) -> Json {
+    let mut entries = Vec::new();
+    for stage in &report.stages {
+        let class = format!("{:?}", stage.class);
+        for outcome in &stage.outcomes {
+            let mut fields = vec![
+                ("stage", Json::str(&class)),
+                ("tool", Json::str(&outcome.tool)),
+                ("target", Json::str(&outcome.target_id)),
+            ];
+            match outcome_status(outcome) {
+                OutcomeStatus::Completed {
+                    exit_code,
+                    duration_ms,
+                } => {
+                    fields.push(("status", Json::str("completed")));
+                    fields.push((
+                        "exit_code",
+                        exit_code.map_or(Json::Null, |code| Json::Int(i64::from(code))),
+                    ));
+                    fields.push((
+                        "duration_ms",
+                        Json::Int(i64::try_from(duration_ms).unwrap_or(i64::MAX)),
+                    ));
+                }
+                OutcomeStatus::Failed(error) => {
+                    fields.push(("status", Json::str("failed")));
+                    fields.push(("error", Json::Str(error)));
+                }
+                OutcomeStatus::Refused(reason) => {
+                    fields.push(("status", Json::str("refused")));
+                    fields.push(("reason", Json::Str(reason)));
+                }
+            }
+            entries.push(Json::Obj(fields));
+        }
+    }
+    Json::Arr(entries)
+}
+
+/// Builds the ranked `findings` array of the JSON deliverable.
+fn findings_json(findings: &[Finding]) -> Json {
+    let entries = ranked(findings)
+        .iter()
+        .map(|finding| {
+            Json::Obj(vec![
+                ("finding_id", Json::str(&finding.finding_id)),
+                ("title", Json::str(&finding.title)),
+                ("target", Json::str(&finding.target_id)),
+                ("severity", Json::str(&finding.severity.to_string())),
+                (
+                    "confidence",
+                    Json::Int(i64::from(finding.confidence_percent)),
+                ),
+                (
+                    "risk_score",
+                    Json::str(&format!("{:.1}", finding.normalized_risk_score)),
+                ),
+                ("source_tool", Json::str(&finding.source_tool)),
+            ])
+        })
+        .collect();
+    Json::Arr(entries)
+}
+
 /// Formats Unix epoch seconds as an ISO-8601 UTC timestamp, without a date
 /// dependency. Uses the standard civil-from-days algorithm; valid for all
 /// dates at or after the Unix epoch.
@@ -727,5 +1160,171 @@ mod tests {
         assert!(md.contains("No findings were reported"));
         let sarif = render_sarif(&[]);
         assert!(crate::json::parse(&sarif).is_some());
+    }
+
+    fn sample_engagement_report() -> EngagementReport {
+        use crate::engagement_context::{Host, Service};
+        use crate::execution::{TaskExecutionOutcome, ToolExecutionReport};
+        use crate::pipeline::StageOutcome;
+        use crate::registry::ExecutionClass;
+        use std::time::Duration;
+
+        let mut context = EngagementContext::new();
+        context.record_host(Host {
+            address: "10.0.0.5".to_string(),
+            hostname: Some("web-01".to_string()),
+        });
+        context.record_service(Service {
+            host: "10.0.0.5".to_string(),
+            port: 80,
+            protocol: "tcp".to_string(),
+            service: Some("http".to_string()),
+        });
+
+        let completed = TaskExecutionOutcome {
+            target_id: "10.0.0.5".to_string(),
+            tool: "nmap".to_string(),
+            result: Ok(ToolExecutionReport {
+                tool: "nmap".to_string(),
+                arguments: Vec::new(),
+                exit_code: Some(0),
+                stdout: String::new(),
+                stderr: String::new(),
+                duration: Duration::from_millis(12),
+            }),
+        };
+        let refused = TaskExecutionOutcome {
+            target_id: "10.0.0.5".to_string(),
+            tool: "sqlmap".to_string(),
+            result: Err(ToolExecutionError::Refused(
+                "tool not authorized".to_string(),
+            )),
+        };
+
+        EngagementReport {
+            context,
+            stages: vec![StageOutcome {
+                class: ExecutionClass::ActiveNetwork,
+                outcomes: vec![completed, refused],
+            }],
+            expansion_added: 1,
+        }
+    }
+
+    #[test]
+    fn engagement_markdown_has_all_sections_and_run_facts() {
+        let report = sample_engagement_report();
+        let findings = sample();
+        let deliverable = EngagementDeliverable {
+            engagement_id: "eng-9",
+            generated_at_epoch: 1_700_000_000,
+            report: &report,
+            findings: &findings,
+        };
+        let md = render_engagement_markdown(&deliverable);
+        assert!(md.contains("# Security Engagement Deliverable"));
+        assert!(md.contains("## Run Summary"));
+        assert!(md.contains("## Discovery"));
+        assert!(md.contains("## Execution Timeline"));
+        assert!(md.contains("## Findings"));
+        // Run facts: two tools, one ok, one refused; one expansion step.
+        assert!(md.contains("**Tools executed:** 2 (1 succeeded, 0 failed, 1 refused)"));
+        assert!(md.contains("**Follow-up steps added by expansion:** 1"));
+        // Discovery inventory is rendered.
+        assert!(md.contains("10.0.0.5"));
+        assert!(md.contains("web-01"));
+        assert!(md.contains("http"));
+        // Timeline classifies the refusal.
+        assert!(md.contains("refused: tool not authorized"));
+    }
+
+    #[test]
+    fn engagement_json_parses_and_carries_the_summary() {
+        let report = sample_engagement_report();
+        let findings = sample();
+        let deliverable = EngagementDeliverable {
+            engagement_id: "eng-9",
+            generated_at_epoch: 1_700_000_000,
+            report: &report,
+            findings: &findings,
+        };
+        let json = render_engagement_json(&deliverable);
+        let parsed = crate::json::parse(&json).expect("valid JSON");
+        assert_eq!(
+            parsed.get("engagement_id").and_then(|v| v.as_str()),
+            Some("eng-9")
+        );
+        let summary = parsed.get("summary").expect("summary");
+        assert_eq!(
+            summary
+                .get("tools_executed")
+                .and_then(crate::json::JsonValue::as_u64),
+            Some(2)
+        );
+        assert_eq!(
+            summary
+                .get("refused")
+                .and_then(crate::json::JsonValue::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            summary
+                .get("expansion_added")
+                .and_then(crate::json::JsonValue::as_u64),
+            Some(1)
+        );
+        // Discovery and timeline are present and non-empty.
+        let hosts = parsed
+            .get("discovery")
+            .and_then(|d| d.get("hosts"))
+            .and_then(|v| v.as_array())
+            .expect("hosts array");
+        assert_eq!(hosts.len(), 1);
+        let timeline = parsed
+            .get("timeline")
+            .and_then(|v| v.as_array())
+            .expect("timeline array");
+        assert_eq!(timeline.len(), 2);
+    }
+
+    #[test]
+    fn engagement_renderers_are_deterministic() {
+        let report = sample_engagement_report();
+        let findings = sample();
+        let deliverable = EngagementDeliverable {
+            engagement_id: "eng-9",
+            generated_at_epoch: 1_700_000_000,
+            report: &report,
+            findings: &findings,
+        };
+        assert_eq!(
+            render_engagement_markdown(&deliverable),
+            render_engagement_markdown(&deliverable),
+        );
+        assert_eq!(
+            render_engagement_json(&deliverable),
+            render_engagement_json(&deliverable),
+        );
+    }
+
+    #[test]
+    fn empty_engagement_deliverable_renders_cleanly() {
+        let report = EngagementReport {
+            context: EngagementContext::new(),
+            stages: Vec::new(),
+            expansion_added: 0,
+        };
+        let deliverable = EngagementDeliverable {
+            engagement_id: "eng-empty",
+            generated_at_epoch: 0,
+            report: &report,
+            findings: &[],
+        };
+        let md = render_engagement_markdown(&deliverable);
+        assert!(md.contains("_No tools were executed._"));
+        assert!(md.contains("_No hosts discovered._"));
+        assert!(md.contains("_No findings were reported for this engagement._"));
+        let json = render_engagement_json(&deliverable);
+        assert!(crate::json::parse(&json).is_some());
     }
 }
