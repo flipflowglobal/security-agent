@@ -1,1 +1,6 @@
 src/model_weights.bin binary
+
+# Shell scripts must keep LF endings — a CRLF shebang (`#!/usr/bin/env bash\r`)
+# fails to execute on Linux, which breaks the release/packaging path.
+*.sh text eol=lf
+sa text eol=lf

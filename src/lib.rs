@@ -1,9 +1,12 @@
+pub mod action_registry;
 pub mod advanced;
+pub mod agent;
 pub mod anomaly;
 pub mod arsenal;
 pub mod audit_db;
 pub mod audit_log;
 pub mod belief_propagation;
+pub mod build_info;
 pub mod builtin_tools;
 pub mod calibration;
 pub mod calibration_db;
@@ -58,8 +61,13 @@ pub mod tool_adapter;
 pub mod tool_gate;
 pub mod workflow;
 
+pub use action_registry::{ActionClass, ActionSpec, ArgKind};
 pub use advanced::{
     AttackPathEdge, AttackPathGraph, RetestSchedule, ThreatModelNode, propose_retest_schedule,
+};
+pub use agent::{
+    ActionCall, ActionExecutor, ActionOutcome, ActionStatus, AgentAuditContext, AgentPlanner,
+    AgentPolicy, AgentStep, AgentTranscript, agent_audit_records, run_agent,
 };
 pub use anomaly::{AnomalyFlag, DEFAULT_ANOMALY_THRESHOLD, scan_findings};
 pub use audit_log::{AuditLogError, append_audit_records, load_audit_records};
@@ -67,6 +75,7 @@ pub use belief_propagation::{
     NodeBelief, PropagationEdge, PropagationGraph, PropagationNode,
     from_targets_and_findings as propagate_from_targets_and_findings,
 };
+pub use build_info::BuildInfo;
 pub use builtin_tools::{
     AutopsyReport, BuiltInToolError, EmbeddedSignature, EvidenceFile, MemoryString,
     VolatilityReport, is_builtin_tool, run_autopsy, run_builtin_tool, run_volatility,

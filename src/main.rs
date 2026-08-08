@@ -35,6 +35,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some("--about" | "--version") => print_about(),
+        Some("--build-info") => build_info_command(&mut arguments),
         Some("--list-skills") => list_skills(&assets),
         Some("--show-skill") => show_skill(&assets, &mut arguments),
         Some("--list-tools") => list_tools(&assets),
@@ -55,6 +56,7 @@ fn main() -> ExitCode {
         Some("--llm-generate") => llm_generate_command(&mut arguments),
         Some("--llm-perplexity") => llm_perplexity_command(&mut arguments),
         Some("--ask") => ask_command(&assets, &mut arguments),
+        Some("--agent") => agent_command(&assets, &mut arguments),
         Some("--tui") => run_tui_command(&assets),
         Some("--hash-id") => hash_id_command(&mut arguments),
         Some("--password-strength") => password_strength_command(&mut arguments),
@@ -91,7 +93,7 @@ fn main() -> ExitCode {
 /// `security_agent::MISSION_STATEMENT` and `security_agent::ROADMAP_PHASES`,
 /// which are otherwise exported but shown by no command.
 fn print_about() -> ExitCode {
-    println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+    println!("{}", security_agent::BuildInfo::current().version_line());
     println!();
     println!("{}", security_agent::MISSION_STATEMENT);
     println!();
@@ -101,6 +103,33 @@ fn print_about() -> ExitCode {
         println!("{:<9} {}", phase.phase, phase.focus);
     }
     ExitCode::SUCCESS
+}
+
+/// `--build-info [--json]` — print the binary's build provenance (commit,
+/// build date, target, profile, compiler). With `--json`, emit a single
+/// machine-readable object line instead of the human block. A distributed
+/// binary is thereby self-describing: given only the executable, an operator
+/// can recover exactly what it was built from.
+fn build_info_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    let info = security_agent::BuildInfo::current();
+    match arguments.next().as_deref() {
+        None => {
+            print!("{}", info.render_plain());
+            ExitCode::SUCCESS
+        }
+        Some("--json") => {
+            if let Some(extra) = arguments.next() {
+                eprintln!("unexpected argument: {extra}");
+                return ExitCode::from(2);
+            }
+            println!("{}", info.render_json());
+            ExitCode::SUCCESS
+        }
+        Some(other) => {
+            eprintln!("unknown --build-info option: {other} (want --json)");
+            ExitCode::from(2)
+        }
+    }
 }
 
 /// `--guide [section]` — print the complete plain-language guide, or one
@@ -1810,6 +1839,253 @@ fn ask_anomaly(model: &security_agent::NeuralLanguageModel, text: Option<&str>) 
     ExitCode::SUCCESS
 }
 
+/// The parsed flags of an `--agent` invocation.
+struct AgentArgs {
+    goal: String,
+    dry_run: bool,
+    allow_network: bool,
+    follow_up: bool,
+    max_steps: usize,
+    audit_log_path: Option<String>,
+    audit_db_path: Option<String>,
+}
+
+/// Parses `--agent <goal words...>` with optional flags interspersed:
+/// `--dry-run` (preview only, execute nothing), `--allow-network` (forward the
+/// live-network opt-in to planned commands), `--follow-up`, `--max-steps <N>`,
+/// `--audit-log <path>`, `--audit-db <path>`. Every non-flag word is joined
+/// into the goal.
+fn parse_agent_args(arguments: &mut impl Iterator<Item = String>) -> Result<AgentArgs, String> {
+    let mut args = AgentArgs {
+        goal: String::new(),
+        dry_run: false,
+        allow_network: false,
+        follow_up: false,
+        max_steps: 8,
+        audit_log_path: None,
+        audit_db_path: None,
+    };
+    let mut goal_words: Vec<String> = Vec::new();
+    while let Some(word) = arguments.next() {
+        match word.as_str() {
+            "--dry-run" => args.dry_run = true,
+            "--allow-network" => args.allow_network = true,
+            "--follow-up" => args.follow_up = true,
+            "--max-steps" => {
+                let raw = arguments.next().ok_or("missing value after --max-steps")?;
+                args.max_steps = raw
+                    .parse::<usize>()
+                    .map_err(|_| format!("--max-steps expects an integer, got '{raw}'"))?
+                    .max(1);
+            }
+            "--audit-log" => {
+                args.audit_log_path =
+                    Some(arguments.next().ok_or("missing value after --audit-log")?);
+            }
+            "--audit-db" => {
+                args.audit_db_path =
+                    Some(arguments.next().ok_or("missing value after --audit-db")?);
+            }
+            other => goal_words.push(other.to_string()),
+        }
+    }
+    args.goal = goal_words.join(" ");
+    if args.goal.trim().is_empty() {
+        return Err("missing goal for --agent".to_string());
+    }
+    Ok(args)
+}
+
+/// An [`security_agent::ActionExecutor`] that runs each planned action by
+/// invoking this same binary as a child process. Re-invocation is what makes
+/// the guardrails live where they belong — in the tools: the child command
+/// enforces its own scope, the active-tool gate, the offline-by-default
+/// network policy, and its argument checks, so the agent never needs a second
+/// gate of its own. The child's stdout is captured so the loop can observe it.
+/// Live-network actions get `--allow-network` appended only when the operator
+/// passed that opt-in through to the agent.
+struct CliExecutor {
+    allow_network: bool,
+}
+
+impl security_agent::ActionExecutor for CliExecutor {
+    fn execute(&mut self, call: &security_agent::ActionCall) -> security_agent::ActionOutcome {
+        let exe = match std::env::current_exe() {
+            Ok(path) => path,
+            Err(error) => {
+                return security_agent::ActionOutcome::failed(format!(
+                    "cannot locate the running binary: {error}"
+                ));
+            }
+        };
+        let mut command = std::process::Command::new(exe);
+        command.arg(call.command);
+        if let Some(arg) = &call.arg {
+            command.arg(arg);
+        }
+        if call.network && self.allow_network {
+            command.arg("--allow-network");
+        }
+        match command.output() {
+            Ok(output) => {
+                let text = String::from_utf8_lossy(&output.stdout).into_owned();
+                print!("{text}");
+                let code = output.status.code().unwrap_or(-1);
+                if code == 0 {
+                    security_agent::ActionOutcome::ran(code, text)
+                } else {
+                    security_agent::ActionOutcome {
+                        status: security_agent::ActionStatus::Failed(format!("exited with {code}")),
+                        output: text,
+                    }
+                }
+            }
+            Err(error) => security_agent::ActionOutcome::failed(format!(
+                "failed to run {}: {error}",
+                call.command
+            )),
+        }
+    }
+}
+
+/// `--agent "<goal>" [--dry-run] [--allow-network] [--follow-up] [--max-steps N]
+/// [--audit-log <path>] [--audit-db <path>]` — let the built-in model plan a
+/// sequence of the agent's own commands from a plain-English goal and run them.
+///
+/// The plan is always printed first, then executed as instructed: the agent
+/// does not second-guess the tools, whose own guardrails (engagement scope, the
+/// active-tool gate, the offline-by-default network policy, config approvals)
+/// decide what each command may actually do. `--dry-run` previews without
+/// executing; `--allow-network` forwards the live-network opt-in to the planned
+/// commands (they otherwise stay offline, exactly as the CLI does). Every step
+/// is recorded, and `--audit-log`/`--audit-db` persist the run's audit trail.
+/// The planner is grounded in the action registry, so the model can only ever
+/// schedule real commands.
+fn agent_command(
+    assets: &LocalAgentAssets,
+    arguments: &mut impl Iterator<Item = String>,
+) -> ExitCode {
+    let args = match parse_agent_args(arguments) {
+        Ok(args) => args,
+        Err(message) => {
+            eprintln!("{message}");
+            return ExitCode::from(2);
+        }
+    };
+
+    let model = security_agent::NeuralLanguageModel::bundled();
+    let planner = security_agent::AgentPlanner::new(assets, &model);
+    let policy = security_agent::AgentPolicy {
+        dry_run: args.dry_run,
+        allow_network: args.allow_network,
+        max_steps: args.max_steps,
+        follow_up_from_output: args.follow_up,
+    };
+
+    // Preview the grounded plan before running anything.
+    let plan = planner.plan(&args.goal);
+    if plan.is_empty() {
+        println!(
+            "No in-scope action matched that goal. I plan only from my own command set — \
+             try 'list tools', or name a config/log path."
+        );
+        return ExitCode::SUCCESS;
+    }
+    println!("Plan ({} step(s)):", plan.len());
+    for (index, call) in plan.iter().enumerate() {
+        let arg = call.arg.as_deref().unwrap_or("-");
+        let disposition = if policy.dry_run {
+            "preview only"
+        } else if call.network && !args.allow_network {
+            "will run (offline; add --allow-network for live steps)"
+        } else {
+            "will run"
+        };
+        println!(
+            "  {}. {} (arg: {arg}, {}, {}%) — {disposition}",
+            index + 1,
+            call.command,
+            call.class.label(),
+            call.confidence,
+        );
+    }
+    println!();
+
+    let mut executor = CliExecutor {
+        allow_network: args.allow_network,
+    };
+    let transcript = security_agent::run_agent(&args.goal, &planner, &mut executor, policy);
+
+    print_agent_transcript(&transcript);
+    if let Err(message) = persist_agent_audit(&transcript, &args) {
+        eprintln!("{message}");
+        return ExitCode::from(1);
+    }
+    ExitCode::SUCCESS
+}
+
+/// Prints the outcome of each handled step and a one-line run summary.
+fn print_agent_transcript(transcript: &security_agent::AgentTranscript) {
+    use security_agent::ActionStatus;
+    println!("Run:");
+    for (index, step) in transcript.steps.iter().enumerate() {
+        let detail = match &step.outcome.status {
+            ActionStatus::Ran { exit_code } => format!("ran (exit {exit_code})"),
+            ActionStatus::Refused(reason) => format!("refused: {reason}"),
+            ActionStatus::Failed(reason) => format!("failed: {reason}"),
+            ActionStatus::Skipped(reason) => format!("skipped: {reason}"),
+        };
+        println!("  {}. {} — {detail}", index + 1, step.call.command);
+    }
+    println!(
+        "\n{} step(s) handled, {} ran.{}",
+        transcript.steps.len(),
+        transcript.ran_count(),
+        if transcript.budget_exhausted {
+            " (step budget reached)"
+        } else {
+            ""
+        }
+    );
+}
+
+/// Persists the run's audit trail when `--audit-log`/`--audit-db` was given.
+fn persist_agent_audit(
+    transcript: &security_agent::AgentTranscript,
+    args: &AgentArgs,
+) -> Result<(), String> {
+    if args.audit_log_path.is_none() && args.audit_db_path.is_none() {
+        return Ok(());
+    }
+    let run_id = format!("agent-{}", current_epoch_seconds());
+    let records = security_agent::agent_audit_records(
+        &security_agent::AgentAuditContext {
+            run_id: &run_id,
+            actor: "agent",
+            role: security_agent::Role::SecurityEngineer,
+            timestamp_epoch_seconds: current_epoch_seconds(),
+        },
+        transcript,
+    );
+    if let Some(path) = &args.audit_log_path {
+        security_agent::append_audit_records(Path::new(path), &records)
+            .map_err(|error| format!("failed to write audit log: {error}"))?;
+        eprintln!(
+            "audit trail: {} record(s) appended to {path}",
+            records.len()
+        );
+    }
+    if let Some(path) = &args.audit_db_path {
+        security_agent::audit_db::append_audit_records(Path::new(path), &records)
+            .map_err(|error| format!("failed to write audit database: {error}"))?;
+        eprintln!(
+            "audit trail: {} record(s) appended to {path}",
+            records.len()
+        );
+    }
+    Ok(())
+}
+
 /// Interactive terminal UI (`--tui`): a menu- and chat-bar-driven REPL over
 /// the exact same command functions the plain CLI dispatches to, so behavior
 /// is identical either way — no duplicated business logic. Any input that
@@ -2288,6 +2564,16 @@ const CAPABILITY_ROWS: &[(&str, &str, &str)] = &[
         "About / mission",
         "--about",
         "\"who are you\" / \"what is your mission\"",
+    ),
+    (
+        "Build provenance",
+        "--build-info",
+        "commit, build date, target, compiler (add --json)",
+    ),
+    (
+        "Agent mode",
+        "--agent \"<goal>\"",
+        "plan & run my own commands from a goal (--dry-run to preview)",
     ),
     ("List tools", "--list-tools", "\"what tools do you have\""),
     (

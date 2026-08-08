@@ -50,14 +50,51 @@ If any of those print output without an error, you're ready to go.
 | Command | What it does | Try it |
 |---|---|---|
 | `--offline-status` | Health check: tools, skills, coverage. Also the default with no args. | `security-agent --offline-status` |
-| `--about` / `--version` | Shows identity, version, and roadmap. | `security-agent --about` |
+| `--about` / `--version` | Shows identity, version, and roadmap (leads with the build stamp). | `security-agent --about` |
+| `--build-info [--json]` | Prints build provenance: commit, build date, target, profile, compiler. `--json` for one machine-readable line. | `security-agent --build-info` |
 | `--guide [section]` | The full plain-language guide; add a section name to focus. | `security-agent --guide reverse-shell` |
 | `--tool-help <cmd>` | Focused help for a single command. | `security-agent --tool-help --gen-shell` |
 | `--list-tools` | Lists cataloged tools and whether each is installed / built-in / missing. | `security-agent --list-tools` |
 | `--list-skills` | Lists the step-by-step playbooks compiled into the binary. | `security-agent --list-skills` |
 | `--show-skill <name>` | Prints one skill's full playbook. | `security-agent --show-skill nmap` |
-| `--ask "<text>"` | Routes a plain-English request to the right read-only action. | `security-agent --ask "what tools do you have"` |
+| `--ask "<text>"` | Routes a plain-English request to a single read-only action. | `security-agent --ask "what tools do you have"` |
+| `--agent "<goal>"` | Plans **and runs** a sequence of the agent's own commands from a goal (see below). | `security-agent --agent "list tools then show build info"` |
 | `--tui` | Interactive terminal menu over every command. | `security-agent --tui` |
+
+### Agent mode: let the model drive 🤖
+
+`--ask` maps one sentence to one read-only action. `--agent` goes further: the
+built-in model plans an **ordered sequence** of the agent's own commands from a
+plain-English goal and **runs them** — a grounded plan→execute loop.
+
+```sh
+# Plan and run (the plan is always printed first):
+security-agent --agent "run the engagement eng.conf then write a report"
+
+# Preview only, execute nothing:
+security-agent --agent "run the engagement eng.conf" --dry-run
+
+# Forward the live-network opt-in to the planned commands:
+security-agent --agent "run the engagement eng.conf" --allow-network
+```
+
+| Flag | Meaning |
+|---|---|
+| *(none)* | **Runs the plan.** Prints it first, then executes each step as instructed. |
+| `--dry-run` | Preview only — plan and print, execute nothing. |
+| `--allow-network` | Forward the `--allow-network` opt-in to planned commands that do live I/O (they otherwise stay offline, exactly as the CLI does). |
+| `--max-steps <N>` | Cap how many actions the run may execute (default 8). |
+| `--audit-log <path>` / `--audit-db <path>` | Record every step (ran / refused / skipped) as an audit trail. |
+| `--follow-up` | Experimental: also plan follow-ups from each step's *output* (off by default — ordinary command output is data, not instructions). |
+
+**The guardrails live in the tools.** The agent doesn't second-guess what it
+runs: each planned command is invoked as the real command, whose own guards —
+engagement **scope**, the **active-tool gate**, the **offline-by-default**
+network policy, config **approvals** — decide what actually happens. The model's
+job is to execute the tools as instructed; the tools decide what's permitted.
+And the planner is **grounded** in the action registry, so the model can only
+ever schedule real commands (it never invents one). The plan is always printed
+first, and the whole run is auditable.
 
 ## 2. Credential & password helpers 🔑
 

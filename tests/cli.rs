@@ -76,6 +76,111 @@ fn about_prints_mission_and_roadmap() {
 }
 
 #[test]
+fn build_info_reports_provenance() {
+    let output = run(&["--build-info"]);
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("security-agent"));
+    for label in [
+        "commit:",
+        "commit date:",
+        "built:",
+        "target:",
+        "profile:",
+        "rustc:",
+    ] {
+        assert!(text.contains(label), "missing provenance label: {label}");
+    }
+}
+
+#[test]
+fn build_info_json_is_a_single_parseable_object() {
+    let output = run(&["--build-info", "--json"]);
+    assert!(output.status.success());
+    let text = stdout(&output);
+    let line = text.trim();
+    // One line, one JSON object, carrying the identifying fields.
+    assert_eq!(line.lines().count(), 1, "must be a single line");
+    assert!(line.starts_with('{') && line.ends_with('}'));
+    assert!(line.contains("\"name\":\"security-agent\""));
+    assert!(line.contains("\"build_target\":"));
+    assert!(line.contains("\"git_commit\":"));
+}
+
+#[test]
+fn build_info_rejects_an_unknown_option() {
+    let output = run(&["--build-info", "--bogus"]);
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("unknown --build-info option"));
+}
+
+#[test]
+fn about_version_line_carries_commit_and_target() {
+    // `--about` leads with the one-line provenance stamp, so a copied binary
+    // announces exactly what it is.
+    let output = run(&["--about"]);
+    assert!(output.status.success());
+    let first = stdout(&output);
+    let first_line = first.lines().next().unwrap_or_default();
+    assert!(first_line.contains("security-agent"));
+    // "name version (commit date, target)" — the parenthesized provenance.
+    assert!(first_line.contains('(') && first_line.contains(')'));
+}
+
+#[test]
+fn agent_dry_run_previews_without_executing() {
+    // --dry-run shows the plan and executes nothing (every step previewed).
+    let output = run(&["--agent", "run the engagement engagement.conf", "--dry-run"]);
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("Plan"));
+    assert!(text.contains("--run-engagement"));
+    assert!(text.contains("preview only"));
+    // Nothing ran.
+    assert!(text.contains("0 ran"));
+}
+
+#[test]
+fn agent_executes_the_plan_by_default() {
+    // Without --dry-run the agent runs the plan as instructed; the invoked
+    // command's own guardrails (here, offline planning) decide the rest.
+    let output = run(&[
+        "--agent",
+        "plan a scan from examples/engagement.example.conf",
+    ]);
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("--plan-scan"));
+    // The planned command actually ran.
+    assert!(text.contains("ran (exit 0)"));
+}
+
+#[test]
+fn agent_runs_a_read_only_multi_step_goal() {
+    let output = run(&["--agent", "list your tools and list your skills"]);
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("--list-tools"));
+    assert!(text.contains("--list-skills"));
+    // Both read-only steps actually ran.
+    assert!(text.contains("2 ran") || text.contains("2 step(s) handled, 2 ran"));
+}
+
+#[test]
+fn agent_declines_an_out_of_scope_goal() {
+    let output = run(&["--agent", "book me a flight to paris"]);
+    assert!(output.status.success());
+    assert!(stdout(&output).contains("No in-scope action matched"));
+}
+
+#[test]
+fn agent_requires_a_goal() {
+    let output = run(&["--agent"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stderr(&output).contains("missing goal"));
+}
+
+#[test]
 fn list_skills_lists_the_general_skill() {
     let output = run(&["--list-skills"]);
     assert!(output.status.success());

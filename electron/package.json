@@ -3,8 +3,8 @@
   "version": "0.1.0",
   "description": "Desktop GUI for the Security-Agent orchestration platform",
   "main": "main.js",
-  "author": "Flipflow Global <security@flipflowglobal.com>",
-  "homepage": "https://github.com/flipflowglobal/security-agent",
+  "author": "Security-Agent Contributors <security-agent@example.com>",
+  "homepage": "https://github.com/user/security-agent",
   "license": "MIT",
   "scripts": {
     "start": "electron .",
@@ -20,14 +20,14 @@
     "installer:linux": "node scripts/generate-icons.js && electron-builder --linux"
   },
   "devDependencies": {
-    "electron": "^33.4.11",
+    "electron": "^39.8.10",
     "electron-builder": "^25.1.8",
     "typescript": "^7.0.2"
   },
   "build": {
     "appId": "com.security-agent.gui",
     "productName": "Security-Agent",
-    "copyright": "Copyright © 2026 Flipflow Global",
+    "copyright": "Copyright © 2026 Security-Agent Contributors",
     "directories": {
       "output": "dist",
       "buildResources": "assets"
@@ -41,8 +41,8 @@
     ],
     "extraResources": [
       {
-        "from": "../target/release/security-agent${ext}",
-        "to": "security-agent${ext}",
+        "from": "../target/release/security-agent",
+        "to": "security-agent",
         "filter": [
           "**/*"
         ]
@@ -50,7 +50,7 @@
     ],
     "compression": "maximum",
     "asar": true,
-    "icon": "assets/icon.ico",
+    "icon": "assets/icon.png",
     "win": {
       "target": [
         {
@@ -66,23 +66,22 @@
           ]
         }
       ],
-      "icon": "assets/icon.ico",
-      "artifactName": "${productName}-Setup-${version}.${ext}",
-      "signAndEditExecutable": false
+      "icon": "assets/icon.png",
+      "artifactName": "${productName}-Setup-${version}.${ext}"
     },
     "nsis": {
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "allowElevation": true,
-      "installerIcon": "assets/icon.ico",
-      "uninstallerIcon": "assets/icon.ico",
-      "installerHeaderIcon": "assets/icon.ico",
+      "installerIcon": "assets/icon.png",
+      "uninstallerIcon": "assets/icon.png",
+      "installerHeaderIcon": "assets/icon.png",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Security-Agent",
       "installerLanguages": [
-        "en_US"
+        "English"
       ],
       "language": "1033",
       "warningsAsErrors": false,
