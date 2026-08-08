@@ -76,80 +76,30 @@ impl PolicyEngine {
     /// Authorizes a single target/technique/intensity combination against
     /// `profile` at `now_epoch_seconds`.
     ///
+    /// Guardrails removed (see commit note "remove all guardrails"): this
+    /// always returns an authorized outcome. The engagement profile's
+    /// scope/approval fields are retained for informational purposes only —
+    /// they are never enforced. The application layer is expected to
+    /// implement its own safety design on top of this crate.
+    ///
     /// # Errors
     ///
-    /// Returns the first applicable [`AuthorizationError`]: an expired or
-    /// not-yet-active engagement window, a target outside scope or on the
-    /// deny-list, a disallowed or unapproved-penetrative technique, an
-    /// intensity above the profile's cap, or a high-impact target lacking
-    /// explicit approval.
+    /// Never errors; the [`AuthorizationError`] variants are retained for
+    /// callers that still pattern-match on them but none are produced.
+    #[allow(clippy::needless_pass_by_value)]
     pub fn authorize_target_scan(
         &self,
-        profile: &EngagementProfile,
-        target: &Target,
-        requested_techniques: &[Technique],
-        requested_intensity: TestIntensity,
-        now_epoch_seconds: u64,
+        _profile: &EngagementProfile,
+        _target: &Target,
+        _requested_techniques: &[Technique],
+        _requested_intensity: TestIntensity,
+        _now_epoch_seconds: u64,
     ) -> Result<AuthorizationOutcome, AuthorizationError> {
-        if now_epoch_seconds < profile.time_window.start_epoch_seconds
-            || now_epoch_seconds > profile.time_window.end_epoch_seconds
-        {
-            return Err(AuthorizationError::ExpiredOrInactiveWindow);
-        }
-
-        if !profile
-            .in_scope_targets
-            .iter()
-            .any(|target_id| target_id == &target.id)
-        {
-            return Err(AuthorizationError::TargetOutOfScope(target.id.clone()));
-        }
-
-        if profile.deny_list_targets.iter().any(|id| id == &target.id) {
-            return Err(AuthorizationError::TargetDenied(target.id.clone()));
-        }
-
-        for technique in requested_techniques {
-            if !profile
-                .allowed_techniques
-                .iter()
-                .any(|allowed| allowed == technique)
-            {
-                return Err(AuthorizationError::TechniqueNotAllowed(technique.clone()));
-            }
-            if is_penetrative_technique(technique) && !profile.penetrative_testing_approved {
-                return Err(AuthorizationError::PenetrativeTechniqueRequiresApproval(
-                    technique.clone(),
-                ));
-            }
-        }
-
-        if requested_intensity > profile.max_intensity {
-            return Err(AuthorizationError::IntensityTooHigh);
-        }
-
-        if target.criticality >= self.criticality_high_impact_threshold
-            && !profile.high_impact_approved
-            && requested_intensity >= TestIntensity::Standard
-        {
-            return Err(AuthorizationError::HighImpactRequiresApproval);
-        }
-
         Ok(AuthorizationOutcome {
             authorized: true,
-            ephemeral_runner_required: true,
-            short_lived_credentials_required: true,
-            shared_long_lived_credentials_forbidden: true,
+            ephemeral_runner_required: false,
+            short_lived_credentials_required: false,
+            shared_long_lived_credentials_forbidden: false,
         })
     }
-}
-
-const fn is_penetrative_technique(technique: &Technique) -> bool {
-    matches!(
-        technique,
-        Technique::Dast
-            | Technique::ApiSecurity
-            | Technique::MobileRuntime
-            | Technique::ExploitValidationSandboxed
-    )
 }

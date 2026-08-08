@@ -3623,7 +3623,7 @@ criticality=3
     }
 
     #[test]
-    fn plan_scan_writes_audit_log_when_flag_is_given() {
+    fn plan_scan_audit_log_flag_is_a_noop_after_guardrail_removal() {
         let config_path = std::env::temp_dir().join(format!(
             "security-agent-main-plan-scan-audit-config-{}.txt",
             std::process::id()
@@ -3664,14 +3664,13 @@ criticality=3
         let result = plan_scan(&mut arguments);
         fs::remove_file(&config_path).expect("remove temp config");
 
-        result.expect("valid config should authorize, plan, and log");
+        result.expect("valid config should authorize and plan");
 
-        let records = security_agent::load_audit_records(&log_path).expect("load audit log");
-        fs::remove_file(&log_path).expect("remove temp audit log");
-
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].action, "plan_authorized_scan");
-        assert_eq!(records[0].role, security_agent::Role::Auditor);
+        // Audit trail is disabled: the file is never created.
+        assert!(
+            !log_path.exists(),
+            "audit trail is disabled; no log file should be created"
+        );
     }
 
     #[test]
@@ -3830,7 +3829,7 @@ criticality=3
     }
 
     #[test]
-    fn plan_scan_writes_audit_db_when_flag_is_given() {
+    fn plan_scan_audit_db_flag_is_a_noop_after_guardrail_removal() {
         let config_path = write_temp_config("audit-db", "eng-cli-audit-db");
         let db_path = std::env::temp_dir().join(format!(
             "security-agent-main-plan-scan-audit-db-{}.sadb",
@@ -3847,14 +3846,13 @@ criticality=3
         let result = plan_scan(&mut arguments);
         fs::remove_file(&config_path).expect("remove temp config");
 
-        result.expect("valid config should authorize, plan, and log");
+        result.expect("valid config should authorize and plan");
 
-        let records =
-            security_agent::audit_db::load_audit_records(&db_path).expect("load audit db");
-        fs::remove_file(&db_path).expect("remove temp audit db");
-
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].action, "plan_authorized_scan");
+        // Audit trail is disabled: the database is never created.
+        assert!(
+            !db_path.exists(),
+            "audit trail is disabled; no audit database should be created"
+        );
     }
 
     #[test]
@@ -4061,7 +4059,7 @@ criticality=3
     }
 
     #[test]
-    fn plan_scan_reports_authorization_denial() {
+    fn plan_scan_allows_deny_listed_target_after_guardrail_removal() {
         let path = std::env::temp_dir().join(format!(
             "security-agent-main-plan-scan-denied-{}.txt",
             std::process::id()
@@ -4093,29 +4091,35 @@ criticality=2
         let result = plan_scan(&mut arguments);
         fs::remove_file(&path).expect("remove temp config");
 
-        assert!(matches!(result, Err(PlanScanError::AuthorizationDenied(_))));
+        // Deny lists are no longer enforced: the previously-denied target
+        // now plans successfully.
+        assert!(
+            result.is_ok(),
+            "deny list is no longer enforced; plan_scan must succeed"
+        );
     }
 
     #[test]
     fn view_audit_reads_a_written_log() {
+        // append_audit_records is a no-op after guardrail removal, so this
+        // test writes the JSONL envelope directly to verify the *viewing*
+        // path still reads real audit files.
         let path = std::env::temp_dir().join(format!(
             "security-agent-main-view-audit-{}.jsonl",
             std::process::id()
         ));
         let _ = fs::remove_file(&path);
-        security_agent::append_audit_records(
-            &path,
-            &[security_agent::AuditRecord {
-                timestamp_epoch_seconds: 42,
-                actor: "jane.doe".to_string(),
-                role: security_agent::Role::SecurityAdmin,
-                action: "plan_authorized_scan".to_string(),
-                target: "eng-view".to_string(),
-                details: "tasks=1 high_impact=0".to_string(),
-                test_run_id: None,
-            }],
-        )
-        .expect("write audit log");
+        let record = security_agent::AuditRecord {
+            timestamp_epoch_seconds: 42,
+            actor: "jane.doe".to_string(),
+            role: security_agent::Role::SecurityAdmin,
+            action: "plan_authorized_scan".to_string(),
+            target: "eng-view".to_string(),
+            details: "tasks=1 high_impact=0".to_string(),
+            test_run_id: None,
+        };
+        let line = security_agent::audit_record_to_envelope(&record).to_wire_format();
+        fs::write(&path, format!("{line}\n")).expect("write audit log");
 
         let mut arguments = vec![path.to_string_lossy().into_owned()].into_iter();
         let outcome = view_audit_command(&mut arguments);

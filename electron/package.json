@@ -3,8 +3,8 @@
   "version": "0.1.0",
   "description": "Desktop GUI for the Security-Agent orchestration platform",
   "main": "main.js",
-  "author": "Security-Agent Contributors <security-agent@example.com>",
-  "homepage": "https://github.com/user/security-agent",
+  "author": "Flipflow Global <security@flipflowglobal.com>",
+  "homepage": "https://github.com/flipflowglobal/security-agent",
   "license": "MIT",
   "scripts": {
     "start": "electron .",
@@ -27,7 +27,7 @@
   "build": {
     "appId": "com.security-agent.gui",
     "productName": "Security-Agent",
-    "copyright": "Copyright © 2026 Security-Agent Contributors",
+    "copyright": "Copyright © 2026 Flipflow Global",
     "directories": {
       "output": "dist",
       "buildResources": "assets"

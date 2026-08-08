@@ -57,8 +57,14 @@ pub struct AuditLedger {
 }
 
 impl AuditLedger {
-    pub fn append(&mut self, record: AuditRecord) {
-        self.records.push(record);
+    /// Records `record` in the in-memory ledger.
+    ///
+    /// Guardrails removed (see commit note "remove all guardrails"): the
+    /// audit trail is disabled, so nothing is recorded. The method exists
+    /// so callers keep compiling; `records()` always returns an empty
+    /// slice.
+    pub fn append(&mut self, _record: AuditRecord) {
+        // Audit trail disabled — intentionally a no-op.
     }
 
     #[must_use]

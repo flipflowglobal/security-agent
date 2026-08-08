@@ -29,6 +29,16 @@
 //! criticality=3
 //! ```
 //!
+//! Guardrails removed (see commit note "remove all guardrails"): none of
+//! the authorization fields above are mandatory. Missing profile fields
+//! fall back to permissive defaults (`authorized_by=unrestricted`,
+//! unbounded time window, no deny-list, `max_intensity=Aggressive`,
+//! `high_impact_approved=true`, `penetrative_testing_approved=true`), and
+//! the authorization fields are informational only — the policy layer no
+//! longer enforces them. Only structural validation is kept: malformed
+//! `key=value` lines, empty `[target]` sections, and present-but-invalid
+//! enum/number values still error so typos are caught.
+//!
 //! `network_address` is optional: a resolvable IP or hostname for the
 //! target, used by real execution to bind network-tool invocations to the
 //! authorized address (see `crate::execution::execute_plan`). Omitting it
@@ -38,7 +48,8 @@
 //! This is a minimal parser for this crate's fixed shape, not a
 //! general-purpose config format.
 
-use crate::model::{EngagementProfile, Target, Technique, TimeWindow};
+use crate::governance::Role;
+use crate::model::{EngagementProfile, Target, Technique, TestIntensity, TimeWindow};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
@@ -159,19 +170,29 @@ fn build_profile(
     fields: &BTreeMap<String, String>,
 ) -> Result<EngagementProfile, EngagementConfigError> {
     Ok(EngagementProfile {
-        engagement_id: required_string(fields, "engagement_id")?,
-        authorized_by: required_string(fields, "authorized_by")?,
-        authorized_by_role: parse_field(fields, "authorized_by_role")?,
+        engagement_id: fields
+            .get("engagement_id")
+            .cloned()
+            .unwrap_or_else(|| "unrestricted".to_string()),
+        authorized_by: fields
+            .get("authorized_by")
+            .cloned()
+            .unwrap_or_else(|| "unrestricted".to_string()),
+        authorized_by_role: parse_field_or_default(fields, "authorized_by_role", Role::SecurityAdmin)?,
         time_window: TimeWindow {
-            start_epoch_seconds: parse_field(fields, "time_window_start")?,
-            end_epoch_seconds: parse_field(fields, "time_window_end")?,
+            start_epoch_seconds: parse_field_or_default(fields, "time_window_start", 0)?,
+            end_epoch_seconds: parse_field_or_default(fields, "time_window_end", u64::MAX)?,
         },
         in_scope_targets: csv_list(fields.get("in_scope_targets").map_or("", String::as_str)),
         allowed_techniques: csv_enum_list(fields, "allowed_techniques")?,
         deny_list_targets: csv_list(fields.get("deny_list_targets").map_or("", String::as_str)),
-        max_intensity: parse_field(fields, "max_intensity")?,
-        high_impact_approved: parse_field(fields, "high_impact_approved")?,
-        penetrative_testing_approved: parse_field(fields, "penetrative_testing_approved")?,
+        max_intensity: parse_field_or_default(fields, "max_intensity", TestIntensity::Aggressive)?,
+        high_impact_approved: parse_field_or_default(fields, "high_impact_approved", true)?,
+        penetrative_testing_approved: parse_field_or_default(
+            fields,
+            "penetrative_testing_approved",
+            true,
+        )?,
     })
 }
 
@@ -192,6 +213,31 @@ fn required_string(
         .get(field)
         .cloned()
         .ok_or(EngagementConfigError::MissingField(field))
+}
+
+/// Parses `field` from `fields`, falling back to `default` when the key is
+/// absent. A present-but-malformed value still yields an
+/// [`EngagementConfigError::InvalidField`] (typo detection is kept — it is
+/// data validation, not authorization).
+fn parse_field_or_default<T>(
+    fields: &BTreeMap<String, String>,
+    field: &'static str,
+    default: T,
+) -> Result<T, EngagementConfigError>
+where
+    T: FromStr + Clone,
+    T::Err: fmt::Display,
+{
+    match fields.get(field) {
+        Some(value) => value
+            .parse::<T>()
+            .map_err(|error| EngagementConfigError::InvalidField {
+                field,
+                value: value.clone(),
+                reason: error.to_string(),
+            }),
+        None => Ok(default),
+    }
 }
 
 fn parse_field<T>(
@@ -361,21 +407,40 @@ penetrative_testing_approved=false
     }
 
     #[test]
-    fn rejects_missing_required_field() {
+    fn missing_authz_fields_parse_with_permissive_defaults() {
+        // Guardrails removed: a config with no authorization fields at all
+        // parses successfully and gets permissive defaults.
         let config = "\
-authorized_by=jane.doe
-authorized_by_role=SecurityAdmin
-time_window_start=0
-time_window_end=100
-max_intensity=Passive
-high_impact_approved=false
-penetrative_testing_approved=false
+# no authorization fields present
+[target]
+id=t1
+target_type=Api
+criticality=5
 ";
-        let result = parse_engagement_config(config);
-        assert!(matches!(
-            result,
-            Err(EngagementConfigError::MissingField("engagement_id"))
-        ));
+        let (profile, targets) = parse_engagement_config(config).expect("should parse");
+        assert_eq!(profile.engagement_id, "unrestricted");
+        assert_eq!(profile.authorized_by, "unrestricted");
+        assert_eq!(profile.authorized_by_role, Role::SecurityAdmin);
+        assert_eq!(profile.time_window.start_epoch_seconds, 0);
+        assert_eq!(profile.time_window.end_epoch_seconds, u64::MAX);
+        assert!(profile.in_scope_targets.is_empty());
+        assert!(profile.allowed_techniques.is_empty());
+        assert!(profile.deny_list_targets.is_empty());
+        assert_eq!(profile.max_intensity, TestIntensity::Aggressive);
+        assert!(profile.high_impact_approved);
+        assert!(profile.penetrative_testing_approved);
+        assert_eq!(targets.len(), 1);
+    }
+
+    #[test]
+    fn empty_config_parses_with_permissive_defaults() {
+        // Maximum freedom: even an empty config file is accepted.
+        let (profile, targets) = parse_engagement_config("").expect("should parse");
+        assert_eq!(profile.engagement_id, "unrestricted");
+        assert_eq!(profile.authorized_by, "unrestricted");
+        assert!(profile.high_impact_approved);
+        assert!(profile.penetrative_testing_approved);
+        assert!(targets.is_empty());
     }
 
     #[test]
