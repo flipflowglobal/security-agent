@@ -129,8 +129,10 @@ banner
 command -v cargo >/dev/null 2>&1 || fail "cargo not found on PATH"
 command -v rustc >/dev/null 2>&1 || fail "rustc not found on PATH"
 
-PKG_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-HOST_TRIPLE=$(rustc -vV | sed -n 's/^host: //p')
+# Strip a trailing CR so a CRLF-terminated Cargo.toml line doesn't leak a
+# carriage return into the archive name / checksum (`tr -d '\r'`).
+PKG_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1 | tr -d '\r')
+HOST_TRIPLE=$(rustc -vV | sed -n 's/^host: //p' | tr -d '\r')
 BUILD_TRIPLE="${TARGET:-$HOST_TRIPLE}"
 
 echo ""

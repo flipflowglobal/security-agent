@@ -50,7 +50,8 @@ If any of those print output without an error, you're ready to go.
 | Command | What it does | Try it |
 |---|---|---|
 | `--offline-status` | Health check: tools, skills, coverage. Also the default with no args. | `security-agent --offline-status` |
-| `--about` / `--version` | Shows identity, version, and roadmap. | `security-agent --about` |
+| `--about` / `--version` | Shows identity, version, and roadmap (leads with the build stamp). | `security-agent --about` |
+| `--build-info [--json]` | Prints build provenance: commit, build date, target, profile, compiler. `--json` for one machine-readable line. | `security-agent --build-info` |
 | `--guide [section]` | The full plain-language guide; add a section name to focus. | `security-agent --guide reverse-shell` |
 | `--tool-help <cmd>` | Focused help for a single command. | `security-agent --tool-help --gen-shell` |
 | `--list-tools` | Lists cataloged tools and whether each is installed / built-in / missing. | `security-agent --list-tools` |

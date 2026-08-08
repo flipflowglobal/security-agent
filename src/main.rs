@@ -35,6 +35,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some("--about" | "--version") => print_about(),
+        Some("--build-info") => build_info_command(&mut arguments),
         Some("--list-skills") => list_skills(&assets),
         Some("--show-skill") => show_skill(&assets, &mut arguments),
         Some("--list-tools") => list_tools(&assets),
@@ -85,7 +86,7 @@ fn main() -> ExitCode {
 /// `security_agent::MISSION_STATEMENT` and `security_agent::ROADMAP_PHASES`,
 /// which are otherwise exported but shown by no command.
 fn print_about() -> ExitCode {
-    println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+    println!("{}", security_agent::BuildInfo::current().version_line());
     println!();
     println!("{}", security_agent::MISSION_STATEMENT);
     println!();
@@ -95,6 +96,33 @@ fn print_about() -> ExitCode {
         println!("{:<9} {}", phase.phase, phase.focus);
     }
     ExitCode::SUCCESS
+}
+
+/// `--build-info [--json]` — print the binary's build provenance (commit,
+/// build date, target, profile, compiler). With `--json`, emit a single
+/// machine-readable object line instead of the human block. A distributed
+/// binary is thereby self-describing: given only the executable, an operator
+/// can recover exactly what it was built from.
+fn build_info_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    let info = security_agent::BuildInfo::current();
+    match arguments.next().as_deref() {
+        None => {
+            print!("{}", info.render_plain());
+            ExitCode::SUCCESS
+        }
+        Some("--json") => {
+            if let Some(extra) = arguments.next() {
+                eprintln!("unexpected argument: {extra}");
+                return ExitCode::from(2);
+            }
+            println!("{}", info.render_json());
+            ExitCode::SUCCESS
+        }
+        Some(other) => {
+            eprintln!("unknown --build-info option: {other} (want --json)");
+            ExitCode::from(2)
+        }
+    }
 }
 
 /// `--guide [section]` — print the complete plain-language guide, or one
@@ -2282,6 +2310,11 @@ const CAPABILITY_ROWS: &[(&str, &str, &str)] = &[
         "About / mission",
         "--about",
         "\"who are you\" / \"what is your mission\"",
+    ),
+    (
+        "Build provenance",
+        "--build-info",
+        "commit, build date, target, compiler (add --json)",
     ),
     ("List tools", "--list-tools", "\"what tools do you have\""),
     (
