@@ -20,7 +20,7 @@
     "installer:linux": "node scripts/generate-icons.js && electron-builder --linux"
   },
   "devDependencies": {
-    "electron": "^39.8.10",
+    "electron": "^43.3.0",
     "electron-builder": "^25.1.8",
     "typescript": "^7.0.2"
   },
