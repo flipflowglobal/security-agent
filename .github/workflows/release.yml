@@ -1,0 +1,93 @@
+name: Release
+
+# Build verified, checksummed release artifacts when a version tag is pushed,
+# and attach them to the GitHub Release. Each artifact is produced by
+# scripts/deploy.sh (the same packaging path `make deploy` uses), so a release
+# is exactly what a local `make deploy` produces — a tarball plus its SHA-256.
+on:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  # ── Host-native artifacts (Linux + macOS) ───────────────────────────────────
+  host:
+    name: Package (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Pin build date to the tagged commit (reproducible builds)
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)" >> "$GITHUB_ENV"
+
+      - name: Build, verify, and package
+        # deploy.sh runs the full fmt/clippy/test gate, builds an optimized
+        # binary, and writes dist/<name>-<version>-<triple>.tar.gz + .sha256.
+        run: ./scripts/deploy.sh --no-color
+
+      - name: Attach artifacts to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
+
+  # ── Android cross-compiled artifact (aarch64) ───────────────────────────────
+  android:
+    name: Package (aarch64-linux-android)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust + aarch64-linux-android target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Install Android NDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "ndk;27.2.12479018"
+
+      - name: Expose NDK clang wrappers
+        run: |
+          NDK_HOME="${ANDROID_SDK_ROOT}/ndk/$(ls ${ANDROID_SDK_ROOT}/ndk | sort -V | tail -1)"
+          LLVM_BIN="${NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "${LLVM_BIN}" >> "${GITHUB_PATH}"
+          echo "ANDROID_NDK_HOME=${NDK_HOME}" >> "${GITHUB_ENV}"
+
+      - name: Pin build date to the tagged commit (reproducible builds)
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)" >> "$GITHUB_ENV"
+
+      - name: Cross-compile and package
+        # The host jobs already ran the full quality gate on identical source;
+        # --skip-checks avoids re-running it under a cross toolchain (which
+        # cannot execute aarch64 test binaries anyway) and only builds + packages.
+        run: ./scripts/deploy.sh --target aarch64-linux-android --skip-checks --no-color
+
+      - name: Attach artifacts to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256

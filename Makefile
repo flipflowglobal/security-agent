@@ -3,10 +3,17 @@
 # All targets are thin wrappers around `cargo`; they do not hide errors.
 # Run `make help` to list available targets.
 
-.PHONY: all help fmt clippy test build check status clean android android-install deploy electron electron-install electron-pack electron-icons electron-installer electron-installer-win electron-installer-mac electron-installer-linux
+.PHONY: all help fmt clippy test build check status clean install uninstall android android-install deploy electron electron-install electron-pack electron-icons electron-installer electron-installer-win electron-installer-mac electron-installer-linux
 
 CARGO ?= cargo
 RELEASE_BIN := target/release/security-agent
+
+# Install location. Override with `make install PREFIX=/usr/local` for a
+# system-wide install, or set DESTDIR for staged/packaging installs.
+PREFIX ?= $(HOME)/.local
+DESTDIR ?=
+BINDIR := $(DESTDIR)$(PREFIX)/bin
+
 ANDROID_TARGET := aarch64-linux-android
 
 # Default target: run the full check suite.
@@ -109,6 +116,21 @@ electron-installer-mac: build electron-icons
 ## electron-installer-linux: Build Linux deb/rpm/AppImage packages.
 electron-installer-linux: build electron-icons
 	cd electron && npm run dist:linux
+
+## install: Build the release binary and install it to $(PREFIX)/bin
+#  (default ~/.local/bin). Override PREFIX for a different prefix, or set
+#  DESTDIR for a staged install: `make install PREFIX=/usr/local`.
+install: build
+	@mkdir -p "$(BINDIR)"
+	install -m 0755 "$(RELEASE_BIN)" "$(BINDIR)/security-agent"
+	@echo ""
+	@echo "Installed: $(BINDIR)/security-agent"
+	@echo "Ensure $(PREFIX)/bin is on your PATH, then run: security-agent --build-info"
+
+## uninstall: Remove a binary installed by `make install`.
+uninstall:
+	rm -f "$(BINDIR)/security-agent"
+	@echo "Removed: $(BINDIR)/security-agent"
 
 ## clean: Remove build artifacts.
 clean:

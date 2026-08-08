@@ -297,14 +297,26 @@ Run these from the repository root after `cargo build --release`:
   `--findings-log` and prints a retest schedule (soonest first) derived
   from each finding's risk score.
 
-To install the binary into Cargo's local binary directory:
+To install the binary onto your `PATH`:
+
+```bash
+make install                 # -> ~/.local/bin/security-agent
+make install PREFIX=/usr/local   # -> /usr/local/bin (may need sudo)
+make uninstall               # remove it again
+```
+
+`make install` builds the release binary and copies it to `$PREFIX/bin`
+(default `~/.local/bin`); set `DESTDIR` for a staged/packaging install. Or use
+Cargo's own directory:
 
 ```bash
 cargo install --path . --locked
 ```
 
 After installation, replace `./target/release/security-agent` with
-`security-agent`.
+`security-agent`. Confirm what you installed with `security-agent --build-info`,
+which prints the exact commit, build date, target, and compiler the binary was
+built from (add `--json` for a machine-readable line).
 
 To build a distributable, checksummed release package instead (for handing
 the binary to someone else, or archiving a release), run:
@@ -320,6 +332,12 @@ plus a `.sha256` checksum file. Add `--target <triple>` to cross-compile (e.g.
 `--target aarch64-linux-android`), or `--skip-checks` to skip straight to
 build + package when the code has already been verified. See `README.md`'s
 "Release deployment" section for the full flag list.
+
+Pushing a version tag (`git tag v0.1.0 && git push origin v0.1.0`) runs the
+**Release** CI workflow, which builds these same checksummed archives for
+Linux, macOS, and Android and attaches them to the GitHub Release
+automatically. Builds honor `SOURCE_DATE_EPOCH` (pinned to the tagged commit),
+so the packaged binary is reproducible.
 
 ---
 

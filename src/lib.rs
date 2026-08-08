@@ -4,6 +4,7 @@ pub mod arsenal;
 pub mod audit_db;
 pub mod audit_log;
 pub mod belief_propagation;
+pub mod build_info;
 pub mod builtin_tools;
 pub mod calibration;
 pub mod calibration_db;
@@ -67,6 +68,7 @@ pub use belief_propagation::{
     NodeBelief, PropagationEdge, PropagationGraph, PropagationNode,
     from_targets_and_findings as propagate_from_targets_and_findings,
 };
+pub use build_info::BuildInfo;
 pub use builtin_tools::{
     AutopsyReport, BuiltInToolError, EmbeddedSignature, EvidenceFile, MemoryString,
     VolatilityReport, is_builtin_tool, run_autopsy, run_builtin_tool, run_volatility,
