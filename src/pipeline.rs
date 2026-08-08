@@ -19,11 +19,13 @@
 use crate::coordinator::ExecutionPlan;
 use crate::engagement_context::{Endpoint, EngagementContext, Host, Service};
 use crate::execution::{TaskExecutionOutcome, ToolExecutionReport};
+use crate::expansion::FollowUpPlanner;
 use crate::json::{self, JsonValue};
 use crate::local_assets::LocalAgentAssets;
+use crate::model::TestIntensity;
 use crate::network_policy::NetworkMode;
 use crate::observability::EventSink;
-use crate::orchestrator::{OrchestrationSchedule, ToolOrchestrator};
+use crate::orchestrator::{OrchestrationSchedule, OrchestrationStep, ToolOrchestrator};
 use crate::registry::ExecutionClass;
 use crate::run_control::RunController;
 use crate::runtime::{ExecutionRuntime, RunInputs};
@@ -31,7 +33,14 @@ use crate::scope::ScopePolicy;
 use crate::secrets::SecretStore;
 use crate::tool_adapter::AdapterRegistry;
 use crate::tool_gate::ToolGate;
+use std::collections::BTreeSet;
 use std::sync::atomic::AtomicBool;
+
+/// Hard cap on result-driven expansion rounds. The proposal universe
+/// (discovered targets × a fixed follow-up table) is finite and each pair is
+/// scheduled at most once, so expansion converges well before this; the cap is
+/// a belt-and-suspenders guarantee of termination.
+const MAX_EXPANSION_ROUNDS: usize = 6;
 
 /// The order stages run in — least invasive first, mirroring the runtime's
 /// class barrier. Discovery (static + active-network) precedes exploitation,
@@ -61,8 +70,11 @@ pub struct StageOutcome {
 pub struct EngagementReport {
     /// The accumulated discovery blackboard after all stages ran.
     pub context: EngagementContext,
-    /// The stages, in execution order.
+    /// The stages, in execution order. A class can appear more than once when
+    /// result-driven expansion adds follow-up steps in a later round.
     pub stages: Vec<StageOutcome>,
+    /// How many follow-up steps result-driven expansion added across the run.
+    pub expansion_added: usize,
 }
 
 impl EngagementReport {
@@ -98,16 +110,90 @@ pub struct EngagementGuards<'a> {
     /// Live run control: when set, the engagement can be paused, resumed,
     /// cancelled, or rate-adjusted while it runs (see [`crate::run_control`]).
     pub controller: Option<&'a RunController>,
+    /// Enables result-driven expansion: after each round, discovered assets
+    /// propose authorized, in-scope follow-up tools that run in a later round
+    /// (see [`crate::expansion`]). Off by default.
+    pub expand: bool,
+}
+
+/// The fixed inputs of one run, bundled so the per-stage runner and the
+/// expansion loop stay readable.
+struct StageRunner<'a> {
+    adapters: &'a AdapterRegistry,
+    runtime: &'a ExecutionRuntime,
+    assets: &'a LocalAgentAssets,
+    operator_args: &'a [String],
+    mode: NetworkMode,
+    guards: EngagementGuards<'a>,
+    never_cancel: &'a AtomicBool,
+}
+
+impl StageRunner<'_> {
+    /// Runs one class's schedule through the runtime, applying the guards and
+    /// the discovered `context`.
+    fn execute(
+        &self,
+        schedule: &OrchestrationSchedule,
+        context: &EngagementContext,
+    ) -> Vec<TaskExecutionOutcome> {
+        let mut inputs = RunInputs::new(
+            schedule,
+            self.adapters,
+            self.assets,
+            context,
+            self.operator_args,
+            self.mode,
+        );
+        if let Some(scope) = self.guards.scope {
+            inputs = inputs.with_scope(scope);
+        }
+        if let Some(secrets) = self.guards.secrets {
+            inputs = inputs.with_secrets(secrets);
+        }
+        if let Some(events) = self.guards.events {
+            inputs = inputs.with_events(events);
+        }
+        if let Some(gate) = self.guards.gate {
+            inputs = inputs.with_gate(gate);
+        }
+        self.guards.controller.map_or_else(
+            || self.runtime.run_with_cancel(&inputs, self.never_cancel),
+            |controller| self.runtime.run_controlled(&inputs, controller),
+        )
+    }
+}
+
+/// The `(target, tool)` identity of a step, used to deduplicate the schedule.
+fn step_key(step: &OrchestrationStep) -> (String, String) {
+    (step.target_id.clone(), step.tool.clone())
+}
+
+/// The highest task intensity in the plan, stamped on expanded steps.
+fn max_task_intensity(plan: &ExecutionPlan) -> TestIntensity {
+    plan.tasks
+        .iter()
+        .map(|task| task.intensity)
+        .max_by_key(|intensity| intensity_rank(*intensity))
+        .unwrap_or(TestIntensity::Standard)
+}
+
+const fn intensity_rank(intensity: TestIntensity) -> u8 {
+    match intensity {
+        TestIntensity::Passive => 0,
+        TestIntensity::Standard => 1,
+        TestIntensity::Aggressive => 2,
+    }
 }
 
 /// Runs `plan` as a staged, result-driven engagement.
 ///
-/// Each execution class runs in turn through `runtime`; between classes, the
-/// completed stage's tool output is folded into the [`EngagementContext`] so
-/// the next class's adapters target the discovered assets. `guards` are
-/// applied to every stage — scope enforcement, secret resolution/redaction,
-/// and live event emission. Returns the accumulated context and the per-stage
-/// outcomes.
+/// Each round runs the not-yet-executed steps one execution class at a time
+/// (least invasive first), folding each stage's tool output into the
+/// [`EngagementContext`] so later adapters target the discovered assets. When
+/// `guards.expand` is set, the accumulated context then proposes authorized,
+/// in-scope follow-up tools (see [`crate::expansion`]); any new steps run in
+/// the next round, and this repeats until the schedule stops growing (bounded
+/// by [`MAX_EXPANSION_ROUNDS`]). `guards` are applied to every stage.
 #[must_use]
 pub fn run_engagement_pipeline(
     plan: &ExecutionPlan,
@@ -118,64 +204,71 @@ pub fn run_engagement_pipeline(
     mode: NetworkMode,
     guards: EngagementGuards,
 ) -> EngagementReport {
-    let full = ToolOrchestrator::new().schedule(plan);
-    let mut context = EngagementContext::new();
-    let mut stages = Vec::with_capacity(STAGE_ORDER.len());
     let never_cancel = AtomicBool::new(false);
+    let runner = StageRunner {
+        adapters,
+        runtime,
+        assets,
+        operator_args,
+        mode,
+        guards,
+        never_cancel: &never_cancel,
+    };
 
-    for class in STAGE_ORDER {
-        let class_schedule = schedule_for_class(&full, class);
-        if class_schedule.is_empty() {
-            continue;
-        }
-        let mut inputs = RunInputs::new(
-            &class_schedule,
-            adapters,
-            assets,
-            &context,
-            operator_args,
-            mode,
-        );
-        if let Some(scope) = guards.scope {
-            inputs = inputs.with_scope(scope);
-        }
-        if let Some(secrets) = guards.secrets {
-            inputs = inputs.with_secrets(secrets);
-        }
-        if let Some(events) = guards.events {
-            inputs = inputs.with_events(events);
-        }
-        if let Some(gate) = guards.gate {
-            inputs = inputs.with_gate(gate);
-        }
-        let outcomes = guards.controller.map_or_else(
-            || runtime.run_with_cancel(&inputs, &never_cancel),
-            |controller| runtime.run_controlled(&inputs, controller),
-        );
-        // Fold this stage's discoveries in before the next stage plans.
-        for outcome in &outcomes {
-            if let Ok(report) = &outcome.result {
-                record_report_artifacts(&mut context, &outcome.tool, report);
+    // Expansion may only schedule tools the engagement approved (the gate
+    // allows) that are actually installed — it can never widen authorization.
+    let authorized = |tool: &str| {
+        guards.gate.is_none_or(|gate| gate.allows(tool)) && assets.tool(tool).is_some()
+    };
+    let planner = FollowUpPlanner::new(&authorized, guards.scope, max_task_intensity(plan));
+
+    let mut working = ToolOrchestrator::new().schedule(plan).steps;
+    let mut scheduled: BTreeSet<(String, String)> = working.iter().map(step_key).collect();
+    let mut executed: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut context = EngagementContext::new();
+    let mut stages = Vec::new();
+    let mut expansion_added = 0;
+
+    for _round in 0..MAX_EXPANSION_ROUNDS {
+        for class in STAGE_ORDER {
+            let steps: Vec<OrchestrationStep> = working
+                .iter()
+                .filter(|step| step.execution_class == class && !executed.contains(&step_key(step)))
+                .cloned()
+                .collect();
+            if steps.is_empty() {
+                continue;
             }
+            for step in &steps {
+                executed.insert(step_key(step));
+            }
+            let outcomes = runner.execute(&OrchestrationSchedule { steps }, &context);
+            for outcome in &outcomes {
+                if let Ok(report) = &outcome.result {
+                    record_report_artifacts(&mut context, &outcome.tool, report);
+                }
+            }
+            stages.push(StageOutcome { class, outcomes });
         }
-        stages.push(StageOutcome { class, outcomes });
+
+        if !guards.expand {
+            break;
+        }
+        let proposed = planner.propose(&context, &scheduled);
+        if proposed.is_empty() {
+            break;
+        }
+        expansion_added += proposed.len();
+        for step in proposed {
+            scheduled.insert(step_key(&step));
+            working.push(step);
+        }
     }
 
-    EngagementReport { context, stages }
-}
-
-/// Builds the sub-schedule of `full` restricted to one execution class.
-fn schedule_for_class(
-    full: &OrchestrationSchedule,
-    class: ExecutionClass,
-) -> OrchestrationSchedule {
-    OrchestrationSchedule {
-        steps: full
-            .steps
-            .iter()
-            .filter(|step| step.execution_class == class)
-            .cloned()
-            .collect(),
+    EngagementReport {
+        context,
+        stages,
+        expansion_added,
     }
 }
 
@@ -401,5 +494,169 @@ mod tests {
         );
         assert!(report.context.is_empty());
         assert!(report.all_outcomes().is_empty());
+        assert_eq!(report.expansion_added, 0);
+    }
+
+    fn task_with_tools(target: &str, tools: Vec<String>) -> crate::coordinator::ScanTask {
+        use crate::model::{SpecialistKind, TestIntensity};
+        use crate::registry::SpecialistCapability;
+        crate::coordinator::ScanTask {
+            target_id: target.to_string(),
+            specialist: SpecialistCapability {
+                specialist: SpecialistKind::Sast,
+                target_types: Vec::new(),
+                approved_tools: tools.clone(),
+                supported_techniques: Vec::new(),
+                max_intensity: TestIntensity::Standard,
+            },
+            techniques: Vec::new(),
+            approved_tools: tools,
+            intensity: TestIntensity::Standard,
+            network_address: Some("10.0.0.5".to_string()),
+        }
+    }
+
+    #[test]
+    fn expansion_enabled_terminates_and_adds_nothing_without_discovery() {
+        // With expansion on but no installed tools, discovery finds nothing, so
+        // there is nothing to expand — and the bounded loop terminates.
+        let plan = ExecutionPlan {
+            engagement_id: "eng-expand".to_string(),
+            workflow_stages: Vec::new(),
+            tasks: vec![task_with_tools("t1", vec!["nmap".to_string()])],
+            selected_packs: Vec::new(),
+            high_impact_tasks: 0,
+        };
+        let assets = LocalAgentAssets {
+            skills: Vec::new(),
+            tools: Vec::new(),
+        };
+        let guards = EngagementGuards {
+            expand: true,
+            ..EngagementGuards::default()
+        };
+        let report = run_engagement_pipeline(
+            &plan,
+            &AdapterRegistry::with_defaults(),
+            &ExecutionRuntime::default(),
+            &assets,
+            &[],
+            NetworkMode::Offline,
+            guards,
+        );
+        assert_eq!(report.expansion_added, 0);
+        assert!(report.context.is_empty());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn expansion_runs_a_discovered_web_scanner_end_to_end() {
+        use crate::integrity::IntegrityStatus;
+        use crate::local_assets::LocalTool;
+        use crate::model::{SpecialistKind, TestIntensity};
+        use crate::registry::{SpecialistCapability, ToolDefinition, classify_execution};
+        use crate::tool_gate::ToolGate;
+        use std::os::unix::fs::PermissionsExt;
+        use std::path::Path;
+
+        if !Path::new("/bin/sh").exists() {
+            return;
+        }
+
+        // Two real executables: a fake `nmap` that prints nmap XML announcing
+        // an open HTTP service, and a `nikto` that just runs. Their arguments
+        // are irrelevant — the runtime captures whatever they print to stdout.
+        let dir = std::env::temp_dir().join(format!("sa-expand-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let nmap_path = dir.join("nmap");
+        std::fs::write(
+            &nmap_path,
+            "#!/bin/sh\ncat <<'XML'\n<nmaprun><host addr=\"10.0.0.5\" addrtype=\"ipv4\">\
+             <ports><port protocol=\"tcp\" portid=\"80\"><state state=\"open\"/>\
+             <service name=\"http\"/></port></ports></host></nmaprun>\nXML\n",
+        )
+        .expect("write nmap");
+        let nikto_path = dir.join("nikto");
+        std::fs::write(&nikto_path, "#!/bin/sh\necho 'nikto ran'\n").expect("write nikto");
+        for path in [&nmap_path, &nikto_path] {
+            let mut perms = std::fs::metadata(path).expect("stat").permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(path, perms).expect("chmod");
+        }
+
+        let local = |name: &str, path: &Path| LocalTool {
+            definition: ToolDefinition {
+                name: name.to_string(),
+                version: "not-detected".to_string(),
+                signed: false,
+                vulnerability_reviewed: false,
+                egress_policy: vec!["offline-local-only".to_string()],
+                execution_class: classify_execution(name),
+            },
+            built_in: false,
+            executable: Some(path.to_path_buf()),
+            integrity: IntegrityStatus::Unpinned,
+        };
+        let assets = LocalAgentAssets {
+            skills: Vec::new(),
+            tools: vec![local("nmap", &nmap_path), local("nikto", &nikto_path)],
+        };
+
+        // The base plan approves only nmap; the gate additionally sanctions
+        // nikto, so expansion may schedule it against the discovered host.
+        let task = crate::coordinator::ScanTask {
+            target_id: "10.0.0.5".to_string(),
+            specialist: SpecialistCapability {
+                specialist: SpecialistKind::Sast,
+                target_types: Vec::new(),
+                approved_tools: vec!["nmap".to_string()],
+                supported_techniques: Vec::new(),
+                max_intensity: TestIntensity::Standard,
+            },
+            techniques: Vec::new(),
+            approved_tools: vec!["nmap".to_string()],
+            intensity: TestIntensity::Standard,
+            network_address: Some("10.0.0.5".to_string()),
+        };
+        let plan = ExecutionPlan {
+            engagement_id: "eng-e2e".to_string(),
+            workflow_stages: Vec::new(),
+            tasks: vec![task],
+            selected_packs: Vec::new(),
+            high_impact_tasks: 0,
+        };
+        let gate = ToolGate::allow_only(["nmap", "nikto"]);
+        let guards = EngagementGuards {
+            gate: Some(&gate),
+            expand: true,
+            ..EngagementGuards::default()
+        };
+
+        let report = run_engagement_pipeline(
+            &plan,
+            &AdapterRegistry::with_defaults(),
+            &ExecutionRuntime::default(),
+            &assets,
+            &[],
+            NetworkMode::Online,
+            guards,
+        );
+
+        // Discovery found the open HTTP service...
+        assert!(
+            report
+                .context
+                .services()
+                .iter()
+                .any(|s| s.host == "10.0.0.5" && s.port == 80)
+        );
+        // ...expansion proposed exactly the one authorized+installed web tool...
+        assert_eq!(report.expansion_added, 1);
+        // ...and that follow-up (nikto against the discovered host) actually ran.
+        assert!(report.all_outcomes().iter().any(|outcome| {
+            outcome.tool == "nikto" && outcome.target_id == "10.0.0.5" && outcome.result.is_ok()
+        }));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
