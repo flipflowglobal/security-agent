@@ -376,9 +376,10 @@
                     <div class="form-group full-width">
                         <label for="plan-config-path">Engagement Config Path</label>
                         <div class="input-with-button">
-                            <input type="text" id="plan-config-path" placeholder="/path/to/engagement.json">
+                            <input type="text" id="plan-config-path" placeholder="/path/to/engagement.config">
                             <button class="btn secondary" id="btn-browse-plan-config">Browse</button>
                         </div>
+                        <p class="field-hint">Config format is <code>key=value</code> (lines starting with <code>#</code> are comments; targets go in <code>[target]</code> sections). Example: engagement_id, authorized_by, time_window_start/end (epoch seconds), allowed_techniques, then a <code>[target]</code> section per target (id, target_type, criticality).</p>
                     </div>
                     <div class="form-group">
                         <label for="plan-audit-log">Audit Log Path <span class="optional">(optional)</span></label>
@@ -1125,6 +1126,19 @@
                 </div>
             </section>
         </main>
+    </div>
+
+    <!-- Verbose Log Console -->
+    <div id="log-console" class="log-console collapsed" aria-label="Verbose log console">
+        <div class="log-header">
+            <button id="log-toggle" class="log-toggle" title="Toggle verbose log console">
+                <span class="log-caret">&#9656;</span> Verbose Logs
+            </button>
+            <span id="log-badge" class="log-badge">0</span>
+            <span class="log-hint">main + renderer activity</span>
+            <button id="log-clear" class="log-clear" title="Clear logs">Clear</button>
+        </div>
+        <div id="log-content" class="log-content"><div class="log-line log-info">Log console ready.</div></div>
     </div>
 
     <script src="renderer.js"></script>
