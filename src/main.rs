@@ -1836,7 +1836,7 @@ fn ask_anomaly(model: &security_agent::NeuralLanguageModel, text: Option<&str>) 
 /// The parsed flags of an `--agent` invocation.
 struct AgentArgs {
     goal: String,
-    allow_effects: bool,
+    dry_run: bool,
     allow_network: bool,
     follow_up: bool,
     max_steps: usize,
@@ -1845,13 +1845,14 @@ struct AgentArgs {
 }
 
 /// Parses `--agent <goal words...>` with optional flags interspersed:
-/// `--execute` (run effectful actions), `--allow-network` (run network
-/// actions), `--max-steps <N>`, `--audit-log <path>`, `--audit-db <path>`.
-/// Every non-flag word is joined into the goal.
+/// `--dry-run` (preview only, execute nothing), `--allow-network` (forward the
+/// live-network opt-in to planned commands), `--follow-up`, `--max-steps <N>`,
+/// `--audit-log <path>`, `--audit-db <path>`. Every non-flag word is joined
+/// into the goal.
 fn parse_agent_args(arguments: &mut impl Iterator<Item = String>) -> Result<AgentArgs, String> {
     let mut args = AgentArgs {
         goal: String::new(),
-        allow_effects: false,
+        dry_run: false,
         allow_network: false,
         follow_up: false,
         max_steps: 8,
@@ -1861,7 +1862,7 @@ fn parse_agent_args(arguments: &mut impl Iterator<Item = String>) -> Result<Agen
     let mut goal_words: Vec<String> = Vec::new();
     while let Some(word) = arguments.next() {
         match word.as_str() {
-            "--execute" => args.allow_effects = true,
+            "--dry-run" => args.dry_run = true,
             "--allow-network" => args.allow_network = true,
             "--follow-up" => args.follow_up = true,
             "--max-steps" => {
@@ -1890,12 +1891,13 @@ fn parse_agent_args(arguments: &mut impl Iterator<Item = String>) -> Result<Agen
 }
 
 /// An [`security_agent::ActionExecutor`] that runs each planned action by
-/// invoking this same binary as a child process. Re-invocation keeps every
-/// command's own guards intact (the agent policy has already decided the
-/// action may run; the child still enforces scope, the tool-gate, and its
-/// own argument checks), and captures the child's stdout so the loop can
-/// observe it. Live-network actions get `--allow-network` appended only when
-/// the agent policy permits it.
+/// invoking this same binary as a child process. Re-invocation is what makes
+/// the guardrails live where they belong — in the tools: the child command
+/// enforces its own scope, the active-tool gate, the offline-by-default
+/// network policy, and its argument checks, so the agent never needs a second
+/// gate of its own. The child's stdout is captured so the loop can observe it.
+/// Live-network actions get `--allow-network` appended only when the operator
+/// passed that opt-in through to the agent.
 struct CliExecutor {
     allow_network: bool,
 }
@@ -1940,17 +1942,19 @@ impl security_agent::ActionExecutor for CliExecutor {
     }
 }
 
-/// `--agent "<goal>" [--execute] [--allow-network] [--max-steps N]
+/// `--agent "<goal>" [--dry-run] [--allow-network] [--follow-up] [--max-steps N]
 /// [--audit-log <path>] [--audit-db <path>]` — let the built-in model plan a
-/// sequence of the agent's own commands from a plain-English goal and run
-/// them under an explicit safety policy.
+/// sequence of the agent's own commands from a plain-English goal and run them.
 ///
-/// The plan is always printed first. Read-only actions run autonomously;
-/// effectful actions run only with `--execute`, and live-network actions only
-/// with `--allow-network` on top of that (a bare `--agent` is a safe dry run).
-/// Every step is recorded, and `--audit-log`/`--audit-db` persist the run's
-/// audit trail. The planner is grounded in the action registry, so the model
-/// can only ever schedule real, in-scope commands.
+/// The plan is always printed first, then executed as instructed: the agent
+/// does not second-guess the tools, whose own guardrails (engagement scope, the
+/// active-tool gate, the offline-by-default network policy, config approvals)
+/// decide what each command may actually do. `--dry-run` previews without
+/// executing; `--allow-network` forwards the live-network opt-in to the planned
+/// commands (they otherwise stay offline, exactly as the CLI does). Every step
+/// is recorded, and `--audit-log`/`--audit-db` persist the run's audit trail.
+/// The planner is grounded in the action registry, so the model can only ever
+/// schedule real commands.
 fn agent_command(
     assets: &LocalAgentAssets,
     arguments: &mut impl Iterator<Item = String>,
@@ -1966,7 +1970,7 @@ fn agent_command(
     let model = security_agent::NeuralLanguageModel::bundled();
     let planner = security_agent::AgentPlanner::new(assets, &model);
     let policy = security_agent::AgentPolicy {
-        allow_effects: args.allow_effects,
+        dry_run: args.dry_run,
         allow_network: args.allow_network,
         max_steps: args.max_steps,
         follow_up_from_output: args.follow_up,
@@ -1984,13 +1988,15 @@ fn agent_command(
     println!("Plan ({} step(s)):", plan.len());
     for (index, call) in plan.iter().enumerate() {
         let arg = call.arg.as_deref().unwrap_or("-");
-        let gate = match policy.admit(call) {
-            Ok(()) => "will run",
-            Err(_) if call.class.is_effectful() => "needs --execute",
-            Err(_) => "needs --allow-network",
+        let disposition = if policy.dry_run {
+            "preview only"
+        } else if call.network && !args.allow_network {
+            "will run (offline; add --allow-network for live steps)"
+        } else {
+            "will run"
         };
         println!(
-            "  {}. {} (arg: {arg}, {}, {}%) — {gate}",
+            "  {}. {} (arg: {arg}, {}, {}%) — {disposition}",
             index + 1,
             call.command,
             call.class.label(),
@@ -2561,7 +2567,7 @@ const CAPABILITY_ROWS: &[(&str, &str, &str)] = &[
     (
         "Agent mode",
         "--agent \"<goal>\"",
-        "plan & run my own commands from a goal (add --execute)",
+        "plan & run my own commands from a goal (--dry-run to preview)",
     ),
     ("List tools", "--list-tools", "\"what tools do you have\""),
     (

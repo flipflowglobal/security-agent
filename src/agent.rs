@@ -108,17 +108,27 @@ pub trait ActionExecutor {
     fn execute(&mut self, call: &ActionCall) -> ActionOutcome;
 }
 
-/// The policy that gates what the agent is allowed to actually run.
+/// How the agent runs a plan.
+///
+/// The agent does **not** re-gate what the tools already guard. Each planned
+/// command is invoked as the real command, whose own guardrails — engagement
+/// scope, the active-tool gate, the offline-by-default network policy, config
+/// approvals — decide what is actually permitted. This policy only carries the
+/// operator's run-level choices: preview vs. run, whether to forward the
+/// network opt-in, the loop bound, and the (default-off) output-feedback mode.
 #[derive(Debug, Clone, Copy)]
 pub struct AgentPolicy {
-    /// Allow effectful (`Writes` / `Privileged`) actions to run. Off by
-    /// default: without it, effectful actions are planned and shown but
-    /// refused, so a dry run never changes anything.
-    pub allow_effects: bool,
-    /// Allow network actions to run (required *in addition* to
-    /// `allow_effects` for a network action).
+    /// Preview only: plan and print, but execute nothing. Off by default — the
+    /// agent runs the planned commands as instructed.
+    pub dry_run: bool,
+    /// Forward the `--allow-network` opt-in to planned commands that perform
+    /// live network I/O. Off by default, matching the binary's offline
+    /// default. This is not an agent-level gate: the invoked tool still owns
+    /// the guardrail (it runs offline, or refuses, without the flag); this only
+    /// passes the operator's opt-in through to it.
     pub allow_network: bool,
-    /// Maximum number of actions to execute in one run (the loop budget).
+    /// Maximum number of actions to execute in one run — a loop-termination
+    /// bound, not a guardrail.
     pub max_steps: usize,
     /// Re-plan grounded follow-ups from each ran step's *output* (an
     /// observe→continue loop). Off by default: with a keyword-grounded
@@ -131,11 +141,12 @@ pub struct AgentPolicy {
 }
 
 impl Default for AgentPolicy {
-    /// A safe default: read-only actions only, network off, no output-driven
-    /// follow-ups, up to 8 steps.
+    /// The default: execute the plan, network opt-in off (the tool stays
+    /// offline unless told otherwise), no output-driven follow-ups, up to 8
+    /// steps.
     fn default() -> Self {
         Self {
-            allow_effects: false,
+            dry_run: false,
             allow_network: false,
             max_steps: 8,
             follow_up_from_output: false,
@@ -144,27 +155,11 @@ impl Default for AgentPolicy {
 }
 
 impl AgentPolicy {
-    /// The gate decision for `call`: `Ok(())` to run it, or `Err(reason)` to
-    /// refuse. Effectful actions need `allow_effects`; network actions
-    /// additionally need `allow_network`.
-    ///
-    /// # Errors
-    ///
-    /// Returns the human-readable refusal reason when the policy forbids the
-    /// call.
-    pub fn admit(&self, call: &ActionCall) -> Result<(), String> {
-        if call.class.is_effectful() && !self.allow_effects {
-            return Err(format!(
-                "{} action needs the --execute opt-in (refused in dry-run)",
-                call.class.label()
-            ));
-        }
-        if call.network && !self.allow_network {
-            return Err(
-                "network action needs the --allow-network opt-in (refused offline)".to_string(),
-            );
-        }
-        Ok(())
+    /// Whether the agent will actually execute planned actions (i.e. this is
+    /// not a preview-only dry run).
+    #[must_use]
+    pub const fn will_execute(&self) -> bool {
+        !self.dry_run
     }
 }
 
@@ -313,16 +308,18 @@ pub fn run_agent(
     }
 }
 
-/// Applies the policy gate to `call`, running it through `executor` only when
-/// admitted; a missing required path/text argument is skipped rather than run.
+/// Runs `call` through `executor`, unless this is a dry run (previewed, not
+/// executed) or a required path/text argument is missing (skipped). The tools'
+/// own guardrails — not this function — decide whether an executed command is
+/// actually permitted.
 fn handle_call(
     call: &ActionCall,
     executor: &mut dyn ActionExecutor,
     policy: AgentPolicy,
 ) -> ActionOutcome {
-    if let Err(reason) = policy.admit(call) {
+    if policy.dry_run {
         return ActionOutcome {
-            status: ActionStatus::Refused(reason),
+            status: ActionStatus::Refused("dry-run: previewed, not executed".to_string()),
             output: String::new(),
         };
     }
@@ -589,9 +586,11 @@ mod tests {
         }
     }
 
+    /// Executes, forwards network, and follows up from output — for exercising
+    /// the full loop.
     fn permissive() -> AgentPolicy {
         AgentPolicy {
-            allow_effects: true,
+            dry_run: false,
             allow_network: true,
             max_steps: 8,
             follow_up_from_output: true,
@@ -660,12 +659,13 @@ mod tests {
     }
 
     #[test]
-    fn dry_run_refuses_effectful_actions() {
+    fn executes_effectful_actions_by_default() {
         let assets = LocalAgentAssets::bundled();
         let model = model();
         let planner = planner_over(&assets, &model);
         let mut executor = FakeExecutor::new(|_| String::new());
-        // Default policy: read-only only.
+        // Default policy executes the plan as instructed — the tool's own
+        // guardrails, not the agent, decide what a run may actually do.
         let transcript = run_agent(
             "run the engagement engagement.conf",
             &planner,
@@ -677,29 +677,36 @@ mod tests {
             .iter()
             .find(|s| s.call.action == "run-engagement")
             .expect("run-engagement planned");
-        assert!(matches!(step.outcome.status, ActionStatus::Refused(_)));
-        // Nothing effectful actually executed.
-        assert!(executor.calls.iter().all(|c| !c.class.is_effectful()));
+        assert!(matches!(step.outcome.status, ActionStatus::Ran { .. }));
+        // The effectful action was actually handed to the executor.
+        assert!(executor.calls.iter().any(|c| c.action == "run-engagement"));
     }
 
     #[test]
-    fn network_action_refused_without_network_opt_in() {
-        let call = ActionCall {
-            action: "run-engagement",
-            command: "--run-engagement",
-            class: ActionClass::Privileged,
-            network: true,
-            arg: Some("e.conf".to_string()),
-            confidence: 50,
-        };
-        // Effects allowed, network not.
+    fn dry_run_previews_without_executing_anything() {
+        let assets = LocalAgentAssets::bundled();
+        let model = model();
+        let planner = planner_over(&assets, &model);
+        let mut executor = FakeExecutor::new(|_| String::new());
         let policy = AgentPolicy {
-            allow_effects: true,
-            allow_network: false,
-            max_steps: 8,
-            follow_up_from_output: false,
+            dry_run: true,
+            ..AgentPolicy::default()
         };
-        assert!(policy.admit(&call).is_err());
+        let transcript = run_agent(
+            "run the engagement engagement.conf",
+            &planner,
+            &mut executor,
+            policy,
+        );
+        // Everything is previewed as refused, and the executor is never called.
+        assert!(
+            transcript
+                .steps
+                .iter()
+                .all(|s| matches!(s.outcome.status, ActionStatus::Refused(_)))
+        );
+        assert!(executor.calls.is_empty());
+        assert!(!policy.will_execute());
     }
 
     #[test]
@@ -763,7 +770,7 @@ mod tests {
         let planner = planner_over(&assets, &model);
         let mut executor = FakeExecutor::new(|_| String::new());
         let policy = AgentPolicy {
-            allow_effects: true,
+            dry_run: false,
             allow_network: true,
             max_steps: 1,
             follow_up_from_output: false,
@@ -787,12 +794,7 @@ mod tests {
         // when follow_up_from_output is off (the default), so ordinary command
         // output never spawns spurious steps.
         let mut executor = FakeExecutor::new(|_| "now list your skills".to_string());
-        let policy = AgentPolicy {
-            allow_effects: true,
-            allow_network: false,
-            max_steps: 8,
-            follow_up_from_output: false,
-        };
+        let policy = AgentPolicy::default();
         let transcript = run_agent("list your tools", &planner, &mut executor, policy);
         let names: Vec<&str> = transcript.steps.iter().map(|s| s.call.action).collect();
         assert_eq!(

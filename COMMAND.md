@@ -65,32 +65,36 @@ If any of those print output without an error, you're ready to go.
 
 `--ask` maps one sentence to one read-only action. `--agent` goes further: the
 built-in model plans an **ordered sequence** of the agent's own commands from a
-plain-English goal and runs them — a grounded, gated plan→execute loop.
+plain-English goal and **runs them** — a grounded plan→execute loop.
 
 ```sh
-# Dry run (default): plans and previews, runs only read-only steps.
+# Plan and run (the plan is always printed first):
 security-agent --agent "run the engagement eng.conf then write a report"
 
-# Actually run effectful steps (planning/authorizing, writing files):
-security-agent --agent "plan a scan from eng.conf" --execute
+# Preview only, execute nothing:
+security-agent --agent "run the engagement eng.conf" --dry-run
 
-# Also permit live-network steps (on top of --execute):
-security-agent --agent "run the engagement eng.conf" --execute --allow-network
+# Forward the live-network opt-in to the planned commands:
+security-agent --agent "run the engagement eng.conf" --allow-network
 ```
 
 | Flag | Meaning |
 |---|---|
-| *(none)* | **Dry run.** Prints the plan; runs read-only steps; refuses effectful ones. |
-| `--execute` | Run effectful steps (writes, planning/authorizing). |
-| `--allow-network` | Also run live-network steps (required *in addition* to `--execute`). |
+| *(none)* | **Runs the plan.** Prints it first, then executes each step as instructed. |
+| `--dry-run` | Preview only — plan and print, execute nothing. |
+| `--allow-network` | Forward the `--allow-network` opt-in to planned commands that do live I/O (they otherwise stay offline, exactly as the CLI does). |
 | `--max-steps <N>` | Cap how many actions the run may execute (default 8). |
 | `--audit-log <path>` / `--audit-db <path>` | Record every step (ran / refused / skipped) as an audit trail. |
 | `--follow-up` | Experimental: also plan follow-ups from each step's *output* (off by default — ordinary command output is data, not instructions). |
 
-**Grounded and safe by design.** The model can only plan commands the agent
-actually has (it never invents one), and every step passes the same guards the
-CLI enforces — scope, the active-tool gate, `--allow-network`. The plan is
-always printed before anything runs, and the whole run is auditable.
+**The guardrails live in the tools.** The agent doesn't second-guess what it
+runs: each planned command is invoked as the real command, whose own guards —
+engagement **scope**, the **active-tool gate**, the **offline-by-default**
+network policy, config **approvals** — decide what actually happens. The model's
+job is to execute the tools as instructed; the tools decide what's permitted.
+And the planner is **grounded** in the action registry, so the model can only
+ever schedule real commands (it never invents one). The plan is always printed
+first, and the whole run is auditable.
 
 ## 2. Credential & password helpers 🔑
 

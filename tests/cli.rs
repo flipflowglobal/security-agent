@@ -128,15 +128,31 @@ fn about_version_line_carries_commit_and_target() {
 }
 
 #[test]
-fn agent_dry_run_previews_and_refuses_effectful_actions() {
-    // A goal that plans a privileged action must, without --execute, show the
-    // plan and refuse to run it — a dry run changes nothing.
-    let output = run(&["--agent", "run the engagement engagement.conf"]);
+fn agent_dry_run_previews_without_executing() {
+    // --dry-run shows the plan and executes nothing (every step previewed).
+    let output = run(&["--agent", "run the engagement engagement.conf", "--dry-run"]);
     assert!(output.status.success());
     let text = stdout(&output);
     assert!(text.contains("Plan"));
     assert!(text.contains("--run-engagement"));
-    assert!(text.contains("needs --execute"));
+    assert!(text.contains("preview only"));
+    // Nothing ran.
+    assert!(text.contains("0 ran"));
+}
+
+#[test]
+fn agent_executes_the_plan_by_default() {
+    // Without --dry-run the agent runs the plan as instructed; the invoked
+    // command's own guardrails (here, offline planning) decide the rest.
+    let output = run(&[
+        "--agent",
+        "plan a scan from examples/engagement.example.conf",
+    ]);
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("--plan-scan"));
+    // The planned command actually ran.
+    assert!(text.contains("ran (exit 0)"));
 }
 
 #[test]
