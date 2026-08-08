@@ -69,6 +69,12 @@ fn main() -> ExitCode {
         Some("--analyze-passwd") => analyze_passwd_command(&mut arguments),
         Some("--analyze-sudoers") => analyze_sudoers_command(&mut arguments),
         Some("--analyze-keys") => analyze_keys_command(&mut arguments),
+        Some("--analyze-hosts") => analyze_hosts_command(&mut arguments),
+        Some("--postexploit-overview") => postexploit_overview_command(&mut arguments),
+        Some("--fragment-payload") => fragment_payload_command(&mut arguments),
+        Some("--gen-ipids") => gen_ipids_command(&mut arguments),
+        Some("--ip-checksum") => ip_checksum_command(&mut arguments),
+        Some("--analyze-deauth") => analyze_deauth_command(&mut arguments),
         Some("--guide") => guide_command(&mut arguments),
         Some("--tool-help") => tool_help_command(&mut arguments),
         Some("--shell-guide") => shell_guide_command(),
@@ -3229,6 +3235,335 @@ fn analyze_keys_command(arguments: &mut impl Iterator<Item = String>) -> ExitCod
         }
     }
     ExitCode::SUCCESS
+}
+
+/// `--analyze-hosts <content>` — analyze /etc/hosts for internal network mapping.
+fn analyze_hosts_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    let Some(path_or_content) = arguments.next() else {
+        eprintln!("usage: --analyze-hosts <path-to-hosts-or-content>");
+        return ExitCode::from(2);
+    };
+    if let Some(extra) = arguments.next() {
+        eprintln!("unexpected argument: {extra}");
+        return ExitCode::from(2);
+    }
+    let content = if std::path::Path::new(&path_or_content).exists() {
+        fs::read_to_string(&path_or_content).unwrap_or_default()
+    } else {
+        path_or_content
+    };
+    let indicators = security_agent::offensive::post_exploit::analyze_hosts_file(&content);
+    if indicators.is_empty() {
+        println!("No internal host mappings found.");
+    } else {
+        println!("Hosts File Indicators ({})", indicators.len());
+        println!("======================");
+        for ind in &indicators {
+            println!("{ind}");
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// `--postexploit-overview <passwd> [--shadow <file>] [--sudoers <file>] [--keys <file>] [--hosts <file>]`
+/// — run the full post-exploitation analysis suite and summarize by MITRE ATT&CK technique.
+fn postexploit_overview_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    use security_agent::offensive::post_exploit::{
+        analyze_authorized_keys, analyze_hosts_file, analyze_passwd_file, analyze_shadow_file,
+        analyze_sudoers,
+    };
+    use std::collections::BTreeMap;
+
+    let Some(passwd_arg) = arguments.next() else {
+        eprintln!("usage: --postexploit-overview <path-to-passwd-or-content>");
+        eprintln!("       [--shadow <file>] [--sudoers <file>] [--keys <file>] [--hosts <file>]");
+        eprintln!("example: --postexploit-overview passwd --shadow shadow --sudoers sudoers");
+        eprintln!("         --keys authorized_keys --hosts hosts");
+        return ExitCode::from(2);
+    };
+    let mut shadow_arg: Option<String> = None;
+    let mut sudoers_arg: Option<String> = None;
+    let mut keys_arg: Option<String> = None;
+    let mut hosts_arg: Option<String> = None;
+    let mut next = arguments.next();
+    while let Some(arg) = next.take() {
+        match arg.as_str() {
+            "--shadow" => {
+                shadow_arg = arguments.next();
+                next = arguments.next();
+            }
+            "--sudoers" => {
+                sudoers_arg = arguments.next();
+                next = arguments.next();
+            }
+            "--keys" => {
+                keys_arg = arguments.next();
+                next = arguments.next();
+            }
+            "--hosts" => {
+                hosts_arg = arguments.next();
+                next = arguments.next();
+            }
+            other => {
+                eprintln!("unexpected argument: {other}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    let read_arg = |arg: Option<String>| -> String {
+        arg.map(|path| {
+            if std::path::Path::new(&path).exists() {
+                fs::read_to_string(&path).unwrap_or_default()
+            } else {
+                path
+            }
+        })
+        .unwrap_or_default()
+    };
+
+    let mut mitre_counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut total = 0usize;
+
+    let mut record = |counted: &str| {
+        if counted.is_empty() {
+            return;
+        }
+        *mitre_counts.entry(counted.to_string()).or_insert(0) += 1;
+        total += 1;
+    };
+
+    println!("Post-Exploitation Overview");
+    println!("==========================");
+
+    println!("\n[1/5] /etc/passwd analysis");
+    let passwd = read_arg(Some(passwd_arg));
+    let passwd_findings = analyze_passwd_file(&passwd);
+    if passwd_findings.is_empty() {
+        println!("  No privilege escalation indicators.");
+    }
+    for ind in &passwd_findings {
+        println!("  {ind}");
+    }
+    // Privesc indicators carry a risk level instead of a MITRE id; bucket by category.
+    for ind in &passwd_findings {
+        record(&format!("PASSWD:{}", ind.category));
+    }
+
+    println!("\n[2/5] shadow analysis");
+    let shadow = read_arg(shadow_arg);
+    let shadow_findings = if shadow.is_empty() {
+        Vec::new()
+    } else {
+        analyze_shadow_file(&shadow)
+    };
+    if shadow_findings.is_empty() {
+        println!("  No shadow file provided or no indicators found.");
+    }
+    for ind in &shadow_findings {
+        println!("  {ind}");
+    }
+    for ind in &shadow_findings {
+        record(&format!("SHADOW:{}", ind.category));
+    }
+
+    println!("\n[3/5] sudoers analysis");
+    let sudoers = read_arg(sudoers_arg);
+    let sudoers_findings = if sudoers.is_empty() {
+        Vec::new()
+    } else {
+        analyze_sudoers(&sudoers)
+    };
+    if sudoers_findings.is_empty() {
+        println!("  No sudoers file provided or no risky configurations found.");
+    }
+    for ind in &sudoers_findings {
+        println!("  {ind}");
+    }
+    for ind in &sudoers_findings {
+        record(&format!("SUDOERS:{}", ind.category));
+    }
+
+    println!("\n[4/5] authorized_keys analysis");
+    let keys = read_arg(keys_arg);
+    let keys_findings = if keys.is_empty() {
+        Vec::new()
+    } else {
+        analyze_authorized_keys(&keys)
+    };
+    if keys_findings.is_empty() {
+        println!("  No authorized_keys file provided or no lateral movement indicators found.");
+    }
+    for ind in &keys_findings {
+        println!("  {ind}");
+    }
+    for ind in &keys_findings {
+        record(&format!("{} {}", ind.mitre_id, ind.technique));
+    }
+
+    println!("\n[5/5] hosts analysis");
+    let hosts = read_arg(hosts_arg);
+    let hosts_findings = if hosts.is_empty() {
+        Vec::new()
+    } else {
+        analyze_hosts_file(&hosts)
+    };
+    if hosts_findings.is_empty() {
+        println!("  No hosts file provided or no internal host mappings found.");
+    }
+    for ind in &hosts_findings {
+        println!("  {ind}");
+    }
+    for ind in &hosts_findings {
+        record(&format!("{} {}", ind.mitre_id, ind.technique));
+    }
+
+    println!("\nSummary ({} findings)", total);
+    println!("=========");
+    if mitre_counts.is_empty() {
+        println!("  No findings across the provided files.");
+    }
+    for (key, count) in &mitre_counts {
+        println!("  {key:<50} {count}");
+    }
+    ExitCode::SUCCESS
+}
+
+/// `--fragment-payload <payload> [--mtu <bytes>] [--hex]` — fragment a payload to evade DPI.
+fn fragment_payload_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    let Some(payload_arg) = arguments.next() else {
+        eprintln!("usage: --fragment-payload <payload> [--mtu <bytes>] [--hex]");
+        eprintln!("       payload is raw text unless --hex is given");
+        eprintln!("example: --fragment-payload 'GET /admin HTTP/1.1' --mtu 512");
+        return ExitCode::from(2);
+    };
+    let mut mtu: u16 = 1500;
+    let mut hex_mode = false;
+    let mut next = arguments.next();
+    while let Some(arg) = next.take() {
+        match arg.as_str() {
+            "--mtu" => {
+                let Some(mtu_str) = arguments.next() else {
+                    eprintln!("--mtu requires a value");
+                    return ExitCode::from(2);
+                };
+                match mtu_str.parse::<u16>() {
+                    Ok(value) if value > 40 => mtu = value,
+                    _ => {
+                        eprintln!("invalid mtu (must be > 40): {mtu_str}");
+                        return ExitCode::from(2);
+                    }
+                }
+                next = arguments.next();
+            }
+            "--hex" => {
+                hex_mode = true;
+                next = arguments.next();
+            }
+            other => {
+                eprintln!("unexpected argument: {other}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let bytes = if hex_mode {
+        hex_to_bytes(&payload_arg)
+    } else {
+        payload_arg.as_bytes().to_vec()
+    };
+    let fragmented = security_agent::offensive::evasion::fragment_http_payload(&bytes, mtu);
+    println!("{fragmented}");
+    for (i, frag) in fragmented.fragments.iter().enumerate() {
+        println!("Fragment {:>3} ({:>3} bytes): {}", i + 1, frag.len(), bytes_to_hex(frag));
+    }
+    ExitCode::SUCCESS
+}
+
+/// `--gen-ipids <count>` — generate randomized IP ID values to evade fingerprinting.
+fn gen_ipids_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    let Some(count_str) = arguments.next() else {
+        eprintln!("usage: --gen-ipids <count>");
+        return ExitCode::from(2);
+    };
+    let count: usize = match count_str.parse() {
+        Ok(value) if value <= 100_000 => value,
+        _ => {
+            eprintln!("invalid count (0..=100000): {count_str}");
+            return ExitCode::from(2);
+        }
+    };
+    let ipids = security_agent::offensive::evasion::generate_random_ipids(count);
+    println!("Randomized IP ID Sequence ({})", ipids.len());
+    println!("==============================");
+    for (i, ipid) in ipids.iter().enumerate() {
+        println!("{:>4}: 0x{:04x} ({})", i + 1, ipid, ipid);
+    }
+    println!();
+    println!("Randomized IP IDs evade passive OS/stack fingerprinting that assumes sequential IDs.");
+    ExitCode::SUCCESS
+}
+
+/// `--ip-checksum <hex-header>` — calculate the IP header checksum for forged packets.
+fn ip_checksum_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    let Some(header_hex) = arguments.next() else {
+        eprintln!("usage: --ip-checksum <hex-ip-header>");
+        eprintln!("example: --ip-checksum 4500003ca9c6000040060000c0a80101c0a80102");
+        return ExitCode::from(2);
+    };
+    if let Some(extra) = arguments.next() {
+        eprintln!("unexpected argument: {extra}");
+        return ExitCode::from(2);
+    }
+    let header = hex_to_bytes(&header_hex);
+    if header.is_empty() {
+        eprintln!("invalid or empty hex header");
+        return ExitCode::from(2);
+    }
+    let checksum = security_agent::offensive::evasion::calculate_ip_checksum(&header);
+    println!("IP Header Checksum");
+    println!("==================");
+    println!("Header bytes : {} ({header_hex})", header.len());
+    println!("Checksum     : 0x{checksum:04x} ({checksum})");
+    println!();
+    println!("Place into the header checksum field (bytes 10-11, zeroed first) for forged packets.");
+    ExitCode::SUCCESS
+}
+
+/// `--analyze-deauth <hex-80211-frame>` — analyze a raw 802.11 deauth/disassoc frame.
+fn analyze_deauth_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    let Some(frame_hex) = arguments.next() else {
+        eprintln!("usage: --analyze-deauth <hex-80211-frame>");
+        eprintln!("pass a raw 802.11 management frame (deauthentication or disassociation)");
+        return ExitCode::from(2);
+    };
+    if let Some(extra) = arguments.next() {
+        eprintln!("unexpected argument: {extra}");
+        return ExitCode::from(2);
+    }
+    let frame = hex_to_bytes(&frame_hex);
+    match security_agent::offensive::wireless::analyze_deauth_frame(&frame) {
+        Some(analysis) => {
+            println!("{analysis}");
+            ExitCode::SUCCESS
+        }
+        None => {
+            eprintln!(
+                "not a deauthentication/disassociation frame (need subtype 10 or 12, >= 26 bytes)"
+            );
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 3);
+    for (i, byte) in bytes.iter().enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
 }
 
 #[cfg(test)]
