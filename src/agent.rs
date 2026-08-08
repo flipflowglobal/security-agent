@@ -23,6 +23,18 @@ use crate::language_model::NeuralLanguageModel;
 use crate::local_assets::LocalAgentAssets;
 use std::collections::{BTreeSet, VecDeque};
 
+/// A typed artifact one action can produce and another can consume.
+///
+/// This lets the loop wire steps together (e.g. an engagement's findings
+/// feeding a report). Extensible; today the one chained artifact is a findings
+/// log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Artifact {
+    /// A findings log (`--findings-log` output), consumed by `--report` /
+    /// `--schedule-retest`.
+    FindingsLog,
+}
+
 /// A concrete, resolved decision to run one registry action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActionCall {
@@ -34,11 +46,26 @@ pub struct ActionCall {
     pub class: ActionClass,
     /// Whether the action performs live network I/O.
     pub network: bool,
-    /// The resolved argument, if the action takes one and it was found.
-    pub arg: Option<String>,
+    /// The full resolved argument vector passed after `command` — the
+    /// positional argument (a path, asset name, or free text) followed by any
+    /// flags the planner derived from the goal (e.g. `--format json`) and any
+    /// artifact wiring the loop added (e.g. `--findings-log <path>`).
+    pub args: Vec<String>,
     /// Grounded routing confidence, 0–100 (semantic similarity to the
     /// action's examples).
     pub confidence: u8,
+}
+
+impl ActionCall {
+    /// The primary (positional) argument, if any — the first entry of
+    /// [`Self::args`] that isn't a flag.
+    #[must_use]
+    pub fn primary_arg(&self) -> Option<&str> {
+        self.args
+            .iter()
+            .find(|arg| !arg.starts_with('-'))
+            .map(String::as_str)
+    }
 }
 
 /// What happened when the loop handled one [`ActionCall`].
@@ -106,6 +133,14 @@ impl ActionOutcome {
 pub trait ActionExecutor {
     /// Runs `call` and returns its outcome.
     fn execute(&mut self, call: &ActionCall) -> ActionOutcome;
+
+    /// Allocates a fresh path for a chained `artifact` (e.g. a temp findings
+    /// log), or `None` if this executor can't — in which case the loop skips
+    /// artifact chaining and each step uses only what the goal named. The
+    /// default is `None`; the real (binary) executor overrides it.
+    fn allocate_artifact(&mut self, _artifact: Artifact) -> Option<String> {
+        None
+    }
 }
 
 /// How the agent runs a plan.
@@ -232,7 +267,7 @@ impl<'a> AgentPlanner<'a> {
                 continue;
             };
             let confidence = semantic_confidence(&goal_vec, spec.examples, self.model);
-            let arg = resolve_arg(spec, goal, &lowered, asset.as_ref());
+            let args = resolve_args(spec, goal, &lowered, asset.as_ref());
             hits.push((
                 position,
                 order,
@@ -241,7 +276,7 @@ impl<'a> AgentPlanner<'a> {
                     command: spec.command,
                     class: spec.class,
                     network: spec.network,
-                    arg,
+                    args,
                     confidence,
                 },
             ));
@@ -270,7 +305,9 @@ pub fn run_agent(
     executor: &mut dyn ActionExecutor,
     policy: AgentPolicy,
 ) -> AgentTranscript {
-    let mut queue: VecDeque<ActionCall> = planner.plan(goal).into();
+    let mut plan = planner.plan(goal);
+    chain_artifacts(&mut plan, executor);
+    let mut queue: VecDeque<ActionCall> = plan.into();
     let mut queued: BTreeSet<&'static str> = queue.iter().map(|call| call.action).collect();
     let mut handled: BTreeSet<&'static str> = BTreeSet::new();
     let mut steps: Vec<AgentStep> = Vec::new();
@@ -323,7 +360,7 @@ fn handle_call(
             output: String::new(),
         };
     }
-    if requires_arg(call.command) && call.arg.is_none() {
+    if requires_arg(call.command) && call.primary_arg().is_none() {
         return ActionOutcome {
             status: ActionStatus::Skipped(
                 "required argument was not found in the goal".to_string(),
@@ -334,8 +371,9 @@ fn handle_call(
     executor.execute(call)
 }
 
-/// Whether a command cannot run without its argument (the path/config-driven
-/// ones). Argument-optional actions (e.g. `--llm-generate`) are not listed.
+/// Whether a command cannot run without its positional argument (the
+/// path/config-driven ones). Argument-optional actions (e.g. `--llm-generate`)
+/// are not listed.
 fn requires_arg(command: &str) -> bool {
     matches!(
         command,
@@ -347,6 +385,87 @@ fn requires_arg(command: &str) -> bool {
             | "--plan-scan"
             | "--run-engagement"
     )
+}
+
+/// The artifact an action can produce, if any.
+fn produces_artifact(action: &str) -> Option<Artifact> {
+    match action {
+        "run-engagement" => Some(Artifact::FindingsLog),
+        _ => None,
+    }
+}
+
+/// The artifact an action consumes as its positional input, if any.
+fn consumes_artifact(action: &str) -> Option<Artifact> {
+    match action {
+        "report" | "schedule-retest" => Some(Artifact::FindingsLog),
+        _ => None,
+    }
+}
+
+/// Wires produced artifacts to later consumers.
+///
+/// When the plan runs a producer (e.g. `run-engagement`, which can write a
+/// findings log) before a consumer (`report` / `schedule-retest`), the loop
+/// allocates one artifact path, makes the producer emit it
+/// (`--findings-log <path>`), and points every following consumer at it — so
+/// "run the engagement then report" reports on what the run just found, with no
+/// path named in the goal. A consumer with no preceding producer keeps whatever
+/// path the goal named. A no-op when the executor can't allocate a path (see
+/// [`ActionExecutor::allocate_artifact`]).
+pub fn chain_artifacts(plan: &mut [ActionCall], executor: &mut dyn ActionExecutor) {
+    chain_one(plan, executor, Artifact::FindingsLog, "--findings-log");
+}
+
+/// Chains a single artifact kind through the plan (see [`chain_artifacts`]).
+fn chain_one(
+    plan: &mut [ActionCall],
+    executor: &mut dyn ActionExecutor,
+    artifact: Artifact,
+    produce_flag: &str,
+) {
+    let Some(producer_idx) = plan
+        .iter()
+        .position(|call| produces_artifact(call.action) == Some(artifact))
+    else {
+        return;
+    };
+    let has_following_consumer = plan
+        .iter()
+        .skip(producer_idx + 1)
+        .any(|call| consumes_artifact(call.action) == Some(artifact));
+    if !has_following_consumer {
+        return;
+    }
+    let Some(path) = executor.allocate_artifact(artifact) else {
+        return;
+    };
+
+    // The producer emits the artifact (unless the goal already set that flag).
+    let producer = &mut plan[producer_idx];
+    if !producer.args.iter().any(|arg| arg == produce_flag) {
+        producer.args.push(produce_flag.to_string());
+        producer.args.push(path.clone());
+    }
+    // Point each following consumer's positional argument at it, overriding any
+    // goal-resolved path (which for these commands would otherwise grab the
+    // producer's config) while keeping the consumer's own flags (e.g.
+    // `--format json`).
+    for call in plan.iter_mut().skip(producer_idx + 1) {
+        if consumes_artifact(call.action) == Some(artifact) {
+            set_positional(&mut call.args, path.clone());
+        }
+    }
+}
+
+/// Sets the positional (first non-flag) argument of `args` to `path`, keeping
+/// any flags. Replaces an existing positional, or prepends when there is none.
+fn set_positional(args: &mut Vec<String>, path: String) {
+    if args.first().is_some_and(|first| !first.starts_with('-')) {
+        args[0] = path;
+    } else {
+        args.insert(0, path);
+    }
 }
 
 /// Identity/timing for the audit records derived from a run.
@@ -373,7 +492,11 @@ pub fn agent_audit_records(
         .steps
         .iter()
         .map(|step| {
-            let arg = step.call.arg.as_deref().unwrap_or("-");
+            let args = if step.call.args.is_empty() {
+                "-".to_string()
+            } else {
+                step.call.args.join(" ")
+            };
             AuditRecord {
                 timestamp_epoch_seconds: context.timestamp_epoch_seconds,
                 actor: context.actor.to_string(),
@@ -381,7 +504,7 @@ pub fn agent_audit_records(
                 action: format!("agent_action_{}", step.outcome.status.label()),
                 target: step.call.action.to_string(),
                 details: format!(
-                    "command={} class={} arg={arg} confidence={}",
+                    "command={} class={} args=[{args}] confidence={}",
                     step.call.command,
                     step.call.class.label(),
                     step.call.confidence,
@@ -461,14 +584,17 @@ fn first_asset(lowered: &str, assets: &LocalAgentAssets) -> Option<(usize, Strin
     None
 }
 
-/// Resolves the argument `spec` takes from the goal.
-fn resolve_arg(
+/// Resolves the full argument vector `spec` takes from the goal: its
+/// positional argument (a path, asset name, or free text), followed by any
+/// flags the goal implies for that command (see [`flag_modifiers`]).
+fn resolve_args(
     spec: &ActionSpec,
     goal: &str,
     lowered: &str,
     asset: Option<&(usize, String)>,
-) -> Option<String> {
-    match spec.arg {
+) -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
+    let positional = match spec.arg {
         ArgKind::None => None,
         ArgKind::AssetName => asset.map(|(_, name)| name.clone()),
         ArgKind::Path => goal
@@ -477,13 +603,50 @@ fn resolve_arg(
             .map(ToString::to_string),
         ArgKind::Text => {
             let remainder = strip_leading_triggers(goal, lowered, spec.triggers);
-            if remainder.is_empty() {
-                None
-            } else {
-                Some(remainder)
+            (!remainder.is_empty()).then_some(remainder)
+        }
+    };
+    if let Some(positional) = positional {
+        args.push(positional);
+    }
+    args.extend(flag_modifiers(spec.name, lowered));
+    args
+}
+
+/// Extra command flags a goal implies for a given action — grounded, precise,
+/// and additive (an unrecognized phrasing adds nothing). Examples: "report as
+/// json" → `--format json`; "run the engagement without expansion" →
+/// `--no-expand`.
+fn flag_modifiers(action: &str, lowered: &str) -> Vec<String> {
+    let mut flags = Vec::new();
+    match action {
+        "report" => {
+            if lowered.contains("sarif") {
+                flags.push("--format".to_string());
+                flags.push("sarif".to_string());
+            } else if lowered.contains("json") {
+                flags.push("--format".to_string());
+                flags.push("json".to_string());
+            } else if lowered.contains("markdown") || lowered.contains(" md") {
+                flags.push("--format".to_string());
+                flags.push("markdown".to_string());
             }
         }
+        "run-engagement" if wants_no_expand(lowered) => {
+            flags.push("--no-expand".to_string());
+        }
+        _ => {}
     }
+    flags
+}
+
+/// Whether the goal asks to disable result-driven expansion.
+fn wants_no_expand(lowered: &str) -> bool {
+    lowered.contains("no expand")
+        || lowered.contains("no expansion")
+        || lowered.contains("without expansion")
+        || lowered.contains("don't expand")
+        || lowered.contains("dont expand")
 }
 
 /// Drops the leading command words a `Text` action's triggers match, keeping
@@ -563,11 +726,13 @@ mod tests {
         AgentPlanner::new(assets, model)
     }
 
-    /// A fake executor that records calls and returns scripted output, so the
-    /// loop is exercised deterministically without running real commands.
+    /// A fake executor that records calls, returns scripted output, and hands
+    /// out deterministic artifact paths, so the loop (and chaining) is
+    /// exercised without running real commands or touching the filesystem.
     struct FakeExecutor {
         calls: Vec<ActionCall>,
         output_for: fn(&str) -> String,
+        allocations: usize,
     }
 
     impl FakeExecutor {
@@ -575,6 +740,7 @@ mod tests {
             Self {
                 calls: Vec::new(),
                 output_for,
+                allocations: 0,
             }
         }
     }
@@ -583,6 +749,12 @@ mod tests {
         fn execute(&mut self, call: &ActionCall) -> ActionOutcome {
             self.calls.push(call.clone());
             ActionOutcome::ran(0, (self.output_for)(call.action))
+        }
+
+        fn allocate_artifact(&mut self, artifact: Artifact) -> Option<String> {
+            self.allocations += 1;
+            let Artifact::FindingsLog = artifact;
+            Some(format!("/tmp/fake-findings-{}.jsonl", self.allocations))
         }
     }
 
@@ -643,7 +815,7 @@ mod tests {
             .iter()
             .find(|c| c.action == "view-audit")
             .expect("view-audit");
-        assert_eq!(call.arg.as_deref(), Some("audit.jsonl"));
+        assert_eq!(call.primary_arg(), Some("audit.jsonl"));
     }
 
     #[test]
@@ -655,7 +827,7 @@ mod tests {
             .iter()
             .find(|c| c.action == "show-skill")
             .expect("show-skill");
-        assert_eq!(call.arg.as_deref(), Some("nmap"));
+        assert_eq!(call.primary_arg(), Some("nmap"));
     }
 
     #[test]
@@ -835,5 +1007,108 @@ mod tests {
         let planner = planner_over(&assets, &model);
         let goal = "run the engagement e.conf then write a report from findings.jsonl";
         assert_eq!(planner.plan(goal), planner.plan(goal));
+    }
+
+    #[test]
+    fn resolves_report_format_flag_from_the_goal() {
+        let assets = LocalAgentAssets::bundled();
+        let model = model();
+        let plan = planner_over(&assets, &model).plan("write a report from findings.jsonl as json");
+        let call = plan.iter().find(|c| c.action == "report").expect("report");
+        assert!(
+            call.args.windows(2).any(|w| w == ["--format", "json"]),
+            "args: {:?}",
+            call.args
+        );
+    }
+
+    #[test]
+    fn resolves_no_expand_flag_for_the_engagement() {
+        let assets = LocalAgentAssets::bundled();
+        let model = model();
+        let plan =
+            planner_over(&assets, &model).plan("run the engagement e.conf without expansion");
+        let call = plan
+            .iter()
+            .find(|c| c.action == "run-engagement")
+            .expect("run-engagement");
+        assert!(
+            call.args.iter().any(|a| a == "--no-expand"),
+            "args: {:?}",
+            call.args
+        );
+    }
+
+    #[test]
+    fn chains_engagement_findings_into_the_report() {
+        let assets = LocalAgentAssets::bundled();
+        let model = model();
+        let mut plan = planner_over(&assets, &model)
+            .plan("run the engagement e.conf then write a report as json");
+        let mut executor = FakeExecutor::new(|_| String::new());
+        chain_artifacts(&mut plan, &mut executor);
+
+        let producer = plan
+            .iter()
+            .find(|c| c.action == "run-engagement")
+            .expect("run-engagement");
+        let consumer = plan.iter().find(|c| c.action == "report").expect("report");
+
+        // The producer was made to emit a findings log...
+        let log = producer
+            .args
+            .windows(2)
+            .find(|w| w[0] == "--findings-log")
+            .map(|w| w[1].clone())
+            .expect("producer emits --findings-log");
+        // ...the report's positional now points at exactly that path...
+        assert_eq!(consumer.primary_arg(), Some(log.as_str()));
+        // ...and its own flag (--format json) survived the chaining.
+        assert!(
+            consumer.args.windows(2).any(|w| w == ["--format", "json"]),
+            "flags lost: {:?}",
+            consumer.args
+        );
+    }
+
+    #[test]
+    fn report_without_a_producer_keeps_its_named_path() {
+        let assets = LocalAgentAssets::bundled();
+        let model = model();
+        let mut plan = planner_over(&assets, &model).plan("write a report from findings.jsonl");
+        let mut executor = FakeExecutor::new(|_| String::new());
+        chain_artifacts(&mut plan, &mut executor);
+        let consumer = plan.iter().find(|c| c.action == "report").expect("report");
+        assert_eq!(consumer.primary_arg(), Some("findings.jsonl"));
+        // No producer -> no artifact was allocated.
+        assert_eq!(executor.allocations, 0);
+    }
+
+    #[test]
+    fn chaining_reports_on_what_the_run_found_end_to_end() {
+        let assets = LocalAgentAssets::bundled();
+        let model = model();
+        let planner = planner_over(&assets, &model);
+        let mut executor = FakeExecutor::new(|_| String::new());
+        let transcript = run_agent(
+            "run the engagement e.conf then write a report",
+            &planner,
+            &mut executor,
+            permissive(),
+        );
+        // The report step actually executed with the chained findings path.
+        let report_call = executor
+            .calls
+            .iter()
+            .find(|c| c.action == "report")
+            .expect("report ran");
+        assert!(
+            report_call
+                .primary_arg()
+                .is_some_and(|p| p.contains("fake-findings")),
+            "report arg: {:?}",
+            report_call.args
+        );
+        assert!(!transcript.is_empty());
     }
 }

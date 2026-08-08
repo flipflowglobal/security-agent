@@ -156,6 +156,25 @@ fn agent_executes_the_plan_by_default() {
 }
 
 #[test]
+fn agent_chains_engagement_findings_into_a_json_report() {
+    // One goal, no paths named: the engagement's findings are wired into the
+    // report, and "as json" is honored — so the report prints a JSON object.
+    let output = run(&[
+        "--agent",
+        "run the engagement examples/engagement.example.conf then write a report as json",
+    ]);
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("--run-engagement"));
+    assert!(text.contains("--report"));
+    // The report step emitted JSON (chained path + --format json preserved).
+    assert!(
+        text.contains("\"engagement_id\""),
+        "expected a JSON report in output"
+    );
+}
+
+#[test]
 fn agent_runs_a_read_only_multi_step_goal() {
     let output = run(&["--agent", "list your tools and list your skills"]);
     assert!(output.status.success());

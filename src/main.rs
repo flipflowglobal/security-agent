@@ -1900,6 +1900,7 @@ fn parse_agent_args(arguments: &mut impl Iterator<Item = String>) -> Result<Agen
 /// passed that opt-in through to the agent.
 struct CliExecutor {
     allow_network: bool,
+    allocations: usize,
 }
 
 impl security_agent::ActionExecutor for CliExecutor {
@@ -1914,9 +1915,7 @@ impl security_agent::ActionExecutor for CliExecutor {
         };
         let mut command = std::process::Command::new(exe);
         command.arg(call.command);
-        if let Some(arg) = &call.arg {
-            command.arg(arg);
-        }
+        command.args(&call.args);
         if call.network && self.allow_network {
             command.arg("--allow-network");
         }
@@ -1939,6 +1938,20 @@ impl security_agent::ActionExecutor for CliExecutor {
                 call.command
             )),
         }
+    }
+
+    fn allocate_artifact(&mut self, artifact: security_agent::Artifact) -> Option<String> {
+        // A per-run temp path the agent wires from a producer to a consumer
+        // (e.g. an engagement's findings into a report). Unique per allocation
+        // so concurrent runs don't collide.
+        let security_agent::Artifact::FindingsLog = artifact;
+        self.allocations += 1;
+        let path = std::env::temp_dir().join(format!(
+            "security-agent-agent-{}-{}.jsonl",
+            std::process::id(),
+            self.allocations
+        ));
+        Some(path.to_string_lossy().into_owned())
     }
 }
 
@@ -1987,7 +2000,11 @@ fn agent_command(
     }
     println!("Plan ({} step(s)):", plan.len());
     for (index, call) in plan.iter().enumerate() {
-        let arg = call.arg.as_deref().unwrap_or("-");
+        let arg = if call.args.is_empty() {
+            "-".to_string()
+        } else {
+            call.args.join(" ")
+        };
         let disposition = if policy.dry_run {
             "preview only"
         } else if call.network && !args.allow_network {
@@ -1996,7 +2013,7 @@ fn agent_command(
             "will run"
         };
         println!(
-            "  {}. {} (arg: {arg}, {}, {}%) — {disposition}",
+            "  {}. {} (args: {arg}, {}, {}%) — {disposition}",
             index + 1,
             call.command,
             call.class.label(),
@@ -2007,6 +2024,7 @@ fn agent_command(
 
     let mut executor = CliExecutor {
         allow_network: args.allow_network,
+        allocations: 0,
     };
     let transcript = security_agent::run_agent(&args.goal, &planner, &mut executor, policy);
 
