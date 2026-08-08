@@ -1,4 +1,6 @@
+pub mod action_registry;
 pub mod advanced;
+pub mod agent;
 pub mod anomaly;
 pub mod arsenal;
 pub mod audit_db;
@@ -59,8 +61,13 @@ pub mod tool_adapter;
 pub mod tool_gate;
 pub mod workflow;
 
+pub use action_registry::{ActionClass, ActionSpec, ArgKind};
 pub use advanced::{
     AttackPathEdge, AttackPathGraph, RetestSchedule, ThreatModelNode, propose_retest_schedule,
+};
+pub use agent::{
+    ActionCall, ActionExecutor, ActionOutcome, ActionStatus, AgentAuditContext, AgentPlanner,
+    AgentPolicy, AgentStep, AgentTranscript, agent_audit_records, run_agent,
 };
 pub use anomaly::{AnomalyFlag, DEFAULT_ANOMALY_THRESHOLD, scan_findings};
 pub use audit_log::{AuditLogError, append_audit_records, load_audit_records};

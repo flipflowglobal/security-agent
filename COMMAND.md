@@ -57,8 +57,40 @@ If any of those print output without an error, you're ready to go.
 | `--list-tools` | Lists cataloged tools and whether each is installed / built-in / missing. | `security-agent --list-tools` |
 | `--list-skills` | Lists the step-by-step playbooks compiled into the binary. | `security-agent --list-skills` |
 | `--show-skill <name>` | Prints one skill's full playbook. | `security-agent --show-skill nmap` |
-| `--ask "<text>"` | Routes a plain-English request to the right read-only action. | `security-agent --ask "what tools do you have"` |
+| `--ask "<text>"` | Routes a plain-English request to a single read-only action. | `security-agent --ask "what tools do you have"` |
+| `--agent "<goal>"` | Plans **and runs** a sequence of the agent's own commands from a goal (see below). | `security-agent --agent "list tools then show build info"` |
 | `--tui` | Interactive terminal menu over every command. | `security-agent --tui` |
+
+### Agent mode: let the model drive 🤖
+
+`--ask` maps one sentence to one read-only action. `--agent` goes further: the
+built-in model plans an **ordered sequence** of the agent's own commands from a
+plain-English goal and runs them — a grounded, gated plan→execute loop.
+
+```sh
+# Dry run (default): plans and previews, runs only read-only steps.
+security-agent --agent "run the engagement eng.conf then write a report"
+
+# Actually run effectful steps (planning/authorizing, writing files):
+security-agent --agent "plan a scan from eng.conf" --execute
+
+# Also permit live-network steps (on top of --execute):
+security-agent --agent "run the engagement eng.conf" --execute --allow-network
+```
+
+| Flag | Meaning |
+|---|---|
+| *(none)* | **Dry run.** Prints the plan; runs read-only steps; refuses effectful ones. |
+| `--execute` | Run effectful steps (writes, planning/authorizing). |
+| `--allow-network` | Also run live-network steps (required *in addition* to `--execute`). |
+| `--max-steps <N>` | Cap how many actions the run may execute (default 8). |
+| `--audit-log <path>` / `--audit-db <path>` | Record every step (ran / refused / skipped) as an audit trail. |
+| `--follow-up` | Experimental: also plan follow-ups from each step's *output* (off by default — ordinary command output is data, not instructions). |
+
+**Grounded and safe by design.** The model can only plan commands the agent
+actually has (it never invents one), and every step passes the same guards the
+CLI enforces — scope, the active-tool gate, `--allow-network`. The plan is
+always printed before anything runs, and the whole run is auditable.
 
 ## 2. Credential & password helpers 🔑
 

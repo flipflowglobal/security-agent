@@ -128,6 +128,43 @@ fn about_version_line_carries_commit_and_target() {
 }
 
 #[test]
+fn agent_dry_run_previews_and_refuses_effectful_actions() {
+    // A goal that plans a privileged action must, without --execute, show the
+    // plan and refuse to run it — a dry run changes nothing.
+    let output = run(&["--agent", "run the engagement engagement.conf"]);
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("Plan"));
+    assert!(text.contains("--run-engagement"));
+    assert!(text.contains("needs --execute"));
+}
+
+#[test]
+fn agent_runs_a_read_only_multi_step_goal() {
+    let output = run(&["--agent", "list your tools and list your skills"]);
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("--list-tools"));
+    assert!(text.contains("--list-skills"));
+    // Both read-only steps actually ran.
+    assert!(text.contains("2 ran") || text.contains("2 step(s) handled, 2 ran"));
+}
+
+#[test]
+fn agent_declines_an_out_of_scope_goal() {
+    let output = run(&["--agent", "book me a flight to paris"]);
+    assert!(output.status.success());
+    assert!(stdout(&output).contains("No in-scope action matched"));
+}
+
+#[test]
+fn agent_requires_a_goal() {
+    let output = run(&["--agent"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stderr(&output).contains("missing goal"));
+}
+
+#[test]
 fn list_skills_lists_the_general_skill() {
     let output = run(&["--list-skills"]);
     assert!(output.status.success());
