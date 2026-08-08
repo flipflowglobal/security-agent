@@ -784,7 +784,7 @@
         var output = $('#output-offensive-hash');
         var hash = $('#offensive-hash-input').value.trim();
         if (!hash) { setEmpty(output, 'Enter a hash to identify.'); return; }
-        await runNative(output, 'hash-id', { hash: hash });
+        runBinary(output, ['--hash-id', hash]);
     });
 
     // ── Password Strength ─────────────────────────────────────────────────
@@ -793,7 +793,7 @@
         var output = $('#output-offensive-password');
         var pw = $('#offensive-password-input').value.trim();
         if (!pw) { setEmpty(output, 'Enter a password to analyze.'); return; }
-        await runNative(output, 'password-strength', { password: pw });
+        runBinary(output, ['--password-strength', pw]);
     });
 
     // ── Gen Wordlist ──────────────────────────────────────────────────────
@@ -802,13 +802,12 @@
         var output = $('#output-offensive-wordlist');
         var target = $('#offensive-wordlist-target').value.trim();
         if (!target) { setEmpty(output, 'Enter a target name.'); return; }
-        var args = {
-            target: target,
-            company: $('#offensive-wordlist-company').value.trim(),
-            year: $('#offensive-wordlist-year').value.trim(),
-            mutations: 50000,
-        };
-        await runNative(output, 'wordlist', args);
+        var cli = ['--gen-wordlist', target];
+        var company = $('#offensive-wordlist-company').value.trim();
+        var year = $('#offensive-wordlist-year').value.trim();
+        if (company) cli.push('--company', company);
+        if (year) cli.push('--year', year);
+        runBinary(output, cli);
     });
 
     // ── Gen Shell Payload ─────────────────────────────────────────────────
@@ -819,7 +818,7 @@
         var lhost = $('#offensive-shell-lhost').value.trim();
         var lport = $('#offensive-shell-lport').value.trim();
         if (!lhost || !lport) { setEmpty(output, 'Enter LHOST and LPORT.'); return; }
-        await runNative(output, 'payload', { mode: 'generate', type: type, lhost: lhost, lport: lport, encoding: 'base64' });
+        runBinary(output, ['--gen-shell', type, lhost, lport]);
     });
 
     // ── Analyze Payload ───────────────────────────────────────────────────
@@ -828,7 +827,7 @@
         var output = $('#output-offensive-payload');
         var payload = $('#offensive-payload-input').value.trim();
         if (!payload) { setEmpty(output, 'Enter a payload to analyze.'); return; }
-        await runNative(output, 'payload', { mode: 'analyze', payload: payload });
+        runBinary(output, ['--analyze-payload', payload]);
     });
 
     // ── PS Obfuscation ───────────────────────────────────────────────────
@@ -837,7 +836,7 @@
         var output = $('#output-offensive-evasion');
         var cmd = $('#offensive-evasion-command').value.trim();
         if (!cmd) { setEmpty(output, 'Enter a PowerShell command.'); return; }
-        await runNative(output, 'obfuscate', { mode: 'ps', command: cmd });
+        runBinary(output, ['--obfuscate-ps', cmd]);
     });
 
     // ── Wireless Audit ────────────────────────────────────────────────────
@@ -848,7 +847,7 @@
         var security = $('#offensive-wifi-security').value;
         var encryption = $('#offensive-wifi-encryption').value;
         if (!essid) { setEmpty(output, 'Enter an ESSID.'); return; }
-        await runNative(output, 'wireless', { mode: 'audit', ssid: essid, security: security, encryption: encryption, apCount: 1, bruteRate: 1000 });
+        runBinary(output, ['--audit-wifi', essid, security, encryption]);
     });
 
     // ── Post-Exploit Analysis ─────────────────────────────────────────────
@@ -858,12 +857,9 @@
         var mode = $('#offensive-postexploit-mode').value;
         var input = $('#offensive-postexploit-input').value.trim();
         if (!input) { setEmpty(output, 'Provide file content or path.'); return; }
-        // Route the content to the argument key the engine reads per mode.
-        var args = { mode: mode };
-        if (mode === 'passwd') { args.passwd = input; args.shadow = ''; }
-        else if (mode === 'sudoers') { args.sudoers = input; }
-        else { args.passwd = input; args.shadow = ''; }
-        await runNative(output, 'postexploit', args);
+        // Route through the Rust-native CLI analyzers (owned by the app binary).
+        var cli = (mode === 'sudoers') ? ['--analyze-sudoers', input] : ['--analyze-passwd', input];
+        runBinary(output, cli);
     });
 
     // ── List Tools ──────────────────────────────────────────────────────
@@ -914,10 +910,10 @@
         var output = $('#output-offensive-decoys');
         var realIp = $('#offensive-decoys-real-ip').value.trim();
         if (!realIp) { setEmpty(output, 'Enter a real IP address.'); return; }
-        var args = { mode: 'decoy', ip: realIp, cidr: 24, count: 5 };
+        var cli = ['--gen-decoys', realIp];
         var count = $('#offensive-decoys-count').value.trim();
-        if (count) args.count = Number(count);
-        await runNative(output, 'obfuscate', args);
+        if (count) cli.push(count);
+        runBinary(output, cli);
     });
 
     // ── Analyze Handshake ───────────────────────────────────────────────
@@ -927,8 +923,8 @@
         var framesRaw = $('#offensive-handshake-frames').value.trim();
         if (!framesRaw) { setEmpty(output, 'Paste EAPOL hex frames.'); return; }
         var frames = framesRaw.split(/\s+/).filter(function (f) { return f.length > 0; });
-        var last = frames[frames.length - 1] || '';
-        await runNative(output, 'wireless', { mode: 'eapol', hex: last });
+        if (frames.length === 0) { setEmpty(output, 'Paste EAPOL hex frames.'); return; }
+        runBinary(output, ['--analyze-handshake'].concat(frames));
     });
 
     // ── WPS PIN ─────────────────────────────────────────────────────────
