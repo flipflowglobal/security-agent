@@ -78,3 +78,10 @@ audit*.jsonl
 # (the committed *.example.env templates stay tracked).
 secrets.env
 *.secrets.env
+
+# Local OpenCode/agent configuration (personal, not for the repo)
+dkconfig.json
+dkconfig.jsonc
+opencode.json
+opencode.jsonc
+Plan Security Agent OpenCode Config.txt

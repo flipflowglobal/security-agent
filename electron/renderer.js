@@ -57,6 +57,152 @@
         outputEl.innerHTML = '<span class="empty-state">' + msg + '</span>';
     }
 
+    // ── Native Structured Output Rendering ────────────────────────────────
+
+    function esc(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    function nativeBadgeClass(severity) {
+        return severity === 'high' ? 'badge-danger'
+            : severity === 'medium' ? 'badge-warning'
+            : severity === 'ok' ? 'badge-success'
+            : 'badge-info';
+    }
+
+    function renderSection(section) {
+        var el = document.createElement('div');
+        el.className = 'native-section';
+
+        if (section.title) {
+            var h = document.createElement('div');
+            h.className = 'native-section-title';
+            h.textContent = section.title;
+            el.appendChild(h);
+        }
+
+        if (section.type === 'kv') {
+            var kv = document.createElement('div');
+            kv.className = 'native-kv';
+            (section.rows || []).forEach(function (row) {
+                var r = document.createElement('div');
+                r.className = 'native-kv-row';
+                var k = document.createElement('span');
+                k.className = 'native-kv-key';
+                k.textContent = row[0];
+                var v = document.createElement('span');
+                v.className = 'native-kv-value';
+                v.textContent = row[1];
+                r.appendChild(k);
+                r.appendChild(v);
+                kv.appendChild(r);
+            });
+            el.appendChild(kv);
+        } else if (section.type === 'list') {
+            var ul = document.createElement('ul');
+            ul.className = 'native-list';
+            (section.items || []).forEach(function (item) {
+                var li = document.createElement('li');
+                if (item.severity) {
+                    var badge = document.createElement('span');
+                    badge.className = 'badge ' + nativeBadgeClass(item.severity);
+                    badge.textContent = item.severity.toUpperCase();
+                    li.appendChild(badge);
+                }
+                var span = document.createElement('span');
+                span.textContent = item.text || '';
+                li.appendChild(span);
+                ul.appendChild(li);
+            });
+            el.appendChild(ul);
+        } else if (section.type === 'table') {
+            var tbl = document.createElement('div');
+            tbl.className = 'native-table';
+            var head = document.createElement('div');
+            head.className = 'native-tr native-th';
+            (section.columns || []).forEach(function (col) {
+                var c = document.createElement('span');
+                c.className = 'native-td';
+                c.textContent = col;
+                head.appendChild(c);
+            });
+            tbl.appendChild(head);
+            (section.rows || []).forEach(function (row) {
+                var tr = document.createElement('div');
+                tr.className = 'native-tr';
+                row.forEach(function (cell) {
+                    var c = document.createElement('span');
+                    c.className = 'native-td';
+                    c.textContent = cell;
+                    tr.appendChild(c);
+                });
+                tbl.appendChild(tr);
+            });
+            el.appendChild(tbl);
+        } else if (section.type === 'code') {
+            var pre = document.createElement('pre');
+            pre.className = 'native-code';
+            pre.textContent = section.content || '';
+            el.appendChild(pre);
+        } else if (section.type === 'badges') {
+            var bwrap = document.createElement('div');
+            bwrap.className = 'native-badges';
+            (section.badges || []).forEach(function (b) {
+                var bd = document.createElement('span');
+                bd.className = 'badge ' + nativeBadgeClass(b.severity);
+                bd.textContent = b.label;
+                bwrap.appendChild(bd);
+            });
+            el.appendChild(bwrap);
+        }
+
+        return el;
+    }
+
+    function setNativeResult(outputEl, result) {
+        outputEl.classList.remove('error');
+        if (!result.ok) {
+            outputEl.classList.add('error');
+            var err = document.createElement('div');
+            err.className = 'native-error';
+            err.textContent = result.error || result.subtitle || 'Tool failed';
+            outputEl.innerHTML = '';
+            outputEl.appendChild(err);
+            return;
+        }
+        outputEl.innerHTML = '';
+        var meta = document.createElement('div');
+        meta.className = 'native-meta';
+        meta.textContent = (result.subtitle || '') +
+            (result.ms != null ? ' · ' + result.ms + ' ms · native' : '');
+        outputEl.appendChild(meta);
+        (result.sections || []).forEach(function (section) {
+            outputEl.appendChild(renderSection(section));
+        });
+        if (!(result.sections || []).length) {
+            outputEl.textContent = '(no output)';
+        }
+    }
+
+    async function runNative(outputEl, toolId, args) {
+        setLoading(outputEl);
+        var result = await window.api.nativeRun(toolId, args);
+        setNativeResult(outputEl, result);
+        addToolbar(outputEl);
+    }
+
+    // Fallback: when the native engine is unavailable (e.g. pure web), run
+    // through the Rust binary as before.
+    function runBinary(outputEl, args) {
+        setLoading(outputEl);
+        window.api.runCommand(args).then(function (result) {
+            setResult(outputEl, result);
+            addToolbar(outputEl);
+        });
+    }
+
     // ── Copy/Save Toolbar ─────────────────────────────────────────────────
 
     function ensureWrapper(outputEl) {
@@ -612,10 +758,7 @@
         var output = $('#output-offensive-hash');
         var hash = $('#offensive-hash-input').value.trim();
         if (!hash) { setEmpty(output, 'Enter a hash to identify.'); return; }
-        setLoading(output);
-        var result = await window.api.runCommand(['--hash-id', hash]);
-        setResult(output, result);
-        addToolbar(output);
+        await runNative(output, 'hash-id', { hash: hash });
     });
 
     // ── Password Strength ─────────────────────────────────────────────────
@@ -624,10 +767,7 @@
         var output = $('#output-offensive-password');
         var pw = $('#offensive-password-input').value.trim();
         if (!pw) { setEmpty(output, 'Enter a password to analyze.'); return; }
-        setLoading(output);
-        var result = await window.api.runCommand(['--password-strength', pw]);
-        setResult(output, result);
-        addToolbar(output);
+        await runNative(output, 'password-strength', { password: pw });
     });
 
     // ── Gen Wordlist ──────────────────────────────────────────────────────
@@ -636,15 +776,13 @@
         var output = $('#output-offensive-wordlist');
         var target = $('#offensive-wordlist-target').value.trim();
         if (!target) { setEmpty(output, 'Enter a target name.'); return; }
-        setLoading(output);
-        var args = ['--gen-wordlist', target];
-        var company = $('#offensive-wordlist-company').value.trim();
-        var year = $('#offensive-wordlist-year').value.trim();
-        if (company) args.push('--company', company);
-        if (year) args.push('--year', year);
-        var result = await window.api.runCommand(args);
-        setResult(output, result);
-        addToolbar(output);
+        var args = {
+            target: target,
+            company: $('#offensive-wordlist-company').value.trim(),
+            year: $('#offensive-wordlist-year').value.trim(),
+            mutations: 50000,
+        };
+        await runNative(output, 'wordlist', args);
     });
 
     // ── Gen Shell Payload ─────────────────────────────────────────────────
@@ -655,10 +793,7 @@
         var lhost = $('#offensive-shell-lhost').value.trim();
         var lport = $('#offensive-shell-lport').value.trim();
         if (!lhost || !lport) { setEmpty(output, 'Enter LHOST and LPORT.'); return; }
-        setLoading(output);
-        var result = await window.api.runCommand(['--gen-shell', type, lhost, lport]);
-        setResult(output, result);
-        addToolbar(output);
+        await runNative(output, 'payload', { mode: 'generate', type: type, lhost: lhost, lport: lport, encoding: 'base64' });
     });
 
     // ── Analyze Payload ───────────────────────────────────────────────────
@@ -667,10 +802,7 @@
         var output = $('#output-offensive-payload');
         var payload = $('#offensive-payload-input').value.trim();
         if (!payload) { setEmpty(output, 'Enter a payload to analyze.'); return; }
-        setLoading(output);
-        var result = await window.api.runCommand(['--analyze-payload', payload]);
-        setResult(output, result);
-        addToolbar(output);
+        await runNative(output, 'payload', { mode: 'analyze', payload: payload });
     });
 
     // ── PS Obfuscation ───────────────────────────────────────────────────
@@ -679,10 +811,7 @@
         var output = $('#output-offensive-evasion');
         var cmd = $('#offensive-evasion-command').value.trim();
         if (!cmd) { setEmpty(output, 'Enter a PowerShell command.'); return; }
-        setLoading(output);
-        var result = await window.api.runCommand(['--obfuscate-ps', cmd]);
-        setResult(output, result);
-        addToolbar(output);
+        await runNative(output, 'obfuscate', { mode: 'ps', command: cmd });
     });
 
     // ── Wireless Audit ────────────────────────────────────────────────────
@@ -693,10 +822,7 @@
         var security = $('#offensive-wifi-security').value;
         var encryption = $('#offensive-wifi-encryption').value;
         if (!essid) { setEmpty(output, 'Enter an ESSID.'); return; }
-        setLoading(output);
-        var result = await window.api.runCommand(['--audit-wifi', essid, security, encryption]);
-        setResult(output, result);
-        addToolbar(output);
+        await runNative(output, 'wireless', { mode: 'audit', ssid: essid, security: security, encryption: encryption, apCount: 1, bruteRate: 1000 });
     });
 
     // ── Post-Exploit Analysis ─────────────────────────────────────────────
@@ -706,11 +832,7 @@
         var mode = $('#offensive-postexploit-mode').value;
         var input = $('#offensive-postexploit-input').value.trim();
         if (!input) { setEmpty(output, 'Provide file content or path.'); return; }
-        setLoading(output);
-        var flag = mode === 'passwd' ? '--analyze-passwd' : '--analyze-sudoers';
-        var result = await window.api.runCommand([flag, input]);
-        setResult(output, result);
-        addToolbar(output);
+        await runNative(output, 'postexploit', { mode: mode, passwd: input, shadow: '' });
     });
 
     // ── List Tools ──────────────────────────────────────────────────────
@@ -761,13 +883,10 @@
         var output = $('#output-offensive-decoys');
         var realIp = $('#offensive-decoys-real-ip').value.trim();
         if (!realIp) { setEmpty(output, 'Enter a real IP address.'); return; }
-        setLoading(output);
-        var args = ['--gen-decoys', realIp];
+        var args = { mode: 'decoy', ip: realIp, cidr: 24, count: 5 };
         var count = $('#offensive-decoys-count').value.trim();
-        if (count) args.push(count);
-        var result = await window.api.runCommand(args);
-        setResult(output, result);
-        addToolbar(output);
+        if (count) args.count = Number(count);
+        await runNative(output, 'obfuscate', args);
     });
 
     // ── Analyze Handshake ───────────────────────────────────────────────
@@ -776,12 +895,9 @@
         var output = $('#output-offensive-handshake');
         var framesRaw = $('#offensive-handshake-frames').value.trim();
         if (!framesRaw) { setEmpty(output, 'Paste EAPOL hex frames.'); return; }
-        setLoading(output);
         var frames = framesRaw.split(/\s+/).filter(function (f) { return f.length > 0; });
-        var args = ['--analyze-handshake'].concat(frames);
-        var result = await window.api.runCommand(args);
-        setResult(output, result);
-        addToolbar(output);
+        var last = frames[frames.length - 1] || '';
+        await runNative(output, 'wireless', { mode: 'eapol', hex: last });
     });
 
     // ── WPS PIN ─────────────────────────────────────────────────────────

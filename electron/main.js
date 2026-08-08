@@ -3,6 +3,8 @@ const path = require('path');
 const { execFile, spawn } = require('child_process');
 const fs = require('fs');
 
+const nativeTools = require('./tools');
+
 let mainWindow = null;
 let binaryPath = null;
 
@@ -75,6 +77,12 @@ app.on('window-all-closed', () => {
 // ── IPC Handlers ──────────────────────────────────────────────────────────
 
 ipcMain.handle('get-binary-path', () => binaryPath);
+
+// ── Native in-process tools (no binary spawn needed) ────────────────────────
+
+ipcMain.handle('native-list', () => nativeTools.listTools());
+
+ipcMain.handle('native-run', (_event, id, args) => nativeTools.runTool(id, args));
 
 ipcMain.handle('run-command', async (_event, args) => {
     return new Promise((resolve) => {
