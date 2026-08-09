@@ -48,8 +48,12 @@ async function main() {
   console.log('offline-mode status: ', offlineStatus.replace(/\s+/g, ' ').trim().slice(0, 140));
 
   // Verify toggles switch active mode and status refreshes in both modes.
-  const ok = (await activeMode()) === 'Offline' && onlineStatus.length > 0 && offlineStatus.length > 0;
-  console.log(ok ? 'TOGGLE TEST PASS' : 'TOGGLE TEST FAIL');
-  ws.close();
+const ok =
+  (await activeMode()) === 'Offline' &&
+  onlineStatus.trim() !== '' && onlineStatus !== 'NO_EL' &&
+  offlineStatus.trim() !== '' && offlineStatus !== 'NO_EL';
+console.log(ok ? 'TOGGLE TEST PASS' : 'TOGGLE TEST FAIL');
+if (!ok) process.exitCode = 1;
+ws.close();
 }
 main().catch((e) => { console.error('FAIL:', e.message); process.exit(1); });
