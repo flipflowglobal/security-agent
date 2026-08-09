@@ -67,7 +67,8 @@ pub use advanced::{
 };
 pub use agent::{
     ActionCall, ActionExecutor, ActionOutcome, ActionStatus, AgentAuditContext, AgentPlanner,
-    AgentPolicy, AgentStep, AgentTranscript, agent_audit_records, run_agent,
+    AgentPolicy, AgentStep, AgentTranscript, Artifact, agent_audit_records, chain_artifacts,
+    run_agent,
 };
 pub use anomaly::{AnomalyFlag, DEFAULT_ANOMALY_THRESHOLD, scan_findings};
 pub use audit_log::{AuditLogError, append_audit_records, load_audit_records};

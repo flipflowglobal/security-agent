@@ -1900,6 +1900,7 @@ fn parse_agent_args(arguments: &mut impl Iterator<Item = String>) -> Result<Agen
 /// passed that opt-in through to the agent.
 struct CliExecutor {
     allow_network: bool,
+    allocations: usize,
 }
 
 impl security_agent::ActionExecutor for CliExecutor {
@@ -1914,9 +1915,7 @@ impl security_agent::ActionExecutor for CliExecutor {
         };
         let mut command = std::process::Command::new(exe);
         command.arg(call.command);
-        if let Some(arg) = &call.arg {
-            command.arg(arg);
-        }
+        command.args(&call.args);
         if call.network && self.allow_network {
             command.arg("--allow-network");
         }
@@ -1939,6 +1938,20 @@ impl security_agent::ActionExecutor for CliExecutor {
                 call.command
             )),
         }
+    }
+
+    fn allocate_artifact(&mut self, artifact: security_agent::Artifact) -> Option<String> {
+        // A per-run temp path the agent wires from a producer to a consumer
+        // (e.g. an engagement's findings into a report). Unique per allocation
+        // so concurrent runs don't collide.
+        let security_agent::Artifact::FindingsLog = artifact;
+        self.allocations += 1;
+        let path = std::env::temp_dir().join(format!(
+            "security-agent-agent-{}-{}.jsonl",
+            std::process::id(),
+            self.allocations
+        ));
+        Some(path.to_string_lossy().into_owned())
     }
 }
 
@@ -1966,7 +1979,13 @@ fn agent_command(
             return ExitCode::from(2);
         }
     };
+    execute_agent(assets, &args)
+}
 
+/// Plans and runs an agent goal under `args` — the shared core behind both the
+/// `--agent` CLI command and the TUI's agent option, so the interactive path
+/// behaves identically to the flag-driven one.
+fn execute_agent(assets: &LocalAgentAssets, args: &AgentArgs) -> ExitCode {
     let model = security_agent::NeuralLanguageModel::bundled();
     let planner = security_agent::AgentPlanner::new(assets, &model);
     let policy = security_agent::AgentPolicy {
@@ -1987,7 +2006,11 @@ fn agent_command(
     }
     println!("Plan ({} step(s)):", plan.len());
     for (index, call) in plan.iter().enumerate() {
-        let arg = call.arg.as_deref().unwrap_or("-");
+        let arg = if call.args.is_empty() {
+            "-".to_string()
+        } else {
+            call.args.join(" ")
+        };
         let disposition = if policy.dry_run {
             "preview only"
         } else if call.network && !args.allow_network {
@@ -1996,7 +2019,7 @@ fn agent_command(
             "will run"
         };
         println!(
-            "  {}. {} (arg: {arg}, {}, {}%) — {disposition}",
+            "  {}. {} (args: {arg}, {}, {}%) — {disposition}",
             index + 1,
             call.command,
             call.class.label(),
@@ -2007,11 +2030,12 @@ fn agent_command(
 
     let mut executor = CliExecutor {
         allow_network: args.allow_network,
+        allocations: 0,
     };
     let transcript = security_agent::run_agent(&args.goal, &planner, &mut executor, policy);
 
     print_agent_transcript(&transcript);
-    if let Err(message) = persist_agent_audit(&transcript, &args) {
+    if let Err(message) = persist_agent_audit(&transcript, args) {
         eprintln!("{message}");
         return ExitCode::from(1);
     }
@@ -2078,6 +2102,35 @@ fn persist_agent_audit(
         );
     }
     Ok(())
+}
+
+/// Builds an [`AgentArgs`] for a bare goal with the interactive defaults:
+/// execute (not a dry run), offline, no output-driven follow-ups, the default
+/// step budget, and no audit persistence.
+const fn default_agent_args(goal: String) -> AgentArgs {
+    AgentArgs {
+        goal,
+        dry_run: false,
+        allow_network: false,
+        follow_up: false,
+        max_steps: 8,
+        audit_log_path: None,
+        audit_db_path: None,
+    }
+}
+
+/// TUI agent option: prompt for a goal and run the agent loop on it, so an
+/// operator can drive the agent conversationally — identical behavior to
+/// `--agent "<goal>"`, plan preview and all.
+fn tui_agent(assets: &LocalAgentAssets, lines: &mut impl Iterator<Item = io::Result<String>>) {
+    let Some(goal) = tui_prompt(lines, "goal: ") else {
+        return;
+    };
+    if goal.trim().is_empty() {
+        println!("cancelled.");
+        return;
+    }
+    let _ = execute_agent(assets, &default_agent_args(goal));
 }
 
 /// Interactive terminal UI (`--tui`): a menu- and chat-bar-driven REPL over
@@ -2219,14 +2272,24 @@ fn dispatch_tui_choice(
             }
             let _ = tool_help_command(&mut std::iter::once(name));
         }
-        // The chat bar: anything else typed is a plain-English instruction,
-        // routed through the same grounded router as `--ask`. Passed as one
-        // already-trimmed line (not split into words) — `ask_command` joins
-        // its arguments with spaces anyway, so a single element avoids
-        // needless per-word allocations and preserves the line's internal
-        // spacing exactly, matching how every other TUI prompt hands over
-        // a full line rather than a word list.
+        "22" => tui_agent(assets, lines),
+        // The chat bar: anything else typed is a plain-English instruction. A
+        // line that begins with `agent ` drives the multi-step agent loop
+        // (plan & run — Stage 16/17); everything else routes through the same
+        // single-shot grounded router as `--ask` (read-only). Both are passed
+        // as one already-trimmed line, matching how every other TUI prompt
+        // hands over a full line rather than a word list.
         _ => {
+            let agent_goal = input
+                .split_once(char::is_whitespace)
+                .filter(|(head, _)| head.eq_ignore_ascii_case("agent"))
+                .map(|(_, rest)| rest.trim());
+            if let Some(goal) = agent_goal {
+                if !goal.is_empty() {
+                    let _ = execute_agent(assets, &default_agent_args(goal.to_string()));
+                    return;
+                }
+            }
             let _ = ask_command(assets, &mut std::iter::once(input.to_string()));
         }
     }
@@ -2524,8 +2587,9 @@ fn tui_banner() -> String {
      Offline by default; live/active tools need the --allow-network opt-in.\n\
      Type a menu number below, or type a plain-English instruction and press\n\
      Enter — that's the chat bar, routed through the same grounded router as\n\
-     --ask, including prompting the built-in language model. Type '0' for the\n\
-     full capability summary, or 'q' / 'quit' / 'exit' to leave."
+     --ask, including prompting the built-in language model. Prefix a line with\n\
+     'agent ' (or pick [22]) to have it plan & run a multi-step goal. Type '0'\n\
+     for the full capability summary, or 'q' / 'quit' / 'exit' to leave."
         .to_string()
 }
 
@@ -2541,8 +2605,8 @@ fn tui_menu() -> String {
      [15] View audit database          [16] View findings database\n\
      [17] View calibration database    [18] View reasoning log database\n\
      [19] Plain-language guide          [20] Reverse shell tutorial\n\
-     [21] Guide for one tool/command   [0]  Help / full capability summary\n\
-     [q] Quit"
+     [21] Guide for one tool/command   [22] Agent — plan & run a goal\n\
+     [0]  Help / full capability summary [q]  Quit"
         .to_string()
 }
 

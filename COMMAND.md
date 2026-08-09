@@ -68,8 +68,9 @@ built-in model plans an **ordered sequence** of the agent's own commands from a
 plain-English goal and **runs them** — a grounded plan→execute loop.
 
 ```sh
-# Plan and run (the plan is always printed first):
-security-agent --agent "run the engagement eng.conf then write a report"
+# Plan and run (the plan is always printed first). The engagement's findings
+# are chained straight into the report — no path to name:
+security-agent --agent "run the engagement eng.conf then write a report as json"
 
 # Preview only, execute nothing:
 security-agent --agent "run the engagement eng.conf" --dry-run
@@ -77,6 +78,12 @@ security-agent --agent "run the engagement eng.conf" --dry-run
 # Forward the live-network opt-in to the planned commands:
 security-agent --agent "run the engagement eng.conf" --allow-network
 ```
+
+**Steps wire together.** When a goal runs an engagement and then a report (or a
+retest schedule), the agent captures the engagement's findings and feeds them
+into the follow-up automatically — you don't name an intermediate file. It also
+lifts flags out of the goal: *"…report **as json**"* → `--format json`,
+*"run the engagement **without expansion**"* → `--no-expand`.
 
 | Flag | Meaning |
 |---|---|
@@ -95,6 +102,12 @@ job is to execute the tools as instructed; the tools decide what's permitted.
 And the planner is **grounded** in the action registry, so the model can only
 ever schedule real commands (it never invents one). The plan is always printed
 first, and the whole run is auditable.
+
+**In the interactive menu (`--tui`)** you can drive the agent conversationally:
+pick **[22] Agent**, or just type a line beginning with `agent ` into the chat
+bar — e.g. `agent run the engagement eng.conf then write a report`. It plans and
+runs exactly like `--agent`, plan preview and all. (A plain chat-bar line with
+no `agent ` prefix still routes to the single-shot, read-only `--ask` router.)
 
 ## 2. Credential & password helpers 🔑
 

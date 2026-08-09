@@ -156,6 +156,25 @@ fn agent_executes_the_plan_by_default() {
 }
 
 #[test]
+fn agent_chains_engagement_findings_into_a_json_report() {
+    // One goal, no paths named: the engagement's findings are wired into the
+    // report, and "as json" is honored — so the report prints a JSON object.
+    let output = run(&[
+        "--agent",
+        "run the engagement examples/engagement.example.conf then write a report as json",
+    ]);
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("--run-engagement"));
+    assert!(text.contains("--report"));
+    // The report step emitted JSON (chained path + --format json preserved).
+    assert!(
+        text.contains("\"engagement_id\""),
+        "expected a JSON report in output"
+    );
+}
+
+#[test]
 fn agent_runs_a_read_only_multi_step_goal() {
     let output = run(&["--agent", "list your tools and list your skills"]);
     assert!(output.status.success());
@@ -164,6 +183,30 @@ fn agent_runs_a_read_only_multi_step_goal() {
     assert!(text.contains("--list-skills"));
     // Both read-only steps actually ran.
     assert!(text.contains("2 ran") || text.contains("2 step(s) handled, 2 ran"));
+}
+
+#[test]
+fn tui_agent_menu_option_plans_and_runs_a_goal() {
+    // Menu option 22 prompts for a goal, then drives the agent loop.
+    let output = run_with_stdin(&["--tui"], "22\nlist your tools\nq\n");
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("goal:"));
+    assert!(text.contains("--list-tools"));
+    assert!(text.contains("ran"));
+}
+
+#[test]
+fn tui_agent_chat_prefix_plans_and_runs_a_goal() {
+    // A chat-bar line beginning with "agent " drives the multi-step loop.
+    let output = run_with_stdin(
+        &["--tui"],
+        "agent list your tools and list your skills\nq\n",
+    );
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("--list-tools"));
+    assert!(text.contains("--list-skills"));
 }
 
 #[test]
