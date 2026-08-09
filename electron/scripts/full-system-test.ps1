@@ -1,4 +1,4 @@
-﻿# Full-system test harness for Security-Agent desktop app. (v2 â€” corrected expectations)
+# Full-system test harness for Security-Agent desktop app. (v2 — corrected expectations)
 $ErrorActionPreference = 'Continue'
 $exe = "C:\Users\david\Desktop\agent-installer\Security-Agent\dist\win-unpacked\resources\security-agent.exe"
 $tmp = $env:GUI_TEST_TMP; if (-not $tmp) { $tmp = "C:\Users\david\AppData\Local\Temp\opencode\gui-test" }
