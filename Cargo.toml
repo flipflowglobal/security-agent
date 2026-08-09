@@ -12,12 +12,15 @@ repository = "https://github.com/flipflowglobal/security-agent"
 # `src/builtin_tools.rs`, `src/pcap.rs`).
 [dependencies]
 
-# Inference back-end (optional — not required for the core orchestration logic).
-# Enable with `cargo build --features inference` when the ML inference path is ready.
-candle = { package = "candle-core", version = "0.9.2", default-features = false, optional = true }
-candle-transformers = { version = "0.9.2", default-features = false, optional = true }
-tokenizers = { version = "0.23.1", default-features = false, features = ["fancy-regex"], optional = true }
+# Optional candle-backed inference back-end (`--features inference`). The
+# default build stays zero-dependency; this only pulls candle when explicitly
+# enabled. We build the (small, byte-level GPT) model ourselves from candle-nn
+# primitives, so no pre-built architectures (candle-transformers) or external
+# tokenizer files (tokenizers) are needed — tokenization is byte-level and
+# built in. CPU only: default-features are off so no CUDA/MKL is required.
+candle-core = { version = "0.9.2", default-features = false, optional = true }
+candle-nn = { version = "0.9.2", default-features = false, optional = true }
 
 [features]
-# Enable the candle-based LLM inference back-end.
-inference = ["dep:candle", "dep:candle-transformers", "dep:tokenizers"]
+# Enable the candle-based LLM inference back-end (see `src/inference.rs`).
+inference = ["dep:candle-core", "dep:candle-nn"]

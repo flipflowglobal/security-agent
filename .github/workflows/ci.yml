@@ -133,6 +133,39 @@ jobs:
       - name: Smoke-test binary
         run: ./target/release/security-agent --offline-status
 
+  # ── Optional inference back-end (candle) ────────────────────────────────────
+  inference:
+    name: Inference feature (candle)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust with clippy
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Cargo registry + build artefacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-inference-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-inference-
+
+      # The `inference` feature pulls candle (optional, off by default). Keep it
+      # to the same quality bar as the default build, and run its unit tests —
+      # they exercise the candle forward/generation path end-to-end with an
+      # in-process random-weight model, so no model download is needed.
+      - name: cargo clippy --features inference
+        run: cargo clippy --all-targets --features inference -- -D warnings -W clippy::pedantic -W clippy::nursery
+
+      - name: cargo test --features inference --lib
+        run: cargo test --features inference --lib
+
   # ── Android cross-compile smoke test ────────────────────────────────────────
   android-cross:
     name: Android cross-compile (aarch64)
