@@ -1,0 +1,8 @@
+{
+  "_purpose": "Default model config matching the built-in tiny language model (zero-dependency default build).",
+  "_usage": "Copy to <model-dir>/config.json (next to model.safetensors) and run: security-agent --llm-generate --model <model-dir> <prompt>",
+  "n_embd": 16,
+  "n_head": 2,
+  "n_layer": 2,
+  "block_size": 32
+}
