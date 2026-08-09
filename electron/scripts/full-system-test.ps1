@@ -47,7 +47,7 @@ Test-Case "help/guide renders" { (Invoke-App @('--guide')).Text } "Security-Agen
 Test-Case "shell-guide renders" { (Invoke-App @('--shell-guide')).Text } "Reverse Shell"
 Test-Case "tool-help renders" { (Invoke-App @('--tool-help', '--list-tools')).Text } "list-tools"
 Test-Case "unknown flag rejected cleanly (exit 2)" { $r = Invoke-App @('--definitely-not-a-flag'); "$($r.Text) exit=$($r.Exit)" } "(?s)unknown command.*exit=2"
-Test-Case "build-info exit code zero" { (Invoke-App @('--build-info')).Exit -eq 0 }
+Test-Case "build-info exit code zero" { ((Invoke-App @('--build-info')).Exit -eq 0).ToString() } "^True$"
 
 # -------------------- SECTION 2: TOOLS --------------------
 Write-Output "=================== SECTION 2: TOOLS ==================="
