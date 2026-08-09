@@ -253,6 +253,24 @@ A tiny, fully-offline model — no cloud, no API keys.
 | `--llm-generate <words...>` | Continues a prompt with the built-in model. | `security-agent --llm-generate the attacker likely` |
 | `--llm-perplexity <words...>` | Scores how "in-domain" text reads (higher = odder). | `security-agent --llm-perplexity buffer overflow in parser` |
 
+### Optional: a stronger model (`--features inference`) 🧠⚡
+
+The default build uses the tiny built-in model and pulls **zero dependencies**.
+If you build with the optional inference back-end
+(`cargo build --features inference`), the two commands above accept a
+`--model <dir>` option that runs a real, candle-backed transformer instead:
+
+```sh
+security-agent --llm-generate --model ./my-model the attacker likely
+security-agent --llm-perplexity --model ./my-model buffer overflow in parser
+```
+
+`<dir>` holds `config.json` (`n_embd`, `n_head`, `n_layer`, `block_size`) and
+`model.safetensors`. Tokenization is byte-level and built in — no tokenizer
+file needed. It stays fully offline: the model runs locally, on CPU, no
+download. (Without `--features inference`, `--model` reports that the binary was
+built without the back-end.)
+
 ---
 
 ## Where files go 📁

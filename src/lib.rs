@@ -28,6 +28,8 @@ pub mod findings_db;
 pub mod findings_log;
 pub mod governance;
 pub mod help;
+#[cfg(feature = "inference")]
+pub mod inference;
 pub mod ingest;
 pub mod integrity;
 pub mod intensity_guard;
@@ -116,6 +118,8 @@ pub use help::{
     ALL_COMMANDS, CommandHelp, GUIDE_SECTIONS, render_all_help, render_help_for,
     render_reverse_shell_guide, render_section,
 };
+#[cfg(feature = "inference")]
+pub use inference::{CandleTextModel, InferenceError, ModelConfig};
 pub use integrity::{IntegrityManifest, IntegrityStatus, verify};
 pub use intensity_guard::{IntensityAdvisory, advise};
 pub use language_model::{LanguageModel, NeuralLanguageModel};

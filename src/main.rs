@@ -1646,14 +1646,65 @@ fn record_findings_command(arguments: &mut impl Iterator<Item = String>) -> Exit
 /// the same prompt always yields the same continuation. Text is modest
 /// given the model's size; this exists to make the offline language-model
 /// capability usable and inspectable.
+/// Selects the language-model backend from a leading `--model <dir>` option,
+/// consuming it from `words` when present. With the `inference` feature that
+/// loads a candle-backed model from `<dir>` (`config.json` + `model.safetensors`);
+/// otherwise, or when the option is absent, the bundled model is used. Returns
+/// the backend plus the remaining words (the prompt/text).
+fn select_language_model(
+    mut words: Vec<String>,
+) -> Result<(Box<dyn security_agent::LanguageModel>, Vec<String>), String> {
+    if words.first().map(String::as_str) == Some("--model") {
+        let dir = words
+            .get(1)
+            .cloned()
+            .ok_or("missing directory after --model")?;
+        words.drain(0..2);
+        #[cfg(feature = "inference")]
+        {
+            let model = load_candle_model(Path::new(&dir))?;
+            return Ok((Box::new(model), words));
+        }
+        #[cfg(not(feature = "inference"))]
+        {
+            let _ = dir;
+            return Err(
+                "--model requires a build with `--features inference`; this binary was built \
+                 without it"
+                    .to_string(),
+            );
+        }
+    }
+    Ok((
+        Box::new(security_agent::NeuralLanguageModel::bundled()),
+        words,
+    ))
+}
+
+/// Loads a candle model from a directory holding `config.json` and
+/// `model.safetensors`.
+#[cfg(feature = "inference")]
+fn load_candle_model(dir: &Path) -> Result<security_agent::CandleTextModel, String> {
+    let config_text = fs::read_to_string(dir.join("config.json"))
+        .map_err(|error| format!("failed to read {}/config.json: {error}", dir.display()))?;
+    let config = security_agent::ModelConfig::from_json(&config_text).map_err(|e| e.to_string())?;
+    security_agent::CandleTextModel::load(&dir.join("model.safetensors"), config)
+        .map_err(|error| error.to_string())
+}
+
 fn llm_generate_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
-    use security_agent::LanguageModel;
-    let prompt = arguments.collect::<Vec<String>>().join(" ");
+    let (model, words) = match select_language_model(arguments.collect()) {
+        Ok(selection) => selection,
+        Err(message) => {
+            eprintln!("{message}");
+            return ExitCode::from(2);
+        }
+    };
+    let prompt = words.join(" ");
     if prompt.trim().is_empty() {
         eprintln!("missing prompt for --llm-generate");
         return ExitCode::from(2);
     }
-    let model = security_agent::NeuralLanguageModel::bundled();
     let continuation = model.generate(&prompt, 24);
     // Avoid a trailing space when the model produces no continuation.
     if continuation.is_empty() {
@@ -1686,13 +1737,18 @@ fn lm_eval_command() -> ExitCode {
 /// (`--llm-perplexity <text words...>`). Lower perplexity means the text
 /// reads more like the security-domain corpus the model learned.
 fn llm_perplexity_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
-    use security_agent::LanguageModel;
-    let text = arguments.collect::<Vec<String>>().join(" ");
+    let (model, words) = match select_language_model(arguments.collect()) {
+        Ok(selection) => selection,
+        Err(message) => {
+            eprintln!("{message}");
+            return ExitCode::from(2);
+        }
+    };
+    let text = words.join(" ");
     if text.trim().is_empty() {
         eprintln!("missing text for --llm-perplexity");
         return ExitCode::from(2);
     }
-    let model = security_agent::NeuralLanguageModel::bundled();
     println!("perplexity={:.3}", model.perplexity(&text));
     ExitCode::SUCCESS
 }
