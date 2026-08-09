@@ -1,8 +1,9 @@
 // Online/Offline toggle behavior test via CDP.
-const base = 'http://127.0.0.1:9222';
+const base = process.env.CDP_BASE || 'http://127.0.0.1:9222';
 async function main() {
   const list = await (await fetch(`${base}/json`)).json();
   const page = list.find((t) => t.type === 'page');
+  if (!page || !page.webSocketDebuggerUrl) throw new Error('no page target');
   const ws = new WebSocket(page.webSocketDebuggerUrl);
   let nextId = 1;
   const pending = new Map();
