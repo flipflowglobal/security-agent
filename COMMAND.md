@@ -103,6 +103,12 @@ And the planner is **grounded** in the action registry, so the model can only
 ever schedule real commands (it never invents one). The plan is always printed
 first, and the whole run is auditable.
 
+**In the interactive menu (`--tui`)** you can drive the agent conversationally:
+pick **[22] Agent**, or just type a line beginning with `agent ` into the chat
+bar — e.g. `agent run the engagement eng.conf then write a report`. It plans and
+runs exactly like `--agent`, plan preview and all. (A plain chat-bar line with
+no `agent ` prefix still routes to the single-shot, read-only `--ask` router.)
+
 ## 2. Credential & password helpers 🔑
 
 | Command | What it does | Try it |

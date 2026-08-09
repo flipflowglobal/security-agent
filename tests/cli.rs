@@ -186,6 +186,30 @@ fn agent_runs_a_read_only_multi_step_goal() {
 }
 
 #[test]
+fn tui_agent_menu_option_plans_and_runs_a_goal() {
+    // Menu option 22 prompts for a goal, then drives the agent loop.
+    let output = run_with_stdin(&["--tui"], "22\nlist your tools\nq\n");
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("goal:"));
+    assert!(text.contains("--list-tools"));
+    assert!(text.contains("ran"));
+}
+
+#[test]
+fn tui_agent_chat_prefix_plans_and_runs_a_goal() {
+    // A chat-bar line beginning with "agent " drives the multi-step loop.
+    let output = run_with_stdin(
+        &["--tui"],
+        "agent list your tools and list your skills\nq\n",
+    );
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("--list-tools"));
+    assert!(text.contains("--list-skills"));
+}
+
+#[test]
 fn agent_declines_an_out_of_scope_goal() {
     let output = run(&["--agent", "book me a flight to paris"]);
     assert!(output.status.success());
