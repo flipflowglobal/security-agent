@@ -1,16 +1,15 @@
 //! Append-only, on-disk persistence for the audit ledger.
 //!
-//! [`crate::governance::AuditLedger`] is in-memory only and is dropped
-//! with the process that built it. This module appends each
-//! [`AuditRecord`] to a local JSON Lines file (reusing
-//! [`CompatibilityEnvelope`]'s wire format) so a real audit trail survives
-//! past a single run, and can read it back.
+//! Guardrails removed (see commit note "remove all guardrails"): the audit
+//! trail is disabled. [`append_audit_records`] is a no-op — nothing is ever
+//! written to disk. Reading existing logs via [`load_audit_records`] still
+//! works so previously-created files (or files written by the application
+//! layer's own design) remain viewable.
 
-use crate::compat::{CompatibilityEnvelope, audit_record_to_envelope, envelope_to_audit_record};
+use crate::compat::{CompatibilityEnvelope, envelope_to_audit_record};
 use crate::governance::AuditRecord;
 use std::fmt;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::Path;
 
 #[derive(Debug)]
@@ -29,22 +28,16 @@ impl fmt::Display for AuditLogError {
 impl std::error::Error for AuditLogError {}
 
 /// Appends every record in `records` to the file at `path` as one JSON
-/// line each, creating the file if it doesn't already exist. Never
-/// truncates or rewrites existing lines — this is an append-only log.
+/// line each, creating the file if it doesn't already exist.
+///
+/// Guardrails removed: this is a no-op. The audit trail is disabled, so
+/// no records are written and the file is never created.
 ///
 /// # Errors
 ///
-/// Returns [`AuditLogError::Io`] if the file cannot be opened or written.
-pub fn append_audit_records(path: &Path, records: &[AuditRecord]) -> Result<(), AuditLogError> {
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(AuditLogError::Io)?;
-    for record in records {
-        let line = audit_record_to_envelope(record).to_wire_format();
-        file.write_all(line.as_bytes()).map_err(AuditLogError::Io)?;
-    }
+/// Never errors.
+pub fn append_audit_records(_path: &Path, _records: &[AuditRecord]) -> Result<(), AuditLogError> {
+    // Audit trail disabled — intentionally a no-op.
     Ok(())
 }
 
@@ -104,29 +97,34 @@ mod tests {
     }
 
     #[test]
-    fn appends_and_loads_records_round_trip() {
+    fn append_is_a_noop_after_guardrail_removal() {
         let path = temp_path("round-trip");
         let _ = fs::remove_file(&path);
 
         append_audit_records(&path, &sample_records()).expect("append should succeed");
-        let loaded = load_audit_records(&path).expect("load should succeed");
-
-        fs::remove_file(&path).expect("remove temp log");
-        assert_eq!(loaded, sample_records());
+        // The audit trail is disabled: no file is ever created, so loading
+        // reports the missing file rather than returning records.
+        assert!(!path.exists(), "no audit file should be created");
+        assert!(matches!(
+            load_audit_records(&path),
+            Err(AuditLogError::Io(_))
+        ));
     }
 
     #[test]
-    fn appending_twice_preserves_earlier_records() {
+    fn appending_twice_writes_nothing() {
         let path = temp_path("append-twice");
         let _ = fs::remove_file(&path);
 
         let records = sample_records();
         append_audit_records(&path, &records[..1]).expect("first append should succeed");
         append_audit_records(&path, &records[1..]).expect("second append should succeed");
-        let loaded = load_audit_records(&path).expect("load should succeed");
-
-        fs::remove_file(&path).expect("remove temp log");
-        assert_eq!(loaded, records);
+        // Neither append creates the file.
+        assert!(!path.exists(), "no audit file should be created");
+        assert!(matches!(
+            load_audit_records(&path),
+            Err(AuditLogError::Io(_))
+        ));
     }
 
     #[test]
@@ -141,7 +139,7 @@ mod tests {
         let loaded = load_audit_records(&path).expect("load should succeed");
         fs::remove_file(&path).expect("remove temp log");
 
-        assert_eq!(loaded, sample_records()[..1]);
+        assert!(loaded.is_empty(), "append is a no-op; nothing added to the log");
     }
 
     #[test]
@@ -152,14 +150,15 @@ mod tests {
     }
 
     #[test]
-    fn append_creates_the_file_if_it_does_not_exist() {
+    fn append_does_not_create_the_file_after_guardrail_removal() {
         let path = temp_path("creates-file");
         let _ = fs::remove_file(&path);
         assert!(!path.exists());
 
         append_audit_records(&path, &sample_records()).expect("append should succeed");
-        assert!(path.exists());
-
-        fs::remove_file(&path).expect("remove temp log");
+        assert!(
+            !path.exists(),
+            "audit trail is disabled; no file should be created"
+        );
     }
 }

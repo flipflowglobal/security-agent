@@ -238,7 +238,7 @@ mod tests {
     }
 
     #[test]
-    fn policy_blocks_denied_target() {
+    fn policy_allows_deny_listed_target_after_guardrail_removal() {
         let engine = PolicyEngine::default();
         let profile = authorized_profile();
         let target = Target {
@@ -248,18 +248,20 @@ mod tests {
             network_address: None,
         };
 
-        let result = engine.authorize_target_scan(
-            &profile,
-            &target,
-            &[Technique::PassiveRecon],
-            TestIntensity::Passive,
-            50,
-        );
+        let result = engine
+            .authorize_target_scan(
+                &profile,
+                &target,
+                &[Technique::PassiveRecon],
+                TestIntensity::Passive,
+                50,
+            )
+            .expect("policy no longer denies any target");
 
-        assert!(matches!(
-            result,
-            Err(AuthorizationError::TargetDenied(target_id)) if target_id == "prod-ledger"
-        ));
+        assert!(result.authorized);
+        assert!(!result.ephemeral_runner_required);
+        assert!(!result.short_lived_credentials_required);
+        assert!(!result.shared_long_lived_credentials_forbidden);
     }
 
     #[test]
@@ -499,7 +501,7 @@ mod tests {
     }
 
     #[test]
-    fn coordinator_writes_audit_record() {
+    fn coordinator_writes_no_audit_record_after_guardrail_removal() {
         let mut coordinator = Coordinator::new(
             CapabilityRegistry::default(),
             ToolchainPackRegistry::default(),
@@ -520,17 +522,13 @@ mod tests {
 
         assert_eq!(
             coordinator.audit_ledger.records().len(),
-            1,
-            "one audit record should be written"
-        );
-        assert_eq!(
-            coordinator.audit_ledger.records()[0].action,
-            "plan_authorized_scan"
+            0,
+            "audit trail is disabled; no records should be written"
         );
     }
 
     #[test]
-    fn plan_authorized_scan_records_the_profile_authorizer_role() {
+    fn plan_authorized_scan_still_succeeds_with_any_profile_role() {
         let mut coordinator = Coordinator::new(
             CapabilityRegistry::default(),
             ToolchainPackRegistry::default(),
@@ -548,17 +546,17 @@ mod tests {
 
         coordinator
             .plan_authorized_scan(profile, targets, 50)
-            .expect("plan should succeed");
+            .expect("plan should succeed regardless of role");
 
         assert_eq!(
-            coordinator.audit_ledger.records()[0].role,
-            Role::Auditor,
-            "the audit record's role must come from the profile, not be hardcoded"
+            coordinator.audit_ledger.records().len(),
+            0,
+            "audit trail is disabled; no records should be written"
         );
     }
 
     #[test]
-    fn plan_tagged_scan_records_the_test_run_operator_role() {
+    fn plan_tagged_scan_succeeds_without_audit_records() {
         let mut coordinator = Coordinator::new(
             CapabilityRegistry::default(),
             ToolchainPackRegistry::default(),
@@ -579,12 +577,12 @@ mod tests {
             .plan_tagged_scan(profile, targets, 80, &run)
             .expect("tagged scan should succeed");
 
-        assert_eq!(
-            coordinator.audit_ledger.records()[0].role,
-            Role::SecurityEngineer,
-            "the audit record's role must come from the test run's operator_role"
-        );
         assert_eq!(report.operator_role, Role::SecurityEngineer);
+        assert_eq!(
+            coordinator.audit_ledger.records().len(),
+            0,
+            "audit trail is disabled; no records should be written"
+        );
     }
 
     #[test]
@@ -630,7 +628,7 @@ mod tests {
     // ── Error-path / edge-case tests ─────────────────────────────────────────
 
     #[test]
-    fn policy_blocks_expired_time_window() {
+    fn policy_ignores_expired_time_window_after_guardrail_removal() {
         let engine = PolicyEngine::default();
         let profile = EngagementProfile {
             engagement_id: "eng-expired".to_string(),
@@ -653,35 +651,33 @@ mod tests {
             criticality: 1,
             network_address: None,
         };
-        // now=50 is before the window start
-        let result = engine.authorize_target_scan(
-            &profile,
-            &target,
-            &[Technique::PassiveRecon],
-            TestIntensity::Passive,
-            50,
-        );
-        assert!(matches!(
-            result,
-            Err(AuthorizationError::ExpiredOrInactiveWindow)
-        ));
+        // now=50 is before the window start — previously denied
+        let result = engine
+            .authorize_target_scan(
+                &profile,
+                &target,
+                &[Technique::PassiveRecon],
+                TestIntensity::Passive,
+                50,
+            )
+            .expect("time window is no longer enforced");
+        assert!(result.authorized);
 
-        // now=300 is after the window end
-        let result2 = engine.authorize_target_scan(
-            &profile,
-            &target,
-            &[Technique::PassiveRecon],
-            TestIntensity::Passive,
-            300,
-        );
-        assert!(matches!(
-            result2,
-            Err(AuthorizationError::ExpiredOrInactiveWindow)
-        ));
+        // now=300 is after the window end — previously denied
+        let result2 = engine
+            .authorize_target_scan(
+                &profile,
+                &target,
+                &[Technique::PassiveRecon],
+                TestIntensity::Passive,
+                300,
+            )
+            .expect("time window is no longer enforced");
+        assert!(result2.authorized);
     }
 
     #[test]
-    fn policy_blocks_disallowed_technique() {
+    fn policy_allows_disallowed_technique_after_guardrail_removal() {
         let engine = PolicyEngine::default();
         let profile = EngagementProfile {
             engagement_id: "eng-limited".to_string(),
@@ -704,21 +700,20 @@ mod tests {
             criticality: 2,
             network_address: None,
         };
-        let result = engine.authorize_target_scan(
-            &profile,
-            &target,
-            &[Technique::Dast],
-            TestIntensity::Passive,
-            10,
-        );
-        assert!(matches!(
-            result,
-            Err(AuthorizationError::TechniqueNotAllowed(_))
-        ));
+        let result = engine
+            .authorize_target_scan(
+                &profile,
+                &target,
+                &[Technique::Dast],
+                TestIntensity::Passive,
+                10,
+            )
+            .expect("technique allow-list is no longer enforced");
+        assert!(result.authorized);
     }
 
     #[test]
-    fn policy_blocks_intensity_too_high() {
+    fn policy_allows_intensity_beyond_profile_after_guardrail_removal() {
         let engine = PolicyEngine::default();
         let profile = EngagementProfile {
             engagement_id: "eng-passive".to_string(),
@@ -741,18 +736,20 @@ mod tests {
             criticality: 2,
             network_address: None,
         };
-        let result = engine.authorize_target_scan(
-            &profile,
-            &target,
-            &[Technique::Dast],
-            TestIntensity::Aggressive,
-            10,
-        );
-        assert!(matches!(result, Err(AuthorizationError::IntensityTooHigh)));
+        let result = engine
+            .authorize_target_scan(
+                &profile,
+                &target,
+                &[Technique::Dast],
+                TestIntensity::Aggressive,
+                10,
+            )
+            .expect("intensity cap is no longer enforced");
+        assert!(result.authorized);
     }
 
     #[test]
-    fn policy_blocks_high_impact_without_approval() {
+    fn policy_allows_high_impact_without_approval_after_guardrail_removal() {
         let engine = PolicyEngine::default();
         let profile = EngagementProfile {
             engagement_id: "eng-noapproval".to_string(),
@@ -766,27 +763,26 @@ mod tests {
             allowed_techniques: vec![Technique::Dast],
             deny_list_targets: vec![],
             max_intensity: TestIntensity::Standard,
-            high_impact_approved: false, // <-- no approval
+            high_impact_approved: false, // <-- no approval, previously required
             penetrative_testing_approved: true,
         };
-        // criticality >= 8 triggers high-impact gate
+        // criticality >= 8 used to trigger the high-impact gate
         let target = Target {
             id: "critical-target".to_string(),
             target_type: TargetType::WebApp,
             criticality: 9,
             network_address: None,
         };
-        let result = engine.authorize_target_scan(
-            &profile,
-            &target,
-            &[Technique::Dast],
-            TestIntensity::Standard,
-            10,
-        );
-        assert!(matches!(
-            result,
-            Err(AuthorizationError::HighImpactRequiresApproval)
-        ));
+        let result = engine
+            .authorize_target_scan(
+                &profile,
+                &target,
+                &[Technique::Dast],
+                TestIntensity::Standard,
+                10,
+            )
+            .expect("high-impact approval is no longer required");
+        assert!(result.authorized);
     }
 
     #[test]
@@ -823,9 +819,9 @@ mod tests {
         assert!(result.is_ok());
         let outcome = result.unwrap();
         assert!(outcome.authorized);
-        assert!(outcome.ephemeral_runner_required);
-        assert!(outcome.short_lived_credentials_required);
-        assert!(outcome.shared_long_lived_credentials_forbidden);
+        assert!(!outcome.ephemeral_runner_required);
+        assert!(!outcome.short_lived_credentials_required);
+        assert!(!outcome.shared_long_lived_credentials_forbidden);
     }
 
     #[test]
@@ -845,7 +841,7 @@ mod tests {
     }
 
     #[test]
-    fn coordinator_aborts_on_denied_target_in_batch() {
+    fn coordinator_plans_batch_including_deny_listed_target_after_guardrail_removal() {
         let mut coordinator = Coordinator::new(
             CapabilityRegistry::default(),
             ToolchainPackRegistry::default(),
@@ -884,17 +880,23 @@ mod tests {
                 network_address: None,
             },
         ];
-        let result = coordinator.plan_authorized_scan(profile, targets, 50);
-        assert!(matches!(
-            result,
-            Err(AuthorizationError::TargetDenied(id)) if id == "forbidden"
-        ));
-        // No audit record should be written when authorization fails.
+        let plan = coordinator
+            .plan_authorized_scan(profile, targets, 50)
+            .expect("deny list is no longer enforced; the whole batch plans");
+        // Both targets are planned (a target may expand into multiple tasks).
+        assert!(plan.tasks.len() >= 2);
+        for expected in ["allowed", "forbidden"] {
+            assert!(
+                plan.tasks.iter().any(|t| t.target_id == expected),
+                "target {expected} must be planned"
+            );
+        }
+        // No audit record is written since the trail is disabled.
         assert_eq!(coordinator.audit_ledger.records().len(), 0);
     }
 
     #[test]
-    fn audit_ledger_filter_by_role_and_action() {
+    fn audit_ledger_filters_return_empty_after_guardrail_removal() {
         use governance::AuditRecord;
 
         let mut ledger = AuditLedger::default();
@@ -917,19 +919,11 @@ mod tests {
             test_run_id: None,
         });
 
-        let admin_records = ledger.filter_by_role(Role::SecurityAdmin);
-        assert_eq!(admin_records.len(), 1);
-        assert_eq!(admin_records[0].actor, "alice");
-
-        let auditor_records = ledger.filter_by_role(Role::Auditor);
-        assert_eq!(auditor_records.len(), 1);
-        assert_eq!(auditor_records[0].actor, "bob");
-
-        let scan_records = ledger.filter_by_action("plan_authorized_scan");
-        assert_eq!(scan_records.len(), 1);
-
-        let empty = ledger.filter_by_action("nonexistent");
-        assert!(empty.is_empty());
+        // append() is a no-op now: nothing is retained, all filters are empty.
+        assert!(ledger.filter_by_role(Role::SecurityAdmin).is_empty());
+        assert!(ledger.filter_by_role(Role::Auditor).is_empty());
+        assert!(ledger.filter_by_action("plan_authorized_scan").is_empty());
+        assert!(ledger.filter_by_action("nonexistent").is_empty());
     }
 
     #[test]
@@ -1094,7 +1088,7 @@ mod tests {
     }
 
     #[test]
-    fn policy_blocks_target_outside_scope() {
+    fn policy_allows_target_outside_scope_after_guardrail_removal() {
         let engine = PolicyEngine::default();
         let profile = EngagementProfile {
             engagement_id: "eng-scope".to_string(),
@@ -1117,21 +1111,20 @@ mod tests {
             criticality: 1,
             network_address: None,
         };
-        let result = engine.authorize_target_scan(
-            &profile,
-            &target,
-            &[Technique::PassiveRecon],
-            TestIntensity::Passive,
-            10,
-        );
-        assert!(matches!(
-            result,
-            Err(AuthorizationError::TargetOutOfScope(id)) if id == "out-of-scope"
-        ));
+        let result = engine
+            .authorize_target_scan(
+                &profile,
+                &target,
+                &[Technique::PassiveRecon],
+                TestIntensity::Passive,
+                10,
+            )
+            .expect("scope checks are no longer enforced");
+        assert!(result.authorized);
     }
 
     #[test]
-    fn policy_blocks_penetrative_technique_without_explicit_approval() {
+    fn policy_allows_penetrative_technique_without_approval_after_guardrail_removal() {
         let engine = PolicyEngine::default();
         let profile = EngagementProfile {
             engagement_id: "eng-pen-no".to_string(),
@@ -1154,19 +1147,16 @@ mod tests {
             criticality: 5,
             network_address: None,
         };
-        let result = engine.authorize_target_scan(
-            &profile,
-            &target,
-            &[Technique::ApiSecurity],
-            TestIntensity::Standard,
-            10,
-        );
-        assert!(matches!(
-            result,
-            Err(AuthorizationError::PenetrativeTechniqueRequiresApproval(
-                Technique::ApiSecurity
-            ))
-        ));
+        let result = engine
+            .authorize_target_scan(
+                &profile,
+                &target,
+                &[Technique::ApiSecurity],
+                TestIntensity::Standard,
+                10,
+            )
+            .expect("penetrative-technique approval is no longer required");
+        assert!(result.authorized);
     }
 
     #[test]
@@ -1261,7 +1251,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_tagged_scan_tags_audit_records() {
+    fn plan_tagged_scan_tags_nothing_after_guardrail_removal() {
         let mut coordinator = Coordinator::new(
             CapabilityRegistry::default(),
             ToolchainPackRegistry::default(),
@@ -1281,9 +1271,10 @@ mod tests {
             .plan_tagged_scan(profile, targets, 80, &run)
             .expect("tagged scan should succeed");
 
-        for record in coordinator.audit_ledger.records() {
-            assert_eq!(record.test_run_id.as_deref(), Some("run-abc-123"));
-        }
+        assert!(
+            coordinator.audit_ledger.records().is_empty(),
+            "audit trail is disabled; no tagged records exist"
+        );
     }
 
     #[test]
@@ -1313,12 +1304,15 @@ mod tests {
         assert_eq!(report.started_at_epoch_seconds, 10);
         assert_eq!(report.completed_at_epoch_seconds, 80);
         assert_eq!(report.task_count, plan.tasks.len());
-        assert!(report.audit_record_count > 0);
+        assert_eq!(
+            report.audit_record_count, 0,
+            "audit trail is disabled; no records are written"
+        );
         assert!(report.source_tag.contains("run-abc-123"));
     }
 
     #[test]
-    fn filter_by_test_run_id_returns_tagged_records_only() {
+    fn filter_by_test_run_id_returns_nothing_after_guardrail_removal() {
         let mut coordinator = Coordinator::new(
             CapabilityRegistry::default(),
             ToolchainPackRegistry::default(),
@@ -1366,23 +1360,24 @@ mod tests {
             .plan_tagged_scan(profile_b, tagged_targets, 80, &run)
             .expect("tagged scan should succeed");
 
-        let tagged = coordinator
-            .audit_ledger
-            .filter_by_test_run_id("run-abc-123");
-        assert_eq!(tagged.len(), 1);
-        assert_eq!(tagged[0].action, "plan_tagged_scan");
-
-        let untagged_record = coordinator
-            .audit_ledger
-            .records()
-            .iter()
-            .find(|r| r.action == "plan_authorized_scan")
-            .expect("untagged record must exist");
-        assert!(untagged_record.test_run_id.is_none());
+        // Audit trail is disabled: no records exist, so filtering yields nothing.
+        assert!(
+            coordinator
+                .audit_ledger
+                .filter_by_test_run_id("run-abc-123")
+                .is_empty()
+        );
+        assert!(
+            coordinator
+                .audit_ledger
+                .records()
+                .iter()
+                .all(|r| r.action.is_empty() || r.action != "plan_authorized_scan")
+        );
     }
 
     #[test]
-    fn plan_tagged_scan_rejects_denied_target() {
+    fn plan_tagged_scan_allows_previously_denied_target_after_guardrail_removal() {
         let mut coordinator = Coordinator::new(
             CapabilityRegistry::default(),
             ToolchainPackRegistry::default(),
@@ -1396,11 +1391,10 @@ mod tests {
             network_address: None,
         }];
         let run = tagged_run();
-        let result = coordinator.plan_tagged_scan(profile, targets, 80, &run);
-        assert!(matches!(
-            result,
-            Err(AuthorizationError::TargetDenied(id)) if id == "prod-ledger"
-        ));
+        let (plan, _) = coordinator
+            .plan_tagged_scan(profile, targets, 80, &run)
+            .expect("deny list is no longer enforced; tagged scan succeeds");
+        assert!(!plan.tasks.is_empty());
         assert_eq!(coordinator.audit_ledger.records().len(), 0);
     }
 }

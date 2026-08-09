@@ -398,6 +398,22 @@ html, body {
     color: var(--text-tertiary);
 }
 
+.field-hint {
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: var(--text-tertiary);
+    margin-top: 2px;
+}
+
+.field-hint code {
+    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: 11px;
+    color: var(--accent-blue);
+    background: var(--bg-tertiary);
+    padding: 1px 4px;
+    border-radius: 3px;
+}
+
 input[type="text"],
 input[type="number"],
 textarea,
@@ -546,7 +562,26 @@ input[type="checkbox"] {
 }
 
 .output-block.error {
+    border-color: var(--accent-red-dim);
+    background: rgba(248, 81, 73, 0.05);
+}
+
+.output-stdout {
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.output-stderr {
+    margin-top: 8px;
+    padding: 8px 10px;
+    border: 1px solid var(--accent-red-dim);
+    border-left: 3px solid var(--accent-red);
+    border-radius: var(--radius-md);
+    background: rgba(248, 81, 73, 0.08);
     color: var(--accent-red);
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 12px;
 }
 
 .empty-state {
@@ -1009,4 +1044,363 @@ input[type="checkbox"] {
 .help-card em {
     color: var(--accent-blue);
     font-style: normal;
+}
+
+/* ── Verbose Log Console ────────────────────────────────────────────────── */
+.log-console {
+    position: fixed;
+    left: var(--sidebar-width);
+    right: 0;
+    bottom: 0;
+    z-index: 1000;
+    background: var(--bg-elevated);
+    border-top: 1px solid var(--border-default);
+    box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.45);
+    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: 12px;
+}
+
+.log-console.collapsed .log-content {
+    display: none;
+}
+
+.log-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--border-default);
+    background: var(--bg-secondary);
+    cursor: pointer;
+    user-select: none;
+}
+
+.log-console.collapsed .log-header {
+    border-bottom: none;
+}
+
+.log-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: none;
+    border: none;
+    color: var(--text-primary);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 2px 4px;
+}
+
+.log-caret {
+    display: inline-block;
+    transition: transform var(--transition-fast);
+    color: var(--accent-blue);
+}
+
+.log-console:not(.collapsed) .log-caret {
+    transform: rotate(90deg);
+}
+
+.log-badge {
+    background: var(--accent-blue-dim);
+    color: var(--accent-blue);
+    border-radius: 10px;
+    padding: 0 8px;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 18px;
+    min-width: 22px;
+    text-align: center;
+}
+
+.log-hint {
+    flex: 1;
+    color: var(--text-secondary);
+    font-size: 11px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.log-clear {
+    background: none;
+    border: 1px solid var(--border-default);
+    color: var(--text-secondary);
+    border-radius: var(--radius-sm);
+    font: inherit;
+    font-size: 11px;
+    padding: 2px 10px;
+    cursor: pointer;
+    transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.log-clear:hover {
+    color: var(--accent-red);
+    border-color: var(--accent-red);
+}
+
+.log-content {
+    max-height: 220px;
+    overflow-y: auto;
+    padding: 6px 12px;
+    background: #0a0e14;
+    line-height: 1.55;
+}
+
+.log-line {
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.log-line .log-ts {
+    color: var(--text-secondary);
+    margin-right: 8px;
+}
+
+.log-line .log-level {
+    font-weight: 700;
+    margin-right: 8px;
+}
+
+.log-line.log-info .log-level { color: var(--accent-blue); }
+.log-line.log-warn .log-level { color: var(--accent-orange); }
+.log-line.log-error .log-level { color: var(--accent-red); }
+.log-line.log-error { color: #f0b6b6; }
+
+/* ── Severity badges (native structured results) ─────────────────────────── */
+.badge-success {
+    background: rgba(63, 185, 80, 0.12);
+    color: var(--accent-green);
+}
+
+.badge-warning {
+    background: rgba(210, 153, 34, 0.12);
+    color: var(--accent-orange);
+}
+
+.badge-danger {
+    background: rgba(248, 81, 73, 0.14);
+    color: var(--accent-red);
+}
+
+.badge-info {
+    background: rgba(88, 166, 255, 0.12);
+    color: var(--accent-blue);
+}
+
+/* ── Native Tool Result Rendering ────────────────────────────────────────── */
+.native-meta {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px dashed var(--border-default);
+}
+
+.native-error {
+    color: var(--accent-red);
+    background: rgba(248, 81, 73, 0.08);
+    border: 1px solid rgba(248, 81, 73, 0.3);
+    border-radius: var(--radius-md);
+    padding: 12px 16px;
+    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: 12.5px;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.native-section {
+    margin-bottom: 16px;
+}
+
+.native-section-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--accent-blue);
+    margin-bottom: 6px;
+}
+
+.native-kv {
+    display: grid;
+    grid-template-columns: minmax(140px, 1fr) 3fr;
+    gap: 4px 12px;
+    font-size: 13px;
+}
+
+.native-kv-row {
+    display: contents;
+}
+
+.native-kv-key {
+    color: var(--text-secondary);
+    font-weight: 500;
+    padding: 3px 0;
+}
+
+.native-kv-value {
+    color: var(--text-primary);
+    padding: 3px 0;
+    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: 12.5px;
+    word-break: break-all;
+}
+
+.native-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.native-list li {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--text-primary);
+}
+
+.native-list .badge {
+    flex-shrink: 0;
+    min-width: 52px;
+    justify-content: center;
+}
+
+.native-table {
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+}
+
+.native-tr {
+    display: flex;
+    gap: 8px;
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--border-muted);
+    font-size: 12.5px;
+}
+
+.native-tr:last-child {
+    border-bottom: none;
+}
+
+.native-th {
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.03em;
+}
+
+.native-td {
+    flex: 1;
+    min-width: 0;
+    word-break: break-all;
+}
+
+.native-code {
+    background: #0a0e14;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    padding: 12px 14px;
+    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--accent-green);
+    white-space: pre-wrap;
+    word-break: break-all;
+    overflow-x: auto;
+}
+
+.native-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+/* ── Smart Option Combo Boxes ───────────────────────────────────────────── */
+.combo-wrap {
+    position: relative;
+    min-width: 0;
+}
+
+.combo-wrap > input,
+.combo-wrap > textarea {
+    width: 100%;
+}
+
+.input-with-button .combo-wrap {
+    flex: 1;
+}
+
+.combo-input {
+    cursor: text;
+}
+
+.combo-input:hover,
+.combo-input.combo-open {
+    border-color: var(--accent-blue);
+    box-shadow: 0 0 0 1px rgba(88, 166, 255, 0.35);
+}
+
+.combo-input.combo-chevron {
+    padding-right: 26px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2358a6ff' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    background-size: 12px;
+}
+
+.combo-menu {
+    position: absolute;
+    top: calc(100% + 2px);
+    left: 0;
+    right: 0;
+    z-index: 1200;
+    max-height: 260px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    font-size: 13px;
+}
+
+.combo-menu::-webkit-scrollbar {
+    width: 8px;
+}
+
+.combo-menu::-webkit-scrollbar-thumb {
+    background: var(--border-default);
+    border-radius: 4px;
+}
+
+.combo-item {
+    padding: 7px 12px;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--text-primary);
+    border-bottom: 1px solid var(--border-muted);
+}
+
+.combo-item:last-child {
+    border-bottom: none;
+}
+
+.combo-item:hover,
+.combo-item.active {
+    background: var(--bg-hover);
+    color: var(--accent-blue);
+}
+
+.combo-empty {
+    padding: 10px 12px;
+    color: var(--text-secondary);
+    font-style: italic;
+    font-size: 12.5px;
 }
