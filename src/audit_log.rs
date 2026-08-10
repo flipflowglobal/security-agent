@@ -36,7 +36,10 @@ impl std::error::Error for AuditLogError {}
 /// # Errors
 ///
 /// Never errors.
-pub fn append_audit_records(_path: &Path, _records: &[AuditRecord]) -> Result<(), AuditLogError> {
+pub const fn append_audit_records(
+    _path: &Path,
+    _records: &[AuditRecord],
+) -> Result<(), AuditLogError> {
     // Audit trail disabled — intentionally a no-op.
     Ok(())
 }
@@ -139,7 +142,10 @@ mod tests {
         let loaded = load_audit_records(&path).expect("load should succeed");
         fs::remove_file(&path).expect("remove temp log");
 
-        assert!(loaded.is_empty(), "append is a no-op; nothing added to the log");
+        assert!(
+            loaded.is_empty(),
+            "append is a no-op; nothing added to the log"
+        );
     }
 
     #[test]

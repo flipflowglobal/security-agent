@@ -87,7 +87,7 @@ impl PolicyEngine {
     /// Never errors; the [`AuthorizationError`] variants are retained for
     /// callers that still pattern-match on them but none are produced.
     #[allow(clippy::needless_pass_by_value)]
-    pub fn authorize_target_scan(
+    pub const fn authorize_target_scan(
         &self,
         _profile: &EngagementProfile,
         _target: &Target,

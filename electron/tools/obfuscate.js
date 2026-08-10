@@ -223,7 +223,8 @@ function obfuscate({ mode, command, hex, fragsize, ip, cidr, count, seed }) {
             };
         }
         case 'checksum': {
-            const res = ipChecksum(hex || '4500003c0000000040010000000000000a000001');
+            if (!hex) return { ok: false, title: 'IP Checksum', subtitle: 'No input', sections: [listSection('Error', [{ severity: 'high', text: 'Provide the IPv4 header as hex.' }])], raw: {} };
+            const res = ipChecksum(hex);
             if (!res.ok) return { ok: false, title: 'IP Checksum', subtitle: 'Bad input', sections: [listSection('Error', [{ severity: 'high', text: res.error }])], raw: {} };
             return {
                 ok: true, title: 'IP Header Checksum', subtitle: 'Computed (ones-complement sum)',

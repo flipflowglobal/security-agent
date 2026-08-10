@@ -21,13 +21,13 @@
   },
   "devDependencies": {
     "electron": "^43.3.0",
-    "electron-builder": "^25.1.8",
+    "electron-builder": "^26.15.3",
     "typescript": "^7.0.2"
   },
   "build": {
     "appId": "com.security-agent.gui",
     "productName": "Security-Agent",
-    "copyright": "Copyright © 2026 Security-Agent Contributors",
+    "copyright": "Copyright Ac 2026 Security-Agent Contributors",
     "directories": {
       "output": "dist",
       "buildResources": "assets"
@@ -41,7 +41,7 @@
     ],
     "extraResources": [
       {
-        "from": "../target/release/security-agent",
+        "from": "../target/release/security-agent.exe",
         "to": "security-agent",
         "filter": [
           "**/*"
@@ -66,7 +66,7 @@
           ]
         }
       ],
-      "icon": "assets/icon.png",
+      "icon": "assets/icon.ico",
       "artifactName": "${productName}-Setup-${version}.${ext}"
     },
     "nsis": {
@@ -74,14 +74,14 @@
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "allowElevation": true,
-      "installerIcon": "assets/icon.png",
-      "uninstallerIcon": "assets/icon.png",
-      "installerHeaderIcon": "assets/icon.png",
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "installerHeaderIcon": "assets/icon.ico",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Security-Agent",
       "installerLanguages": [
-        "English"
+        "en_US"
       ],
       "language": "1033",
       "warningsAsErrors": false,
@@ -156,11 +156,14 @@
       ],
       "icon": "assets/icon.png",
       "category": "Development",
+      "description": "Desktop GUI for Security-Agent orchestration",
       "desktop": {
-        "Name": "Security-Agent",
-        "Comment": "Desktop GUI for Security-Agent orchestration",
-        "Keywords": "security;pentest;audit;agent;",
-        "StartupNotify": "true"
+        "entry": {
+          "Name": "Security-Agent",
+          "Comment": "Desktop GUI for Security-Agent orchestration",
+          "Keywords": "security;pentest;audit;agent;",
+          "StartupNotify": "true"
+        }
       },
       "artifactName": "${productName}-${version}.${ext}"
     },

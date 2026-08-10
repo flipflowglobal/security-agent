@@ -1,6 +1,8 @@
 # Full-system test harness for Security-Agent desktop app. (v2 — corrected expectations)
 $ErrorActionPreference = 'Continue'
-$exe = "C:\Users\david\Desktop\agent-installer\Security-Agent\dist\win-unpacked\resources\security-agent.exe"
+$res = "C:\Users\david\Desktop\agent-installer\Security-Agent\dist\win-unpacked\resources"
+$exe = @("$res\security-agent.exe", "$res\security-agent") | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $exe) { Write-Error "security-agent binary not found under $res"; exit 1 }
 $tmp = $env:GUI_TEST_TMP; if (-not $tmp) { $tmp = "C:\Users\david\AppData\Local\Temp\opencode\gui-test" }
 $results = @()
 $script:seq = 0

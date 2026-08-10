@@ -37,7 +37,7 @@ fn decode(bytes: &[u8]) -> Option<AuditRecord> {
 /// # Errors
 ///
 /// Never errors.
-pub fn append_audit_records(_path: &Path, _records: &[AuditRecord]) -> Result<(), DbError> {
+pub const fn append_audit_records(_path: &Path, _records: &[AuditRecord]) -> Result<(), DbError> {
     // Audit trail disabled — intentionally a no-op.
     Ok(())
 }
@@ -98,7 +98,10 @@ mod tests {
         let loaded = load_audit_records(&path).expect("load should succeed");
 
         fs::remove_file(&path).expect("remove temp file");
-        assert!(loaded.is_empty(), "audit trail is disabled; nothing recorded");
+        assert!(
+            loaded.is_empty(),
+            "audit trail is disabled; nothing recorded"
+        );
     }
 
     #[test]
@@ -112,7 +115,10 @@ mod tests {
         let loaded = load_audit_records(&path).expect("load should succeed");
 
         fs::remove_file(&path).expect("remove temp file");
-        assert!(loaded.is_empty(), "audit trail is disabled; nothing recorded");
+        assert!(
+            loaded.is_empty(),
+            "audit trail is disabled; nothing recorded"
+        );
     }
 
     #[test]
@@ -125,6 +131,9 @@ mod tests {
         let loaded = load_audit_records(&path).expect("load should succeed");
 
         fs::remove_file(&path).expect("remove temp file");
-        assert!(loaded.is_empty(), "audit trail is disabled; nothing recorded");
+        assert!(
+            loaded.is_empty(),
+            "audit trail is disabled; nothing recorded"
+        );
     }
 }

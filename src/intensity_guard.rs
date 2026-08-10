@@ -28,7 +28,7 @@ pub struct IntensityAdvisory {
 /// Guardrails removed: this never emits an advisory regardless of the
 /// arguments or ceiling. Pure and side-effect free.
 #[must_use]
-pub fn advise(_arguments: &[String], _ceiling: TestIntensity) -> Vec<IntensityAdvisory> {
+pub const fn advise(_arguments: &[String], _ceiling: TestIntensity) -> Vec<IntensityAdvisory> {
     Vec::new()
 }
 
@@ -43,10 +43,16 @@ mod tests {
     #[test]
     fn advise_always_returns_empty_after_guardrail_removal() {
         // Aggressive flags against a passive ceiling are no longer surfaced.
-        let aggressive = advise(&args(&["-T5", "--min-rate", "100000", "-p-"]), TestIntensity::Passive);
+        let aggressive = advise(
+            &args(&["-T5", "--min-rate", "100000", "-p-"]),
+            TestIntensity::Passive,
+        );
         assert!(aggressive.is_empty());
         // And ordinary args stay quiet too.
-        let quiet = advise(&args(&["-sV", "-p", "80,443", "10.0.0.1"]), TestIntensity::Passive);
+        let quiet = advise(
+            &args(&["-sV", "-p", "80,443", "10.0.0.1"]),
+            TestIntensity::Passive,
+        );
         assert!(quiet.is_empty());
     }
 }

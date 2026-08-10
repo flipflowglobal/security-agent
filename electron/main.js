@@ -4,16 +4,68 @@ const { execFile, spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 
-const nativeTools = require('./tools');
-
 let mainWindow = null;
 let binaryPath = null;
+
+// ── Run tracking (for Cancel) ─────────────────────────────────────────────
+// Every live child is tracked in a Set so cancel-run can terminate the whole
+// group, and a second run never silently orphans the first.
+const liveChildren = new Set();
+const STREAM_MAX_BYTES = 16 * 1024 * 1024;   // cap accumulated streamed output
+const RUN_TIMEOUT_MS = 10 * 60 * 1000;       // streaming runs: 10 minute ceiling
+
+// ── Network opt-in (trust boundary) ───────────────────────────────────────
+// "Offline by default" is enforced HERE, in the main process, not just in the
+// renderer. The renderer's Offline/Online toggle calls set-network-mode; a
+// compromised renderer cannot pass --allow-network/--listen/--execute while
+// the main process is offline.
+let networkMode = false;
+
+// ── Workspace root (write/read confinement) ───────────────────────────────
+const WORKSPACE_BASE = path.join(os.homedir(), 'Security-Agent-Workspace');
+const WORKSPACE_SUBDIRS = ['engagements', 'findings', 'reports', 'exports', 'runs'];
+
+// Is this path allowed for renderer-requested file I/O? Only paths inside the
+// per-user workspace (never the app's own files, never outside the workspace).
+function assertWorkspacePath(p) {
+    if (typeof p !== 'string' || !p) return 'path must be a non-empty string';
+    const resolved = path.resolve(p);
+    const base = path.resolve(WORKSPACE_BASE);
+    if (resolved === base || resolved.startsWith(base + path.sep)) return null;
+    // Never let the renderer touch the app's own files even inside the tree.
+    const appRoot = path.resolve(path.join(__dirname, '..'));
+    if (resolved === appRoot || resolved.startsWith(appRoot + path.sep)) {
+        return 'writing to application files is not allowed';
+    }
+    return 'path is outside the workspace: ' + resolved;
+}
 
 // ── Verbose logging ─────────────────────────────────────────────────────────
 // Every log line is written to the main-process console AND forwarded to the
 // renderer, where it appears in the collapsible Log Console (bottom bar).
+// Command arguments are redacted before logging so secrets never reach the
+// log buffer or the renderer.
 const LOG_BUFFER = [];
 const LOG_MAX_BUFFER = 500;
+const REDACTED_ARG_FLAGS = new Set([
+    '--password-strength', '--obfuscate-ps', '--ask', '--agent', '--llm-generate',
+    '--llm-perplexity', '--analyze-payload', '--gen-shell', '--gen-wordlist',
+    '--hash-id', '--analyze-passwd', '--analyze-sudoers', '--analyze-keys',
+    '--analyze-hosts', '--analyze-handshake', '--wps-pin', '--fragment-payload',
+    '--ip-checksum', '--analyze-deauth', '--audit-wifi',
+]);
+
+function redactArgs(args) {
+    if (!Array.isArray(args)) return String(args);
+    const out = args.map(String);
+    for (let i = 0; i < out.length; i++) {
+        if (REDACTED_ARG_FLAGS.has(out[i]) && i + 1 < out.length) {
+            out[i + 1] = '[redacted]';
+            i++;
+        }
+    }
+    return out;
+}
 
 function emitLog(level, message) {
     const entry = { ts: Date.now(), level, message: String(message) };
@@ -68,8 +120,7 @@ function resolveBinaryPath() {
         }
     }
 
-    emitLog('warn', 'security-agent binary not found. Checked: ' +
-        roots.map((r) => r).join(', '));
+    emitLog('warn', 'security-agent binary not found. Checked: ' + roots.join(', '));
     return null;
 }
 
@@ -89,7 +140,7 @@ function createWindow() {
             preload: path.join(__dirname, 'preload.js'),
             contextIsolation: true,
             nodeIntegration: false,
-            sandbox: false,
+            sandbox: true,
         },
     };
 
@@ -109,7 +160,7 @@ function createWindow() {
 
     mainWindow.loadFile(path.join(__dirname, 'index.html'));
     mainWindow.on('closed', () => { mainWindow = null; });
-    emitLog('info', 'Main window created (contextIsolation=true, nodeIntegration=false)');
+    emitLog('info', 'Main window created (contextIsolation=true, nodeIntegration=false, sandbox=true)');
 }
 
 app.whenReady().then(() => {
@@ -128,95 +179,383 @@ app.on('window-all-closed', () => {
 
 // ── IPC Handlers ──────────────────────────────────────────────────────────
 
-ipcMain.handle('get-binary-path', () => binaryPath);
+// Only accept IPC from our own main window's renderer.
+function trusted(event) {
+    return !!mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents;
+}
 
-ipcMain.handle('get-logs', () => LOG_BUFFER.slice());
-
-ipcMain.handle('get-app-info', () => ({
-    platform: process.platform,
-    electron: process.versions.electron,
-    node: process.versions.node,
-    chrome: process.versions.chrome,
-    binaryPath,
-    binaryFound: !!binaryPath,
-}));
-
-// ── Native in-process tools (no binary spawn needed) ────────────────────────
-
-ipcMain.handle('native-list', () => nativeTools.listTools());
-
-ipcMain.handle('native-run', (_event, id, args) => {
-    emitLog('info', `native-run: ${id} args=${JSON.stringify(args)}`);
-    const result = nativeTools.runTool(id, args);
-    emitLog(result.ok ? 'info' : 'error', `native-run: ${id} -> ok=${result.ok} ms=${result.ms}`);
-    return result;
+ipcMain.handle('get-app-info', (event) => {
+    if (!trusted(event)) return null;
+    return {
+        platform: process.platform,
+        electron: process.versions.electron,
+        node: process.versions.node,
+        chrome: process.versions.chrome,
+        binaryPath,
+        binaryFound: !!binaryPath,
+    };
 });
 
-ipcMain.handle('run-command', async (_event, args) => {
-    emitLog('info', 'run-command: ' + (Array.isArray(args) ? args.join(' ') : String(args)));
+ipcMain.handle('set-network-mode', (event, mode) => {
+    if (!trusted(event)) return { ok: false };
+    const next = mode === 'online';
+    networkMode = next;
+    emitLog('warn', 'network mode set to ' + (next ? 'ONLINE' : 'offline'));
+    return { ok: true, networkMode };
+});
+
+// ── Command execution ─────────────────────────────────────────────────────
+
+function gateNetworkArgs(args) {
+    // While offline, refuse any run that would opt into live/active behavior.
+    if (networkMode) return null;
+    const live = ['--allow-network', '--listen', '--execute', '--run-external-tool'];
+    for (const flag of live) {
+        if (Array.isArray(args) && args.includes(flag)) {
+            return `refused: '${flag}' requires online mode (Offline/Online toggle in the header)`;
+        }
+    }
+    return null;
+}
+
+ipcMain.handle('run-command', (event, args) => {
+    if (!trusted(event)) return { ok: false, stdout: '', stderr: 'untrusted sender', exitCode: 1 };
+    emitLog('info', 'run-command: ' + redactArgs(args).join(' '));
     return new Promise((resolve) => {
         if (!binaryPath) {
             emitLog('error', 'run-command refused: binary not found');
             resolve({ ok: false, stdout: '', stderr: 'security-agent binary not found', exitCode: 1 });
             return;
         }
+        const refused = gateNetworkArgs(args);
+        if (refused) {
+            emitLog('warn', 'run-command refused (offline): ' + refused);
+            resolve({ ok: false, stdout: '', stderr: refused, exitCode: 1 });
+            return;
+        }
         const proc = execFile(binaryPath, args, {
             timeout: 120_000,
             maxBuffer: 1024 * 1024,
             encoding: 'utf-8',
+            windowsHide: true,
         }, (error, stdout, stderr) => {
+            liveChildren.delete(proc);
+            const cancelled = !!proc._cancelled;
             if (error) {
                 const code = error.code != null ? error.code : 1;
-                emitLog('warn', `run-command finished exit=${code} stderr=${(stderr || String(error)).slice(0, 200)}`);
-                resolve({ ok: code === 0, stdout: stdout || '', stderr: stderr || String(error), exitCode: code });
+                emitLog('warn', `run-command finished exit=${code} cancelled=${cancelled} stderr=${(stderr || String(error)).slice(0, 200)}`);
+                resolve({ ok: !cancelled && code === 0, stdout: stdout || '', stderr: stderr || String(error), exitCode: cancelled ? 130 : code, cancelled });
             } else {
                 emitLog('info', `run-command finished exit=0 stdoutBytes=${(stdout || '').length}`);
-                resolve({ ok: true, stdout: stdout || '', stderr: stderr || '', exitCode: 0 });
+                resolve({ ok: true, stdout: stdout || '', stderr: stderr || '', exitCode: 0, cancelled: false });
             }
         });
+        liveChildren.add(proc);
     });
 });
 
-ipcMain.handle('run-streaming', async (_event, args) => {
-    emitLog('info', 'run-streaming: ' + (Array.isArray(args) ? args.join(' ') : String(args)));
+ipcMain.handle('run-streaming', (event, args) => {
+    if (!trusted(event)) return { ok: false, stdout: '', stderr: 'untrusted sender', exitCode: 1 };
+    emitLog('info', 'run-streaming: ' + redactArgs(args).join(' '));
     return new Promise((resolve) => {
         if (!binaryPath) {
             emitLog('error', 'run-streaming refused: binary not found');
             resolve({ ok: false, stdout: '', stderr: 'security-agent binary not found', exitCode: 1 });
             return;
         }
+        const refused = gateNetworkArgs(args);
+        if (refused) {
+            emitLog('warn', 'run-streaming refused (offline): ' + refused);
+            resolve({ ok: false, stdout: '', stderr: refused, exitCode: 1 });
+            return;
+        }
         const proc = spawn(binaryPath, args, {
             env: { ...process.env, TERM: 'dumb' },
+            windowsHide: true,
         });
+        liveChildren.add(proc);
         let stdout = '';
         let stderr = '';
+        let stdoutTruncated = false;
+        let stderrTruncated = false;
+        const killTimer = setTimeout(() => {
+            if (!proc._cancelled) {
+                proc._cancelled = true;
+                emitLog('warn', `run-streaming timed out after ${RUN_TIMEOUT_MS / 1000}s — terminating pid=${proc.pid}`);
+                killTree(proc);
+            }
+        }, RUN_TIMEOUT_MS);
+        if (killTimer.unref) killTimer.unref();
 
         proc.stdout.on('data', (data) => {
             const chunk = data.toString();
-            stdout += chunk;
-            if (mainWindow && !mainWindow.isDestroyed()) {
+            if (stdout.length + chunk.length > STREAM_MAX_BYTES) {
+                stdoutTruncated = true;
+                stdout += chunk.slice(0, Math.max(0, STREAM_MAX_BYTES - stdout.length));
+            } else {
+                stdout += chunk;
+            }
+            if (!stdoutTruncated && mainWindow && !mainWindow.isDestroyed()) {
                 mainWindow.webContents.send('stream-chunk', chunk);
             }
         });
         proc.stderr.on('data', (data) => {
             const chunk = data.toString();
-            stderr += chunk;
-            if (mainWindow && !mainWindow.isDestroyed()) {
-                mainWindow.webContents.send('stream-chunk', chunk);
+            if (stderr.length + chunk.length > STREAM_MAX_BYTES) {
+                stderrTruncated = true;
+                stderr += chunk.slice(0, Math.max(0, STREAM_MAX_BYTES - stderr.length));
+            } else {
+                stderr += chunk;
             }
+            // stderr is NOT forwarded as stream chunks; it lands in res.stderr
+            // so consumers render it once in their own stderr element.
         });
         proc.on('close', (code) => {
-            emitLog('info', `run-streaming finished exit=${code} stdoutBytes=${stdout.length} stderrBytes=${stderr.length}`);
-            resolve({ ok: code === 0, stdout, stderr, exitCode: code || 0 });
+            clearTimeout(killTimer);
+            liveChildren.delete(proc);
+            const cancelled = !!proc._cancelled;
+            const exitCode = code == null ? (cancelled ? 130 : 1) : code;
+            if (stdoutTruncated) stdout += '\n[output truncated at 16 MiB]';
+            if (stderrTruncated) stderr += '\n[output truncated at 16 MiB]';
+            emitLog('info', `run-streaming finished exit=${exitCode} cancelled=${cancelled} stdoutBytes=${stdout.length} stderrBytes=${stderr.length}`);
+            resolve({ ok: !cancelled && code === 0, stdout, stderr, exitCode, cancelled });
         });
         proc.on('error', (err) => {
+            clearTimeout(killTimer);
+            liveChildren.delete(proc);
             emitLog('error', 'run-streaming spawn error: ' + String(err));
             resolve({ ok: false, stdout, stderr: String(err), exitCode: 1 });
         });
     });
 });
 
-ipcMain.handle('select-file', async (_event, options) => {
+// Terminates a child and, on Windows, its whole process tree.
+function killTree(proc) {
+    if (!proc || proc.pid == null) return;
+    try {
+        if (process.platform === 'win32') {
+            spawn('taskkill', ['/PID', String(proc.pid), '/T', '/F'], { windowsHide: true });
+        } else {
+            try { process.kill(-proc.pid, 'SIGKILL'); } catch (_e) { proc.kill('SIGKILL'); }
+        }
+    } catch (_e) { /* already gone */ }
+    try { proc.kill('SIGKILL'); } catch (_e) { /* already gone */ }
+}
+
+// Cancels every live child process.
+ipcMain.handle('cancel-run', (event) => {
+    if (!trusted(event)) return { ok: true, cancelled: false };
+    if (liveChildren.size === 0) return { ok: true, cancelled: false };
+    emitLog('warn', `cancel-run: terminating ${liveChildren.size} child process(es)`);
+    for (const proc of liveChildren) {
+        proc._cancelled = true;
+        killTree(proc);
+    }
+    liveChildren.clear();
+    return { ok: true, cancelled: true };
+});
+
+// ── Listener (Server view) ────────────────────────────────────────────────
+// Long-lived reverse-shell listener. The wrapped binary's --listen relay is
+// line-oriented: operator stdin lines are forwarded to the connected shell,
+// remote shell output is written to stdout, and status/banner lines go to
+// stderr. We spawn it with pipes so the renderer gets an interactive
+// terminal: stdout → 'listener-output' (session data), stderr →
+// 'listener-event' (status lines), and listener-stdin writes commands to the
+// connected shell. 'exit' on stdin (or Ctrl-D) only closes the CURRENT
+// session — the listener keeps accepting, so Stop terminates the process.
+let listenerProc = null;
+
+function listenerRunning() {
+    return !!listenerProc && listenerProc.pid != null && !listenerProc.killed;
+}
+
+ipcMain.handle('start-listener', (event, options) => {
+    if (!trusted(event)) return { ok: false, error: 'untrusted sender' };
+    if (listenerRunning()) return { ok: false, error: 'a listener is already running' };
+    const opts = options || {};
+    const port = parseInt(opts.port, 10);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        return { ok: false, error: 'port must be an integer between 1 and 65535' };
+    }
+    // Opening a listening socket is live/active behavior: it requires the
+    // explicit online opt-in. Enforced HERE in main, never only in the UI.
+    if (!networkMode) {
+        return { ok: false, error: 'starting a listener requires Online mode (Offline/Online toggle in the sidebar)' };
+    }
+    if (!binaryPath) return { ok: false, error: 'security-agent binary not found' };
+
+    const args = ['--allow-network', '--listen', String(port)];
+    const maxConn = parseInt(opts.maxConnections, 10);
+    if (Number.isInteger(maxConn) && maxConn > 0) args.push(String(maxConn));
+    const bind = (typeof opts.bindAddress === 'string' && opts.bindAddress.trim()) ? opts.bindAddress.trim() : '0.0.0.0';
+    args.push(bind);
+    if (opts.sessionLog) {
+        args.push('--log', path.join(WORKSPACE_BASE, 'runs', 'listener-sessions.jsonl'));
+    }
+    emitLog('warn', 'start-listener: ' + redactArgs(args).join(' '));
+
+    return new Promise((resolve) => {
+        const proc = spawn(binaryPath, args, {
+            stdio: ['pipe', 'pipe', 'pipe'],
+            env: { ...process.env, TERM: 'dumb' },
+            windowsHide: true,
+        });
+        listenerProc = proc;
+        liveChildren.add(proc);
+
+        let settled = false;
+        const settle = (res) => { if (!settled) { settled = true; resolve(res); } };
+
+        proc.stdout.on('data', (data) => {
+            // Session data coming back from the connected shell.
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send('listener-output', data.toString());
+            }
+        });
+        proc.stderr.on('data', (data) => {
+            // Status/banner lines from the listener itself.
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send('listener-event', data.toString());
+            }
+        });
+        proc.on('close', (code) => {
+            liveChildren.delete(proc);
+            const cancelled = !!proc._cancelled;
+            if (listenerProc === proc) listenerProc = null;
+            emitLog('warn', `start-listener exited code=${code} cancelled=${cancelled}`);
+            settle({ ok: !cancelled && code === 0, running: false, exitCode: code, cancelled });
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send('listener-status', { running: false, exitCode: code, cancelled });
+            }
+        });
+        proc.on('error', (err) => {
+            liveChildren.delete(proc);
+            if (listenerProc === proc) listenerProc = null;
+            emitLog('error', 'start-listener spawn error: ' + String(err));
+            settle({ ok: false, error: String(err), running: false });
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send('listener-status', { running: false, error: String(err) });
+            }
+        });
+        // The spawn itself is enough to report "running"; the banner on stderr
+        // updates the UI with bind details shortly after.
+        settle({ ok: true, running: true, pid: proc.pid, args: redactArgs(args) });
+    });
+});
+
+// Writes one command line to the connected shell via the listener's stdin.
+ipcMain.handle('listener-stdin', (event, line) => {
+    if (!trusted(event)) return { ok: false, error: 'untrusted sender' };
+    if (!listenerRunning()) return { ok: false, error: 'listener is not running' };
+    const text = String(line == null ? '' : line);
+    if (text.length > 65536) return { ok: false, error: 'line too long (>64 KiB)' };
+    try {
+        listenerProc.stdin.write(text + '\n');
+        return { ok: true };
+    } catch (err) {
+        return { ok: false, error: String(err) };
+    }
+});
+
+// Terminates the listener process tree (equivalent to pressing Ctrl-C in the
+// binary, but enforced from here because we control the child's lifetime).
+ipcMain.handle('stop-listener', (event) => {
+    if (!trusted(event)) return { ok: false, error: 'untrusted sender' };
+    if (!listenerRunning()) return { ok: true, stopped: false };
+    emitLog('warn', 'stop-listener: terminating listener pid=' + listenerProc.pid);
+    listenerProc._cancelled = true;
+    killTree(listenerProc);
+    return { ok: true, stopped: true };
+});
+
+// ── Payload generation (Server view) ───────────────────────────────────────
+// --gen-shell is a LOCAL operation (no socket, no network) so it works in
+// offline mode, but the payload text is sensitive: it is redacted from logs
+// (see REDACTED_ARG_FLAGS) and never persisted to history by the renderer.
+
+ipcMain.handle('gen-shell', (event, shellType, lhost, lport) => {
+    if (!trusted(event)) return { ok: false, stdout: '', stderr: 'untrusted sender', exitCode: 1 };
+    emitLog('info', 'gen-shell: type=' + String(shellType) + ' lhost=' + String(lhost) + ' lport=' + String(lport));
+    return new Promise((resolve) => {
+        if (!binaryPath) {
+            resolve({ ok: false, stdout: '', stderr: 'security-agent binary not found', exitCode: 1 });
+            return;
+        }
+        execFile(binaryPath, ['--gen-shell', String(shellType), String(lhost), String(lport)], {
+            timeout: 30_000,
+            maxBuffer: 1024 * 1024,
+            encoding: 'utf-8',
+            windowsHide: true,
+        }, (error, stdout, stderr) => {
+            if (error) {
+                const code = error.code != null ? error.code : 1;
+                emitLog('warn', `gen-shell failed exit=${code} stderr=${(stderr || String(error)).slice(0, 200)}`);
+                resolve({ ok: code === 0, stdout: stdout || '', stderr: stderr || String(error), exitCode: code });
+            } else {
+                emitLog('info', `gen-shell ok stdoutBytes=${(stdout || '').length}`);
+                resolve({ ok: true, stdout: stdout || '', stderr: stderr || '', exitCode: 0 });
+            }
+        });
+    });
+});
+
+// Returns the shell payload catalog for the Server view's type dropdown.
+// Parsed from --gen-shell --list; falls back to the known catalog if the
+// binary is missing or the parse fails, so the UI never breaks.
+ipcMain.handle('get-shell-types', async (event) => {
+    if (!trusted(event)) return { ok: false, types: [], error: 'untrusted sender' };
+    const fallback = [
+        { id: 'powershell', name: 'PowerShell Reverse Shell', aliases: 'powershell, ps, ps1', platform: 'Windows (PowerShell 2.0+)', desc: 'One-liner PowerShell reverse shell (plain TCP client + process launch).' },
+        { id: 'bash', name: 'Reverse Bash Shell', aliases: 'bash, sh', platform: 'Linux / Unix', desc: 'One-line bash reverse shell using /dev/tcp.' },
+        { id: 'netcat', name: 'Reverse Netcat Shell', aliases: 'netcat, nc', platform: 'Linux / Unix', desc: 'Reverse shell via netcat + named pipe.' },
+        { id: 'python', name: 'Reverse Python Shell', aliases: 'python, python3, py', platform: 'Linux / Unix / Windows', desc: 'Reverse shell via python3 socket + os.dup2.' },
+        { id: 'perl', name: 'Reverse Perl Shell', aliases: 'perl', platform: 'Linux / Unix', desc: 'Reverse shell via perl Socket module.' },
+        { id: 'ruby', name: 'Reverse Ruby Shell', aliases: 'ruby', platform: 'Linux / Unix', desc: 'Reverse shell via ruby -rsocket.' },
+        { id: 'php', name: 'Reverse PHP Shell', aliases: 'php', platform: 'Linux / Unix', desc: 'Reverse shell via php fsockopen.' },
+        { id: 'tcp', name: 'Reverse TCP Shell', aliases: 'tcp', platform: 'Linux x86_64', desc: 'Raw x86_64 reverse TCP shellcode (syscall-based).' },
+        { id: 'bind', name: 'Bind TCP Shell', aliases: 'bind, bindtcp', platform: 'Linux / Unix', desc: 'Bind shell: the target listens and you connect to it.' },
+        { id: 'meterpreter', name: 'Meterpreter Reverse TCP', aliases: 'meterpreter, msf', platform: 'Windows / Linux', desc: 'Meterpreter reverse TCP stage (requires local msfvenom).' },
+        { id: 'http', name: 'Reverse HTTP Shell', aliases: 'http', platform: 'Windows / Linux', desc: 'Meterpreter reverse HTTP stager (requires local msfvenom).' },
+        { id: 'https', name: 'Reverse HTTPS Shell', aliases: 'https', platform: 'Windows / Linux', desc: 'Meterpreter reverse HTTPS stager (requires local msfvenom).' },
+    ];
+    if (!binaryPath) return { ok: false, types: fallback, error: 'binary not found' };
+    try {
+        const listOut = await new Promise((resolve, reject) => {
+            execFile(binaryPath, ['--gen-shell', '--list'], { timeout: 30_000, maxBuffer: 1024 * 1024, windowsHide: true },
+                (error, stdout) => error ? reject(error) : resolve(stdout));
+        });
+        const types = [];
+        const lines = listOut.split(/\r?\n/);
+        for (let i = 0; i < lines.length; i++) {
+            const m = lines[i].match(/^(.*?)\s+aliases:\s*(.+)$/);
+            if (!m) continue;
+            const name = m[1].trim();
+            const aliases = m[2].split(',').map((s) => s.trim()).filter(Boolean);
+            if (aliases.length === 0) continue;
+            const platform = (lines[i + 1] || '').match(/^\s*platform:\s*(.+)$/);
+            const desc = (lines[i + 2] || '').trim();
+            types.push({
+                id: aliases[0],
+                name: name,
+                aliases: aliases.join(', '),
+                platform: platform ? platform[1].trim() : '',
+                desc: desc,
+            });
+        }
+        if (types.length > 0) {
+            emitLog('info', `shell payload catalog: ${types.length} types`);
+            return { ok: true, types };
+        }
+        return { ok: true, types: fallback };
+    } catch (err) {
+        emitLog('error', 'get-shell-types failed: ' + String(err));
+        return { ok: false, types: fallback, error: String(err) };
+    }
+});
+
+ipcMain.handle('select-file', async (event, options) => {
+    if (!trusted(event)) return null;
     const result = await dialog.showOpenDialog(mainWindow, {
         properties: ['openFile'],
         filters: options?.filters || [],
@@ -225,152 +564,116 @@ ipcMain.handle('select-file', async (_event, options) => {
     return result.filePaths[0];
 });
 
-ipcMain.handle('save-file', async (_event, options) => {
+// Save dialog + write in one step so renderer-supplied paths never bypass the
+// user's explicit "Save as" choice.
+ipcMain.handle('save-file', async (event, options, content) => {
+    if (!trusted(event)) return { ok: false, error: 'untrusted sender' };
     const result = await dialog.showSaveDialog(mainWindow, {
         filters: options?.filters || [],
     });
     if (result.canceled || !result.filePath) return null;
-    return result.filePath;
-});
-
-ipcMain.handle('open-external', async (_event, url) => {
-    await shell.openExternal(url);
-});
-
-ipcMain.handle('write-file', async (_event, filePath, content) => {
+    const text = String(content == null ? '' : content);
+    if (text.length > 16 * 1024 * 1024) return { ok: false, error: 'content too large to save (>16 MiB)' };
     try {
-        fs.writeFileSync(filePath, content, 'utf-8');
+        await fs.promises.writeFile(result.filePath, text, 'utf-8');
+        return { ok: true, path: result.filePath };
+    } catch (err) {
+        return { ok: false, error: String(err) };
+    }
+});
+
+// Writes a text file — only inside the workspace.
+ipcMain.handle('write-file', async (event, filePath, content) => {
+    if (!trusted(event)) return { ok: false, error: 'untrusted sender' };
+    const violation = assertWorkspacePath(filePath);
+    if (violation) return { ok: false, error: violation };
+    const text = String(content == null ? '' : content);
+    if (text.length > 16 * 1024 * 1024) return { ok: false, error: 'content too large to write (>16 MiB)' };
+    try {
+        await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+        await fs.promises.writeFile(filePath, text, 'utf-8');
         return { ok: true };
     } catch (err) {
         return { ok: false, error: String(err) };
     }
 });
 
-// ── Real-path scanning for combo-box suggestions ────────────────────────────
-// Returns ONLY paths that actually exist on disk, scanned from every common
-// user folder in priority order (home, Desktop, Documents, Downloads, ...,
-// temp, the app's own install folders). The renderer uses this so path
-// fields never suggest a made-up location.
-
-const SKIP_DIR_NAMES = new Set([
-    'node_modules', '.git', '.hg', '.svn', '.idea', '.vscode',
-    'appdata', '.cache', 'caches', 'temp', 'tmp', '.npm', '.m2',
-    '.gradle', '.rustup', '.cargo', 'site-packages', '$recycle.bin',
-    'system volume information', 'program files', 'program files (x86)',
-    'windows', 'programdata', 'recovery',
-].map((s) => s.toLowerCase()));
-
-function candidateScanDirs() {
-    const home = os.homedir();
-    const resourcesPath = process.resourcesPath || path.join(__dirname, '..');
-    const baseDir = path.dirname(resourcesPath);
-    const raw = [
-        home,
-        path.join(home, 'Desktop'),
-        path.join(home, 'Documents'),
-        path.join(home, 'Downloads'),
-        path.join(home, 'Pictures'),
-        path.join(home, 'Music'),
-        path.join(home, 'Videos'),
-        path.join(home, 'OneDrive', 'Desktop'),
-        path.join(home, 'OneDrive', 'Documents'),
-        path.join(home, 'OneDrive', 'Downloads'),
-        os.tmpdir(),
-        process.cwd(),
-        resourcesPath,
-        __dirname,
-        path.join(__dirname, '..'),
-        baseDir,
-        path.join(baseDir, 'electron'),
-        path.join(baseDir, 'scripts'),
-        path.join(baseDir, 'vendor', 'win'),
-        path.join(baseDir, 'fixtures'),
-        path.join(baseDir, 'output'),
-        path.join(baseDir, 'logs'),
-    ];
-    const out = [];
-    const seen = new Set();
-    for (const d of raw) {
-        if (!d) continue;
-        const resolved = path.resolve(d);
-        if (resolved.toLowerCase().indexOf('.asar') !== -1) continue; // asar-virtual dirs are not real paths for tools
-        const key = resolved.toLowerCase();
-        if (seen.has(key)) continue;
-        seen.add(key);
-        try {
-            if (fs.statSync(resolved).isDirectory()) out.push(resolved);
-        } catch (_e) { /* not present — skip */ }
-    }
-    return out;
-}
-
-// Deep coverage applies only to the user's own folders, so subfolder files
-// (e.g. Desktop\reports\findings.jsonl) are discovered too. System/work dirs
-// (temp, app resources) stay shallow to keep the scan bounded.
-function isDeepScanRoot(dir) {
-    const home = os.homedir().toLowerCase();
-    const d = dir.toLowerCase();
-    if (d === home) return true;
-    if (d.indexOf('onedrive') !== -1) return true;
-    const deepNames = ['desktop', 'documents', 'downloads', 'pictures', 'music', 'videos'];
-    for (const name of deepNames) {
-        if (d === path.join(home, name).toLowerCase()) return true;
-    }
-    return false;
-}
-
-function walkScanDir(root, depth, maxDepth, exts, withDirs, isWin, files, dirs, seenFiles, seenDirs, fileCap, dirCap) {
-    if (files.length >= fileCap && (!withDirs || dirs.length >= dirCap)) return;
-    let entries;
+// Reads a text file — only inside the workspace, never a symlink, 2 MiB cap.
+ipcMain.handle('read-file', async (event, filePath) => {
+    if (!trusted(event)) return { ok: false, error: 'untrusted sender' };
+    const violation = assertWorkspacePath(filePath);
+    if (violation) return { ok: false, error: violation };
     try {
-        entries = fs.readdirSync(root, { withFileTypes: true });
-    } catch (_e) {
-        return;
+        const stats = await fs.promises.lstat(filePath);
+        if (stats.isSymbolicLink()) return { ok: false, error: 'symlinks are not allowed' };
+        if (!stats.isFile()) return { ok: false, error: 'not a regular file' };
+        if (stats.size > 2 * 1024 * 1024) return { ok: false, error: 'file too large to preview (>2 MiB)' };
+        const text = await fs.promises.readFile(filePath, 'utf-8');
+        return { ok: true, content: text };
+    } catch (err) {
+        return { ok: false, error: String(err) };
     }
-    for (const entry of entries) {
-        if (files.length >= fileCap && (!withDirs || dirs.length >= dirCap)) return;
-        const name = entry.name;
-        if (name.startsWith('.') || name === '$Recycle.Bin') continue;
-        const full = path.join(root, name);
-        if (full.toLowerCase().indexOf('.asar') !== -1) continue; // never suggest asar-virtual paths
-        const key = isWin ? full.toLowerCase() : full;
-        if (entry.isDirectory()) {
-            if (depth < maxDepth && !SKIP_DIR_NAMES.has(name.toLowerCase())) {
-                walkScanDir(full, depth + 1, maxDepth, exts, withDirs, isWin, files, dirs, seenFiles, seenDirs, fileCap, dirCap);
-            }
-            if (withDirs && dirs.length < dirCap && !seenDirs.has(key)) {
-                seenDirs.add(key);
-                dirs.push(full);
-            }
-        } else if (entry.isFile()) {
-            const ext = path.extname(name).toLowerCase();
-            if (exts.length > 0 && !exts.includes(ext)) continue;
-            if (seenFiles.has(key)) continue;
-            seenFiles.add(key);
-            if (files.length < fileCap) files.push(full);
+});
+
+// Resolves (and lazily creates) a per-user workspace for generated configs,
+// findings logs, reports, and exported artifacts.
+ipcMain.handle('get-workspace', async (event) => {
+    if (!trusted(event)) return { ok: false, base: '', subdirs: [] };
+    const subdirs = WORKSPACE_SUBDIRS;
+    const paths = {};
+    try {
+        for (const sub of subdirs) {
+            const dir = path.join(WORKSPACE_BASE, sub);
+            await fs.promises.mkdir(dir, { recursive: true });
+            paths[sub] = dir;
         }
+        return { ok: true, base: WORKSPACE_BASE, subdirs, paths };
+    } catch (err) {
+        emitLog('error', 'get-workspace failed: ' + String(err));
+        return { ok: false, error: String(err), base: WORKSPACE_BASE, subdirs, paths };
     }
-}
+});
 
-ipcMain.handle('scan-paths', async (_event, options) => {
-    const exts = Array.isArray(options?.exts)
-        ? options.exts.map((e) => String(e).toLowerCase())
-        : [];
-    const withDirs = options?.withDirs !== false;
-    const fileCap = Math.min(Math.max(Number(options?.cap) || 300, 1), 1000);
-    const dirCap = 60;
-    const isWin = process.platform === 'win32';
-    const files = [];
-    const dirs = [];
-    const seenFiles = new Set();
-    const seenDirs = new Set();
+// ── Tool catalog cache (parsed from the binary's --list-tools) ─────────────
+let toolCatalogCache = null;
 
-    for (const dir of candidateScanDirs()) {
-        const maxDepth = isDeepScanRoot(dir) ? 3 : 1;
-        walkScanDir(dir, 1, maxDepth, exts, withDirs, isWin, files, dirs, seenFiles, seenDirs, fileCap, dirCap);
+ipcMain.handle('get-tool-catalog', async (event) => {
+    if (!trusted(event)) return { ok: false, tools: [], skills: 0, error: 'untrusted sender' };
+    if (toolCatalogCache) return toolCatalogCache;
+    if (!binaryPath) return { ok: false, tools: [], skills: 0, error: 'binary not found' };
+    try {
+        const run = (flag) => new Promise((resolve, reject) => {
+            execFile(binaryPath, [flag], { timeout: 30_000, maxBuffer: 1024 * 1024, windowsHide: true },
+                (error, stdout, stderr) => error ? reject(error) : resolve(stdout));
+        });
+        const [listOut, statusOut] = await Promise.all([run('--list-tools'), run('--offline-status')]);
+        const tools = listOut.split(/\r?\n/).filter(Boolean).map((line) => {
+            const cols = line.split('\t');
+            return {
+                name: cols[0] || '',
+                kind: cols[1] || 'cataloged',
+                executable: cols.find((c) => c.startsWith('executable='))?.slice(11) || null,
+                integrity: cols.find((c) => c.startsWith('integrity='))?.slice(10) || 'built-in',
+            };
+        }).filter((t) => t.name);
+        const status = {};
+        for (const line of statusOut.split(/\r?\n/).filter(Boolean)) {
+            const idx = line.indexOf('=');
+            if (idx > 0) status[line.slice(0, idx)] = line.slice(idx + 1);
+        }
+        toolCatalogCache = {
+            ok: true,
+            tools,
+            skills: parseInt(status.embedded_skills || '0', 10),
+            builtIn: parseInt(status.built_in_substitute_tools || '0', 10),
+            executable: parseInt(status.locally_executable_tools || '0', 10),
+            integrity: parseInt(status.integrity_verified_tools || '0', 10),
+            coverage: status.capability_coverage || 'unknown',
+        };
+        emitLog('info', `tool catalog cached: ${toolCatalogCache.tools.length} tools, ${toolCatalogCache.skills} skills`);
+        return toolCatalogCache;
+    } catch (err) {
+        emitLog('error', 'get-tool-catalog failed: ' + String(err));
+        return { ok: false, tools: [], skills: 0, error: String(err) };
     }
-
-    files.sort((a, b) => a.localeCompare(b));
-    dirs.sort((a, b) => a.localeCompare(b));
-    return { files, dirs };
 });

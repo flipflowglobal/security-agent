@@ -251,7 +251,21 @@ fn show_skill(assets: &LocalAgentAssets, arguments: &mut impl Iterator<Item = St
 fn list_tools(assets: &LocalAgentAssets) -> ExitCode {
     for tool in assets.tools() {
         if tool.built_in {
-            println!("{}\tbuilt-in-substitute", tool.definition.name);
+            // Every cataloged tool is served by an in-app engine, but the
+            // optional real external binary may also be installed; surface
+            // that status so the GUI can offer it as a de-emphasized
+            // advanced path.
+            match &tool.executable {
+                Some(path) => println!(
+                    "{}\tbuilt-in-substitute\texecutable={}",
+                    tool.definition.name,
+                    path.display()
+                ),
+                None => println!(
+                    "{}\tbuilt-in-substitute\texecutable=not-installed",
+                    tool.definition.name
+                ),
+            }
         } else if let Some(path) = &tool.executable {
             println!(
                 "{}\tcataloged\texecutable={}\tintegrity={}",
@@ -3673,6 +3687,12 @@ fn analyze_hosts_command(arguments: &mut impl Iterator<Item = String>) -> ExitCo
 
 /// `--postexploit-overview <passwd> [--shadow <file>] [--sudoers <file>] [--keys <file>] [--hosts <file>]`
 /// — run the full post-exploitation analysis suite and summarize by MITRE ATT&CK technique.
+// The command renders five distinct analysis sections plus a summary; the
+// per-section render loop is already shared via `report_findings`, and the
+// remaining length is the five discrete analyzers (each with its own title,
+// empty-note, and bucket key). Scoped allow: too_many_lines is stylistic and
+// the gate stays enabled for the rest of the crate.
+#[allow(clippy::too_many_lines)]
 fn postexploit_overview_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
     use security_agent::offensive::post_exploit::{
         analyze_authorized_keys, analyze_hosts_file, analyze_passwd_file, analyze_shadow_file,
@@ -3742,89 +3762,73 @@ fn postexploit_overview_command(arguments: &mut impl Iterator<Item = String>) ->
     println!("Post-Exploitation Overview");
     println!("==========================");
 
-    println!("\n[1/5] /etc/passwd analysis");
     let passwd = read_arg(Some(passwd_arg));
     let passwd_findings = analyze_passwd_file(&passwd);
-    if passwd_findings.is_empty() {
-        println!("  No privilege escalation indicators.");
-    }
-    for ind in &passwd_findings {
-        println!("  {ind}");
-    }
-    // Privesc indicators carry a risk level instead of a MITRE id; bucket by category.
-    for ind in &passwd_findings {
-        record(&format!("PASSWD:{}", ind.category));
-    }
+    report_findings(
+        "[1/5] /etc/passwd analysis",
+        "No privilege escalation indicators.",
+        &passwd_findings,
+        |ind| format!("PASSWD:{}", ind.category),
+        &mut record,
+    );
 
-    println!("\n[2/5] shadow analysis");
     let shadow = read_arg(shadow_arg);
     let shadow_findings = if shadow.is_empty() {
         Vec::new()
     } else {
         analyze_shadow_file(&shadow)
     };
-    if shadow_findings.is_empty() {
-        println!("  No shadow file provided or no indicators found.");
-    }
-    for ind in &shadow_findings {
-        println!("  {ind}");
-    }
-    for ind in &shadow_findings {
-        record(&format!("SHADOW:{}", ind.category));
-    }
+    report_findings(
+        "[2/5] shadow analysis",
+        "No shadow file provided or no indicators found.",
+        &shadow_findings,
+        |ind| format!("SHADOW:{}", ind.category),
+        &mut record,
+    );
 
-    println!("\n[3/5] sudoers analysis");
     let sudoers = read_arg(sudoers_arg);
     let sudoers_findings = if sudoers.is_empty() {
         Vec::new()
     } else {
         analyze_sudoers(&sudoers)
     };
-    if sudoers_findings.is_empty() {
-        println!("  No sudoers file provided or no risky configurations found.");
-    }
-    for ind in &sudoers_findings {
-        println!("  {ind}");
-    }
-    for ind in &sudoers_findings {
-        record(&format!("SUDOERS:{}", ind.category));
-    }
+    report_findings(
+        "[3/5] sudoers analysis",
+        "No sudoers file provided or no risky configurations found.",
+        &sudoers_findings,
+        |ind| format!("SUDOERS:{}", ind.category),
+        &mut record,
+    );
 
-    println!("\n[4/5] authorized_keys analysis");
     let keys = read_arg(keys_arg);
     let keys_findings = if keys.is_empty() {
         Vec::new()
     } else {
         analyze_authorized_keys(&keys)
     };
-    if keys_findings.is_empty() {
-        println!("  No authorized_keys file provided or no lateral movement indicators found.");
-    }
-    for ind in &keys_findings {
-        println!("  {ind}");
-    }
-    for ind in &keys_findings {
-        record(&format!("{} {}", ind.mitre_id, ind.technique));
-    }
+    report_findings(
+        "[4/5] authorized_keys analysis",
+        "No authorized_keys file provided or no lateral movement indicators found.",
+        &keys_findings,
+        |ind| format!("{} {}", ind.mitre_id, ind.technique),
+        &mut record,
+    );
 
-    println!("\n[5/5] hosts analysis");
     let hosts = read_arg(hosts_arg);
     let hosts_findings = if hosts.is_empty() {
         Vec::new()
     } else {
         analyze_hosts_file(&hosts)
     };
-    if hosts_findings.is_empty() {
-        println!("  No hosts file provided or no internal host mappings found.");
-    }
-    for ind in &hosts_findings {
-        println!("  {ind}");
-    }
-    for ind in &hosts_findings {
-        record(&format!("{} {}", ind.mitre_id, ind.technique));
-    }
+    report_findings(
+        "[5/5] hosts analysis",
+        "No hosts file provided or no internal host mappings found.",
+        &hosts_findings,
+        |ind| format!("{} {}", ind.mitre_id, ind.technique),
+        &mut record,
+    );
 
-    println!("\nSummary ({} findings)", total);
+    println!("\nSummary ({total} findings)");
     println!("=========");
     if mitre_counts.is_empty() {
         println!("  No findings across the provided files.");
@@ -3833,6 +3837,27 @@ fn postexploit_overview_command(arguments: &mut impl Iterator<Item = String>) ->
         println!("  {key:<50} {count}");
     }
     ExitCode::SUCCESS
+}
+
+/// Renders one analysis section of `--postexploit-overview` and records each
+/// finding's bucket in `record` for the MITRE summary.
+fn report_findings<T: fmt::Display>(
+    title: &str,
+    empty_note: &str,
+    findings: &[T],
+    key: impl Fn(&T) -> String,
+    record: &mut impl FnMut(&str),
+) {
+    println!("\n{title}");
+    if findings.is_empty() {
+        println!("  {empty_note}");
+    }
+    for ind in findings {
+        println!("  {ind}");
+    }
+    for ind in findings {
+        record(&key(ind));
+    }
 }
 
 /// `--fragment-payload <payload> [--mtu <bytes>] [--hex]` — fragment a payload to evade DPI.
@@ -3880,7 +3905,12 @@ fn fragment_payload_command(arguments: &mut impl Iterator<Item = String>) -> Exi
     let fragmented = security_agent::offensive::evasion::fragment_http_payload(&bytes, mtu);
     println!("{fragmented}");
     for (i, frag) in fragmented.fragments.iter().enumerate() {
-        println!("Fragment {:>3} ({:>3} bytes): {}", i + 1, frag.len(), bytes_to_hex(frag));
+        println!(
+            "Fragment {:>3} ({:>3} bytes): {}",
+            i + 1,
+            frag.len(),
+            bytes_to_hex(frag)
+        );
     }
     ExitCode::SUCCESS
 }
@@ -3905,7 +3935,9 @@ fn gen_ipids_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
         println!("{:>4}: 0x{:04x} ({})", i + 1, ipid, ipid);
     }
     println!();
-    println!("Randomized IP IDs evade passive OS/stack fingerprinting that assumes sequential IDs.");
+    println!(
+        "Randomized IP IDs evade passive OS/stack fingerprinting that assumes sequential IDs."
+    );
     ExitCode::SUCCESS
 }
 
@@ -3931,7 +3963,9 @@ fn ip_checksum_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode
     println!("Header bytes : {} ({header_hex})", header.len());
     println!("Checksum     : 0x{checksum:04x} ({checksum})");
     println!();
-    println!("Place into the header checksum field (bytes 10-11, zeroed first) for forged packets.");
+    println!(
+        "Place into the header checksum field (bytes 10-11, zeroed first) for forged packets."
+    );
     ExitCode::SUCCESS
 }
 
@@ -3947,27 +3981,28 @@ fn analyze_deauth_command(arguments: &mut impl Iterator<Item = String>) -> ExitC
         return ExitCode::from(2);
     }
     let frame = hex_to_bytes(&frame_hex);
-    match security_agent::offensive::wireless::analyze_deauth_frame(&frame) {
-        Some(analysis) => {
-            println!("{analysis}");
-            ExitCode::SUCCESS
-        }
-        None => {
+    security_agent::offensive::wireless::analyze_deauth_frame(&frame).map_or_else(
+        || {
             eprintln!(
                 "not a deauthentication/disassociation frame (need subtype 10 or 12, >= 26 bytes)"
             );
             ExitCode::from(2)
-        }
-    }
+        },
+        |analysis| {
+            println!("{analysis}");
+            ExitCode::SUCCESS
+        },
+    )
 }
 
 fn bytes_to_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
     let mut out = String::with_capacity(bytes.len() * 3);
     for (i, byte) in bytes.iter().enumerate() {
         if i > 0 {
             out.push(' ');
         }
-        out.push_str(&format!("{byte:02x}"));
+        let _ = write!(out, "{byte:02x}");
     }
     out
 }

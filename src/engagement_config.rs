@@ -178,7 +178,11 @@ fn build_profile(
             .get("authorized_by")
             .cloned()
             .unwrap_or_else(|| "unrestricted".to_string()),
-        authorized_by_role: parse_field_or_default(fields, "authorized_by_role", Role::SecurityAdmin)?,
+        authorized_by_role: parse_field_or_default(
+            fields,
+            "authorized_by_role",
+            Role::SecurityAdmin,
+        )?,
         time_window: TimeWindow {
             start_epoch_seconds: parse_field_or_default(fields, "time_window_start", 0)?,
             end_epoch_seconds: parse_field_or_default(fields, "time_window_end", u64::MAX)?,
@@ -228,16 +232,18 @@ where
     T: FromStr + Clone,
     T::Err: fmt::Display,
 {
-    match fields.get(field) {
-        Some(value) => value
-            .parse::<T>()
-            .map_err(|error| EngagementConfigError::InvalidField {
-                field,
-                value: value.clone(),
-                reason: error.to_string(),
-            }),
-        None => Ok(default),
-    }
+    fields.get(field).map_or_else(
+        || Ok(default),
+        |value| {
+            value
+                .parse::<T>()
+                .map_err(|error| EngagementConfigError::InvalidField {
+                    field,
+                    value: value.clone(),
+                    reason: error.to_string(),
+                })
+        },
+    )
 }
 
 fn parse_field<T>(
