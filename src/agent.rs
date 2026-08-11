@@ -429,9 +429,19 @@ impl AgentMemoryLine {
     }
 }
 
-/// Loads the agent memory file at `path` as a list of lines, newest last.
+/// Cap on how much of the append-only memory file a load keeps in RAM.
+///
+/// The memory file grows for the life of the agent, so a load only retains the
+/// newest [`MAX_MEMORY_LINES`] records — plenty of tail context for the
+/// proposal prompt (which reads at most the last six) without unbounded memory
+/// use or slow starts.
+const MAX_MEMORY_LINES: usize = 256;
+
+/// Loads the agent memory file at `path`, newest last.
+///
 /// Missing or malformed lines are skipped; a file that does not exist yet
-/// reads as empty (the first run has no history).
+/// reads as empty (the first run has no history). The file is streamed
+/// line-by-line and only the newest [`MAX_MEMORY_LINES`] records are kept.
 ///
 /// # Errors
 ///
@@ -439,8 +449,6 @@ impl AgentMemoryLine {
 /// being absent.
 pub fn load_agent_memory(path: &str) -> Result<Vec<AgentMemoryLine>, String> {
     use std::io::BufRead as _;
-
-    const MAX_MEMORY_LINES: usize = 2048;
 
     let file = match std::fs::File::open(path) {
         Ok(file) => file,
@@ -450,7 +458,10 @@ pub fn load_agent_memory(path: &str) -> Result<Vec<AgentMemoryLine>, String> {
 
     let reader = std::io::BufReader::new(file);
     let mut out = std::collections::VecDeque::new();
-    for line in reader.lines().filter_map(Result::ok) {
+    for line in reader.lines() {
+        // Malformed JSONL lines are skipped; I/O errors are surfaced rather
+        // than silently dropped so a torn read cannot hide real corruption.
+        let line = line.map_err(|error| format!("cannot read agent memory {path}: {error}"))?;
         if let Some(parsed) = AgentMemoryLine::from_json_line(&line) {
             if out.len() == MAX_MEMORY_LINES {
                 out.pop_front();
