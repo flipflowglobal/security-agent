@@ -254,22 +254,27 @@ impl<'a> AgentPlanner<'a> {
     /// triggers (or names one of the agent's assets, for `show-skill`), so
     /// off-topic text plans nothing. Included actions are ordered by where
     /// their trigger first appears in the goal, so "run the engagement then
-    /// report" plans `run-engagement` before `report`.
+    /// report" plans `run-engagement` before `report`. When two actions anchor
+    /// at the same position, the more specific trigger (a phrase over a single
+    /// word) wins — "generate a wordlist for acme" plans `--gen-wordlist`, not
+    /// `--llm-generate`.
     #[must_use]
     pub fn plan(&self, goal: &str) -> Vec<ActionCall> {
         let lowered = goal.to_ascii_lowercase();
         let goal_vec = self.model.embed_text(goal);
         let asset = first_asset(&lowered, self.assets);
 
-        let mut hits: Vec<(usize, usize, ActionCall)> = Vec::new();
+        let mut hits: Vec<(usize, usize, usize, ActionCall)> = Vec::new();
         for (order, spec) in REGISTRY.iter().enumerate() {
-            let Some(position) = anchor_position(&lowered, spec, asset.as_ref()) else {
+            let Some((position, specificity)) = anchor_position(&lowered, spec, asset.as_ref())
+            else {
                 continue;
             };
             let confidence = semantic_confidence(&goal_vec, spec.examples, self.model);
             let args = resolve_args(spec, goal, &lowered, asset.as_ref());
             hits.push((
                 position,
+                specificity,
                 order,
                 ActionCall {
                     action: spec.name,
@@ -281,13 +286,22 @@ impl<'a> AgentPlanner<'a> {
                 },
             ));
         }
-        // Order by first appearance in the goal, then registry order for ties.
-        hits.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+        // Order by first appearance in the goal; at the same position the more
+        // specific trigger wins, then registry order breaks any remaining tie.
+        hits.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
 
+        let mut last_position: Option<usize> = None;
         let mut seen = BTreeSet::new();
         hits.into_iter()
-            .filter(|(_, _, call)| seen.insert(call.action))
-            .map(|(_, _, call)| call)
+            .filter(|(position, _, _, _)| {
+                if last_position == Some(*position) {
+                    return false;
+                }
+                last_position = Some(*position);
+                true
+            })
+            .filter(|(_, _, _, call)| seen.insert(call.action))
+            .map(|(_, _, _, call)| call)
             .collect()
     }
 }
@@ -532,22 +546,39 @@ pub fn agent_audit_records(
 // ── grounded routing helpers ────────────────────────────────────────────────
 
 /// The earliest byte position in `lowered` at which `spec` anchors — the first
-/// matching trigger, or the named asset for a `show-skill`-style spec — or
-/// `None` when nothing anchors it.
+/// matching trigger, or the named asset for a `show-skill`-style spec — paired
+/// with the anchoring trigger's specificity (its length, so a phrase outranks
+/// a single word at the same position), or `None` when nothing anchors it.
 fn anchor_position(
     lowered: &str,
     spec: &ActionSpec,
     asset: Option<&(usize, String)>,
-) -> Option<usize> {
-    let mut best: Option<usize> = None;
-    for trigger in spec.triggers {
-        if let Some(position) = trigger_position(lowered, trigger) {
-            best = Some(best.map_or(position, |b| b.min(position)));
+) -> Option<(usize, usize)> {
+    let mut best: Option<(usize, usize)> = None;
+    {
+        let mut consider = |position: usize, specificity: usize| {
+            let wins = match best {
+                Some((best_position, best_specificity)) => {
+                    position < best_position
+                        || (position == best_position && specificity > best_specificity)
+                }
+                None => true,
+            };
+            if wins {
+                best = Some((position, specificity));
+            }
+        };
+        for trigger in spec.triggers {
+            if let Some(position) = trigger_position(lowered, trigger) {
+                consider(position, trigger.len());
+            }
         }
-    }
-    if spec.arg == ArgKind::AssetName {
-        if let Some((position, _)) = asset {
-            best = Some(best.map_or(*position, |b| b.min(*position)));
+        if spec.arg == ArgKind::AssetName {
+            if let Some((position, name)) = asset {
+                // A named asset is highly specific: it outranks any word
+                // trigger anchored at the same position.
+                consider(*position, 100 + name.len());
+            }
         }
     }
     best
@@ -650,18 +681,34 @@ fn wants_no_expand(lowered: &str) -> bool {
 }
 
 /// Drops the leading command words a `Text` action's triggers match, keeping
-/// the substantive remainder as the argument.
+/// the substantive remainder as the argument. Both single-word triggers (stem
+/// matched) and leading phrase triggers (matched verbatim, longest first) are
+/// stripped, along with filler words, so "create a wordlist for the target
+/// acme" yields "acme".
 fn strip_leading_triggers(goal: &str, lowered: &str, triggers: &[&str]) -> String {
     let single: BTreeSet<&str> = triggers
         .iter()
         .filter(|t| !t.contains(' '))
         .copied()
         .collect();
+    let mut phrases: Vec<Vec<&str>> = triggers
+        .iter()
+        .filter(|t| t.contains(' '))
+        .map(|t| t.split_whitespace().collect())
+        .collect();
+    phrases.sort_by_key(|phrase| std::cmp::Reverse(phrase.len()));
     let noise = ["a", "the", "some", "me", "about", "text", "this", "for"];
     let words: Vec<&str> = goal.split_whitespace().collect();
     let lowered_words: Vec<&str> = lowered.split_whitespace().collect();
     let mut start = 0usize;
     while start < words.len() {
+        if let Some(phrase) = phrases
+            .iter()
+            .find(|phrase| phrase_matches_at(&lowered_words, start, phrase))
+        {
+            start += phrase.len();
+            continue;
+        }
         let clean = lowered_words[start].trim_matches(|c: char| !c.is_ascii_alphanumeric());
         if single.iter().any(|t| stem(t) == stem(clean)) || noise.contains(&clean) {
             start += 1;
@@ -670,6 +717,18 @@ fn strip_leading_triggers(goal: &str, lowered: &str, triggers: &[&str]) -> Strin
         }
     }
     words[start..].join(" ")
+}
+
+/// Whether every word of `phrase` matches `lowered_words` starting at `start`
+/// (verbatim, ignoring surrounding punctuation).
+fn phrase_matches_at(lowered_words: &[&str], start: usize, phrase: &[&str]) -> bool {
+    start + phrase.len() <= lowered_words.len()
+        && phrase.iter().enumerate().all(|(offset, word)| {
+            let phrase_word = word.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+            let goal_word =
+                lowered_words[start + offset].trim_matches(|c: char| !c.is_ascii_alphanumeric());
+            phrase_word == goal_word
+        })
 }
 
 /// Semantic confidence (0–100): cosine similarity between the goal and the
@@ -1037,6 +1096,80 @@ mod tests {
             "args: {:?}",
             call.args
         );
+    }
+
+    #[test]
+    fn plans_hash_identification_with_the_hash_as_the_argument() {
+        let assets = LocalAgentAssets::bundled();
+        let model = model();
+        let plan = planner_over(&assets, &model)
+            .plan("identify the hash 5f4dcc3b5aa765d61d8327deb882cf99");
+        let call = plan
+            .iter()
+            .find(|c| c.action == "hash-id")
+            .expect("hash-id planned");
+        assert_eq!(call.primary_arg(), Some("5f4dcc3b5aa765d61d8327deb882cf99"));
+    }
+
+    #[test]
+    fn plans_wordlist_generation_with_the_target_as_the_argument() {
+        let assets = LocalAgentAssets::bundled();
+        let model = model();
+        let plan = planner_over(&assets, &model).plan("create a wordlist for the target acme");
+        let call = plan
+            .iter()
+            .find(|c| c.action == "gen-wordlist")
+            .expect("gen-wordlist planned");
+        assert_eq!(call.primary_arg(), Some("acme"));
+    }
+
+    #[test]
+    fn plans_payload_analysis_with_the_payload_as_the_argument() {
+        let assets = LocalAgentAssets::bundled();
+        let model = model();
+        let plan = planner_over(&assets, &model).plan("analyze this payload bash -i");
+        let call = plan
+            .iter()
+            .find(|c| c.action == "analyze-payload")
+            .expect("analyze-payload planned");
+        assert_eq!(call.primary_arg(), Some("bash -i"));
+    }
+
+    #[test]
+    fn plans_password_strength_with_the_password_as_the_argument() {
+        let assets = LocalAgentAssets::bundled();
+        let model = model();
+        let plan =
+            planner_over(&assets, &model).plan("check the strength of this password Tr0ub4dor&3");
+        let call = plan
+            .iter()
+            .find(|c| c.action == "password-strength")
+            .expect("password-strength planned");
+        assert_eq!(call.primary_arg(), Some("Tr0ub4dor&3"));
+    }
+
+    #[test]
+    fn prefers_a_phrase_trigger_over_a_single_word_at_the_same_position() {
+        let assets = LocalAgentAssets::bundled();
+        let model = model();
+        // "generate" alone would anchor --llm-generate, but "generate a
+        // wordlist" is the more specific intent at the same position.
+        let plan = planner_over(&assets, &model).plan("generate a wordlist for acme");
+        let names: Vec<&str> = plan.iter().map(|c| c.action).collect();
+        assert!(names.contains(&"gen-wordlist"), "planned: {names:?}");
+        assert!(!names.contains(&"generate"), "planned: {names:?}");
+    }
+
+    #[test]
+    fn plans_a_wps_pin_check() {
+        let assets = LocalAgentAssets::bundled();
+        let model = model();
+        let plan = planner_over(&assets, &model).plan("check the wps pin 12345670");
+        let call = plan
+            .iter()
+            .find(|c| c.action == "wps-pin")
+            .expect("wps-pin planned");
+        assert_eq!(call.primary_arg(), Some("12345670"));
     }
 
     #[test]
