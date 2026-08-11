@@ -516,7 +516,8 @@ fn proposal_prompt(goal: &str, memory: &[AgentMemoryLine]) -> String {
     if !memory.is_empty() {
         prompt.push_str("\nRecent history:\n");
         for line in memory.iter().rev().take(6).rev() {
-            let _ = writeln!(prompt, "- \"{}\" -> {}", line.goal, line.actions.join(", "));
+            let goal = line.goal.replace(['\n', '\r'], " ");
+            let _ = writeln!(prompt, "- \"{}\" -> {}", goal, line.actions.join(", "));
         }
     }
     let _ = write!(prompt, "\nGoal: {goal}\n\nActions to run:");
