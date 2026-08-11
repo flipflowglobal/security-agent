@@ -429,9 +429,19 @@ impl AgentMemoryLine {
     }
 }
 
-/// Loads the agent memory file at `path` as a list of lines, newest last.
+/// Cap on how much of the append-only memory file a load keeps in RAM.
+///
+/// The memory file grows for the life of the agent, so a load only retains the
+/// newest [`MAX_MEMORY_LINES`] records — plenty of tail context for the
+/// proposal prompt (which reads at most the last six) without unbounded memory
+/// use or slow starts.
+const MAX_MEMORY_LINES: usize = 256;
+
+/// Loads the agent memory file at `path`, newest last.
+///
 /// Missing or malformed lines are skipped; a file that does not exist yet
-/// reads as empty (the first run has no history).
+/// reads as empty (the first run has no history). The file is streamed
+/// line-by-line and only the newest [`MAX_MEMORY_LINES`] records are kept.
 ///
 /// # Errors
 ///
@@ -439,8 +449,6 @@ impl AgentMemoryLine {
 /// being absent.
 pub fn load_agent_memory(path: &str) -> Result<Vec<AgentMemoryLine>, String> {
     use std::io::BufRead as _;
-
-    const MAX_MEMORY_LINES: usize = 2048;
 
     let file = match std::fs::File::open(path) {
         Ok(file) => file,
@@ -450,7 +458,10 @@ pub fn load_agent_memory(path: &str) -> Result<Vec<AgentMemoryLine>, String> {
 
     let reader = std::io::BufReader::new(file);
     let mut out = std::collections::VecDeque::new();
-    for line in reader.lines().filter_map(Result::ok) {
+    for line in reader.lines() {
+        // Malformed JSONL lines are skipped; I/O errors are surfaced rather
+        // than silently dropped so a torn read cannot hide real corruption.
+        let line = line.map_err(|error| format!("cannot read agent memory {path}: {error}"))?;
         if let Some(parsed) = AgentMemoryLine::from_json_line(&line) {
             if out.len() == MAX_MEMORY_LINES {
                 out.pop_front();
@@ -528,9 +539,10 @@ fn proposal_prompt(goal: &str, memory: &[AgentMemoryLine]) -> String {
 }
 
 /// Extracts registry-verified action names from a model continuation. Only
-/// exact registry names (or their `--command` forms) survive — anything the
-/// model invents is dropped. The result is de-duplicated, order-preserving,
-/// and capped at [`MAX_PROPOSALS`].
+/// registry names (or their `--command` forms) survive, matched exactly or
+/// with case/separator normalization so small models' compact spellings like
+/// `hashid` still resolve; anything the model invents is dropped. The result
+/// is de-duplicated, order-preserving, and capped at [`MAX_PROPOSALS`].
 fn extract_proposals(text: &str) -> Vec<&'static str> {
     let mut seen = BTreeSet::new();
     let mut out = Vec::new();
@@ -539,7 +551,9 @@ fn extract_proposals(text: &str) -> Vec<&'static str> {
         if token.is_empty() {
             continue;
         }
-        let spec = by_name(token).or_else(|| by_command(&format!("--{token}")));
+        let spec = by_name(token)
+            .or_else(|| by_command(&format!("--{token}")))
+            .or_else(|| by_normalized_name(token));
         let Some(spec) = spec else {
             continue;
         };
@@ -551,6 +565,18 @@ fn extract_proposals(text: &str) -> Vec<&'static str> {
         }
     }
     out
+}
+
+/// Fallback proposal match: compares the token to every registry name and
+/// `--command` ignoring case and `-`/`_` separators, so `HashID`, `hash-id`,
+/// `hash_id`, and `hashid` all resolve to the same action. Exact lookups win;
+/// this only catches the compact spellings small offline models tend to emit.
+fn by_normalized_name(token: &str) -> Option<&'static ActionSpec> {
+    let compact = token.to_ascii_lowercase().replace(['-', '_'], "");
+    REGISTRY.iter().find(|spec| {
+        spec.name.replace(['-', '_'], "") == compact
+            || spec.command.replace(['-', '_'], "") == compact
+    })
 }
 
 /// Escapes a string for embedding in the in-house JSON memory format: quotes,
@@ -687,9 +713,10 @@ fn handle_call(
     executor.execute(call)
 }
 
-/// Whether a command cannot run without its positional argument (the
-/// path/config-driven ones). Argument-optional actions (e.g. `--llm-generate`)
-/// are not listed.
+/// Whether a command cannot run without its positional argument. Covers the
+/// path/config-driven commands and the free-text ones (`ArgKind::Text`), so a
+/// model-proposed `--hash-id` or `--llm-generate` with no goal text is skipped
+/// instead of launching a child that fails on an empty argument.
 fn requires_arg(command: &str) -> bool {
     matches!(
         command,
@@ -700,6 +727,14 @@ fn requires_arg(command: &str) -> bool {
             | "--record-findings"
             | "--plan-scan"
             | "--run-engagement"
+            | "--hash-id"
+            | "--password-strength"
+            | "--gen-wordlist"
+            | "--wps-pin"
+            | "--analyze-payload"
+            | "--obfuscate-ps"
+            | "--llm-generate"
+            | "--llm-perplexity"
     )
 }
 
@@ -1581,6 +1616,41 @@ mod tests {
     fn extract_proposals_caps_the_additions() {
         let names = extract_proposals("report, hash-id, generate, list-tools, wps-pin");
         assert_eq!(names.len(), MAX_PROPOSALS);
+    }
+
+    #[test]
+    fn extract_proposals_normalizes_case_and_separators() {
+        // Small offline models emit compact spellings; each of these must
+        // resolve to the same registry action as the canonical name.
+        for token in ["hashid", "HASH-ID", "hash_id", "HashID", "--hashid"] {
+            let names = extract_proposals(token);
+            assert_eq!(names, vec!["hash-id"], "token {token:?}");
+        }
+        // Normalization must not invent actions: a compact form that matches
+        // no registry entry still drops.
+        assert!(extract_proposals("hashd").is_empty());
+    }
+
+    #[test]
+    fn text_arg_actions_skip_without_goal_text() {
+        // A model-proposed text-arg action with no goal text to draw from must
+        // be skipped rather than launching a child that fails on an empty
+        // argument.
+        let call = ActionCall {
+            action: "hash-id",
+            command: "--hash-id",
+            class: ActionClass::ReadOnly,
+            network: false,
+            args: Vec::new(),
+            confidence: 50,
+        };
+        let mut executor = FakeExecutor::new(|_| String::new());
+        let outcome = handle_call(&call, &mut executor, permissive());
+        assert!(
+            matches!(outcome.status, ActionStatus::Skipped(_)),
+            "empty text arg must skip, got {outcome:?}"
+        );
+        assert!(executor.calls.is_empty(), "executor must not run");
     }
 
     #[test]

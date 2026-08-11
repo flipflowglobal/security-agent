@@ -2204,12 +2204,16 @@ fn execute_agent(assets: &LocalAgentAssets, args: &AgentArgs) -> ExitCode {
         follow_up_from_output: args.follow_up,
         model_proposals: args.model_proposals,
     };
+    // Memory is only consulted by the proposal prompt, so only load it when
+    // proposals are enabled — a normal run must not fail on an unreadable
+    // memory file it never uses. Even then memory is advisory: a read error
+    // warns and degrades to empty history rather than aborting the run.
     let memory = if args.model_proposals {
         match load_agent_memory_opt(args.memory_path.as_deref()) {
             Ok(memory) => memory,
             Err(message) => {
-                eprintln!("{message}");
-                return ExitCode::from(1);
+                eprintln!("warning: {message} (continuing with empty history)");
+                Vec::new()
             }
         }
     } else {
