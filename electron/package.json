@@ -1,6 +1,6 @@
 {
   "name": "security-agent-gui",
-  "version": "0.1.0",
+  "version": "2.0.0",
   "description": "Desktop GUI for the Security-Agent orchestration platform",
   "main": "main.js",
   "author": "Security-Agent Contributors <security-agent@example.com>",

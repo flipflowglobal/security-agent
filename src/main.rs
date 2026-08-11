@@ -54,6 +54,7 @@ fn main() -> ExitCode {
         Some("--report") => report_command(&mut arguments),
         Some("--lm-eval") => lm_eval_command(),
         Some("--llm-generate") => llm_generate_command(&mut arguments),
+        Some("--chat-reply") => chat_reply_command(&mut arguments),
         Some("--llm-perplexity") => llm_perplexity_command(&mut arguments),
         Some("--ask") => ask_command(&assets, &mut arguments),
         Some("--agent") => agent_command(&assets, &mut arguments),
@@ -1772,6 +1773,38 @@ fn llm_generate_command(arguments: &mut impl Iterator<Item = String>) -> ExitCod
     ExitCode::SUCCESS
 }
 
+/// Produces a free-form assistant reply to `--chat-reply <message words...>`
+/// from the selected local model — the offline chat backend for the GUI's chat
+/// page. The message is wrapped in the model's `ChatML` instruction format so
+/// the generated continuation *is* the assistant's answer rather than a raw
+/// completion of the user's words. Everything stays local: no network, no
+/// external API, exactly like every other command in this binary.
+fn chat_reply_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    let selection = match select_language_model(arguments.collect()) {
+        Ok(selection) => selection,
+        Err(message) => {
+            eprintln!("{message}");
+            return ExitCode::from(2);
+        }
+    };
+    let message = selection.words.join(" ");
+    if message.trim().is_empty() {
+        eprintln!("missing message for --chat-reply");
+        return ExitCode::from(2);
+    }
+    let prompt = format!(
+        "<|im_start|>system\nYou are the Security-Agent offline assistant. \
+         Answer concisely and factually from your own knowledge. \
+         You have no network access.<|im_end|>\n\
+         <|im_start|>user\n{message}<|im_end|>\n<|im_start|>assistant\n"
+    );
+    let reply = selection
+        .model
+        .generate(&prompt, selection.max_generation_tokens);
+    println!("{reply}");
+    ExitCode::SUCCESS
+}
+
 /// Runs the held-out evaluation of the built-in language model and prints
 /// the report (`--lm-eval`). Measures the model's three production jobs —
 /// perplexity-based anomaly discrimination, intent routing, and generation —
@@ -1967,6 +2000,9 @@ struct AgentArgs {
     /// An optional `--model <dir>` for the proposal model (falls back to the
     /// bundled model when absent).
     model_dir: Option<String>,
+    /// Emit the run as a single JSON document on stdout (`--json`) — the
+    /// machine-readable transcript the GUI chat page renders as run cards.
+    json: bool,
 }
 
 /// Parses `--agent <goal words...>` with optional flags interspersed:
@@ -1988,6 +2024,7 @@ fn parse_agent_args(arguments: &mut impl Iterator<Item = String>) -> Result<Agen
         model_proposals: false,
         memory_path: None,
         model_dir: None,
+        json: false,
     };
     let mut goal_words: Vec<String> = Vec::new();
     while let Some(word) = arguments.next() {
@@ -1996,6 +2033,7 @@ fn parse_agent_args(arguments: &mut impl Iterator<Item = String>) -> Result<Agen
             "--allow-network" => args.allow_network = true,
             "--follow-up" => args.follow_up = true,
             "--model-proposals" => args.model_proposals = true,
+            "--json" => args.json = true,
             "--max-steps" => {
                 let raw = arguments.next().ok_or("missing value after --max-steps")?;
                 args.max_steps = raw
@@ -2038,6 +2076,9 @@ fn parse_agent_args(arguments: &mut impl Iterator<Item = String>) -> Result<Agen
 struct CliExecutor {
     allow_network: bool,
     allocations: usize,
+    /// Suppress echoing child stdout — used by `--agent --json`, which emits a
+    /// single machine-readable document instead of interleaved tool output.
+    quiet: bool,
 }
 
 impl security_agent::ActionExecutor for CliExecutor {
@@ -2059,7 +2100,9 @@ impl security_agent::ActionExecutor for CliExecutor {
         match command.output() {
             Ok(output) => {
                 let text = String::from_utf8_lossy(&output.stdout).into_owned();
-                print!("{text}");
+                if !self.quiet {
+                    print!("{text}");
+                }
                 let code = output.status.code().unwrap_or(-1);
                 if code == 0 {
                     security_agent::ActionOutcome::ran(code, text)
@@ -2234,47 +2277,57 @@ fn execute_agent(assets: &LocalAgentAssets, args: &AgentArgs) -> ExitCode {
         );
         return ExitCode::SUCCESS;
     }
-    println!("Plan ({} step(s)):", plan.len());
-    if args.model_proposals {
-        let base_len = planner.plan(&args.goal).len();
-        if plan.len() > base_len {
+    // Human mode prints the plan preview before running anything — proposals
+    // included, so what is previewed is exactly what runs. JSON mode skips the
+    // prose and emits one machine-readable transcript document at the end.
+    if !args.json {
+        println!("Plan ({} step(s)):", plan.len());
+        if args.model_proposals {
+            let base_len = planner.plan(&args.goal).len();
+            if plan.len() > base_len {
+                println!(
+                    "  (model proposed {} additional action(s), all registry-verified)",
+                    plan.len() - base_len
+                );
+            }
+        }
+        for (index, call) in plan.iter().enumerate() {
+            let arg = if call.args.is_empty() {
+                "-".to_string()
+            } else {
+                call.args.join(" ")
+            };
+            let disposition = if policy.dry_run {
+                "preview only"
+            } else if call.network && !args.allow_network {
+                "will run (offline; add --allow-network for live steps)"
+            } else {
+                "will run"
+            };
             println!(
-                "  (model proposed {} additional action(s), all registry-verified)",
-                plan.len() - base_len
+                "  {}. {} (args: {arg}, {}, {}%) — {disposition}",
+                index + 1,
+                call.command,
+                call.class.label(),
+                call.confidence,
             );
         }
+        println!();
     }
-    for (index, call) in plan.iter().enumerate() {
-        let arg = if call.args.is_empty() {
-            "-".to_string()
-        } else {
-            call.args.join(" ")
-        };
-        let disposition = if policy.dry_run {
-            "preview only"
-        } else if call.network && !args.allow_network {
-            "will run (offline; add --allow-network for live steps)"
-        } else {
-            "will run"
-        };
-        println!(
-            "  {}. {} (args: {arg}, {}, {}%) — {disposition}",
-            index + 1,
-            call.command,
-            call.class.label(),
-            call.confidence,
-        );
-    }
-    println!();
 
     let mut executor = CliExecutor {
         allow_network: args.allow_network,
         allocations: 0,
+        quiet: args.json,
     };
     let transcript =
         security_agent::run_agent_with_plan(&args.goal, &planner, plan, &mut executor, policy);
 
-    print_agent_transcript(&transcript);
+    if args.json {
+        println!("{}", agent_transcript_json(&args.goal, &transcript));
+    } else {
+        print_agent_transcript(&transcript);
+    }
     if let Err(message) = persist_agent_audit(&transcript, args) {
         eprintln!("{message}");
         return ExitCode::from(1);
@@ -2309,6 +2362,101 @@ fn print_agent_transcript(transcript: &security_agent::AgentTranscript) {
             ""
         }
     );
+}
+
+/// Renders the goal and the step-by-step transcript as a single JSON document
+/// on stdout — the machine-readable run card the GUI chat page renders. The
+/// executed plan is read back from the transcript because every planned call
+/// becomes exactly one handled step, so the two are equivalent; this keeps the
+/// JSON mode a pure renderer over what actually ran.
+fn agent_transcript_json(goal: &str, transcript: &security_agent::AgentTranscript) -> String {
+    use security_agent::ActionStatus;
+    let mut out = String::new();
+    out.push_str("{\"goal\":");
+    push_json_string(&mut out, goal);
+    out.push_str(",\"plan\":[");
+    for (index, step) in transcript.steps.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"action\":");
+        push_json_string(&mut out, step.call.action);
+        out.push_str(",\"command\":");
+        push_json_string(&mut out, step.call.command);
+        out.push_str(",\"class\":");
+        push_json_string(&mut out, step.call.class.label());
+        out.push_str(",\"network\":");
+        out.push_str(if step.call.network { "true" } else { "false" });
+        out.push_str(",\"confidence\":");
+        out.push_str(&step.call.confidence.to_string());
+        out.push_str(",\"args\":[");
+        for (arg_index, arg) in step.call.args.iter().enumerate() {
+            if arg_index > 0 {
+                out.push(',');
+            }
+            push_json_string(&mut out, arg);
+        }
+        out.push_str("]}");
+    }
+    out.push_str("],\"steps\":[");
+    for (index, step) in transcript.steps.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"command\":");
+        push_json_string(&mut out, step.call.command);
+        out.push_str(",\"action\":");
+        push_json_string(&mut out, step.call.action);
+        let (status, detail) = match &step.outcome.status {
+            ActionStatus::Ran { exit_code } => ("ran", exit_code.to_string()),
+            ActionStatus::Refused(reason) => ("refused", reason.clone()),
+            ActionStatus::Failed(reason) => ("failed", reason.clone()),
+            ActionStatus::Skipped(reason) => ("skipped", reason.clone()),
+        };
+        out.push_str(",\"status\":");
+        push_json_string(&mut out, status);
+        out.push_str(",\"detail\":");
+        push_json_string(&mut out, detail);
+        out.push_str(",\"output\":");
+        push_json_string(&mut out, &step.outcome.output);
+        out.push('}');
+    }
+    out.push_str("],\"summary\":{\"steps\":");
+    out.push_str(&transcript.steps.len().to_string());
+    out.push_str(",\"ran\":");
+    out.push_str(&transcript.ran_count().to_string());
+    out.push_str(",\"budget_exhausted\":");
+    out.push_str(if transcript.budget_exhausted {
+        "true"
+    } else {
+        "false"
+    });
+    out.push_str("}}");
+    out
+}
+
+/// JSON-encodes `text` (quotes and escapes) into `out`. Hand-rolled like the
+/// rest of the crate's JSON (`src/json.rs`) — no external serializer, and the
+/// transcript stays parseable even when tool output contains quotes or
+/// control characters. Accepts anything string-like so callers pass owned
+/// values directly (clippy's `needless_borrow` stays silent).
+fn push_json_string(out: &mut String, text: impl AsRef<str>) {
+    use std::fmt::Write as _;
+    out.push('"');
+    for ch in text.as_ref().chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
 }
 
 /// Persists the run's audit trail when `--audit-log`/`--audit-db` was given.
@@ -2363,6 +2511,7 @@ const fn default_agent_args(goal: String) -> AgentArgs {
         model_proposals: false,
         memory_path: None,
         model_dir: None,
+        json: false,
     }
 }
 
@@ -2895,6 +3044,11 @@ const CAPABILITY_ROWS: &[(&str, &str, &str)] = &[
         "Generate text (LLM)",
         "--llm-generate <words>",
         "\"generate text about scanning targets\"",
+    ),
+    (
+        "Chat reply (LLM)",
+        "--chat-reply <message>",
+        "\"summarize my last findings report\" (offline assistant reply; the GUI chat page's backend)",
     ),
     (
         "Score text for anomaly (LLM)",
