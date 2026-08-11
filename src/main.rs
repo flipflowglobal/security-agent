@@ -2204,12 +2204,16 @@ fn execute_agent(assets: &LocalAgentAssets, args: &AgentArgs) -> ExitCode {
         follow_up_from_output: args.follow_up,
         model_proposals: args.model_proposals,
     };
-    let memory = match load_agent_memory_opt(args.memory_path.as_deref()) {
-        Ok(memory) => memory,
-        Err(message) => {
-            eprintln!("{message}");
-            return ExitCode::from(1);
+    let memory = if args.model_proposals {
+        match load_agent_memory_opt(args.memory_path.as_deref()) {
+            Ok(memory) => memory,
+            Err(message) => {
+                eprintln!("{message}");
+                return ExitCode::from(1);
+            }
         }
+    } else {
+        Vec::new()
     };
 
     // Preview the plan before running anything — proposals included, so what is
