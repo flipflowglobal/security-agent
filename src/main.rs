@@ -1947,6 +1947,9 @@ fn ask_anomaly(model: &security_agent::NeuralLanguageModel, text: Option<&str>) 
 }
 
 /// The parsed flags of an `--agent` invocation.
+// The flags are naturally boolean run-level switches; they map 1:1 onto
+// AgentPolicy fields.
+#[allow(clippy::struct_excessive_bools)]
 struct AgentArgs {
     goal: String,
     dry_run: bool,
@@ -1955,13 +1958,24 @@ struct AgentArgs {
     max_steps: usize,
     audit_log_path: Option<String>,
     audit_db_path: Option<String>,
+    /// Let the selected language model propose additional registry-verified
+    /// actions for the goal (`--model-proposals`).
+    model_proposals: bool,
+    /// A JSONL file of prior run history folded into the proposal prompt
+    /// (`--memory <path>`); the current run is appended to it when given.
+    memory_path: Option<String>,
+    /// An optional `--model <dir>` for the proposal model (falls back to the
+    /// bundled model when absent).
+    model_dir: Option<String>,
 }
 
 /// Parses `--agent <goal words...>` with optional flags interspersed:
 /// `--dry-run` (preview only, execute nothing), `--allow-network` (forward the
 /// live-network opt-in to planned commands), `--follow-up`, `--max-steps <N>`,
-/// `--audit-log <path>`, `--audit-db <path>`. Every non-flag word is joined
-/// into the goal.
+/// `--audit-log <path>`, `--audit-db <path>`, `--model-proposals` (let the
+/// selected model propose registry-verified actions), `--memory <path>` (a
+/// JSONL history file folded into proposals), `--model <dir>` (the proposal
+/// model directory). Every non-flag word is joined into the goal.
 fn parse_agent_args(arguments: &mut impl Iterator<Item = String>) -> Result<AgentArgs, String> {
     let mut args = AgentArgs {
         goal: String::new(),
@@ -1971,6 +1985,9 @@ fn parse_agent_args(arguments: &mut impl Iterator<Item = String>) -> Result<Agen
         max_steps: 8,
         audit_log_path: None,
         audit_db_path: None,
+        model_proposals: false,
+        memory_path: None,
+        model_dir: None,
     };
     let mut goal_words: Vec<String> = Vec::new();
     while let Some(word) = arguments.next() {
@@ -1978,6 +1995,7 @@ fn parse_agent_args(arguments: &mut impl Iterator<Item = String>) -> Result<Agen
             "--dry-run" => args.dry_run = true,
             "--allow-network" => args.allow_network = true,
             "--follow-up" => args.follow_up = true,
+            "--model-proposals" => args.model_proposals = true,
             "--max-steps" => {
                 let raw = arguments.next().ok_or("missing value after --max-steps")?;
                 args.max_steps = raw
@@ -1992,6 +2010,12 @@ fn parse_agent_args(arguments: &mut impl Iterator<Item = String>) -> Result<Agen
             "--audit-db" => {
                 args.audit_db_path =
                     Some(arguments.next().ok_or("missing value after --audit-db")?);
+            }
+            "--memory" => {
+                args.memory_path = Some(arguments.next().ok_or("missing value after --memory")?);
+            }
+            "--model" => {
+                args.model_dir = Some(arguments.next().ok_or("missing value after --model")?);
             }
             other => goal_words.push(other.to_string()),
         }
@@ -2069,7 +2093,8 @@ impl security_agent::ActionExecutor for CliExecutor {
 }
 
 /// `--agent "<goal>" [--dry-run] [--allow-network] [--follow-up] [--max-steps N]
-/// [--audit-log <path>] [--audit-db <path>]` — let the built-in model plan a
+/// [--audit-log <path>] [--audit-db <path>] [--model-proposals]
+/// [--memory <path>] [--model <dir>]` — let the built-in model plan a
 /// sequence of the agent's own commands from a plain-English goal and run them.
 ///
 /// The plan is always printed first, then executed as instructed: the agent
@@ -2081,6 +2106,13 @@ impl security_agent::ActionExecutor for CliExecutor {
 /// is recorded, and `--audit-log`/`--audit-db` persist the run's audit trail.
 /// The planner is grounded in the action registry, so the model can only ever
 /// schedule real commands.
+///
+/// `--model-proposals` additionally asks the selected language model which
+/// actions fit the goal; every proposal is verified against the action
+/// registry (never invented) and the grounded trigger plan always comes first.
+/// `--memory <path>` reads a JSONL history file of prior runs into the
+/// proposal prompt and appends the current run's actions to it; `--model <dir>`
+/// selects the proposal model (default: the bundled model).
 fn agent_command(
     assets: &LocalAgentAssets,
     arguments: &mut impl Iterator<Item = String>,
@@ -2095,21 +2127,98 @@ fn agent_command(
     execute_agent(assets, &args)
 }
 
+/// Builds the proposal model the agent should consult, or `None` when
+/// `--model-proposals` was not given.
+fn select_proposer(
+    model_proposals: bool,
+    model_dir: Option<&String>,
+) -> Result<Option<Box<dyn security_agent::LanguageModel>>, String> {
+    if !model_proposals {
+        return Ok(None);
+    }
+    let words = model_dir.map_or_else(Vec::new, |dir| vec![String::from("--model"), dir.clone()]);
+    Ok(Some(select_language_model(words)?.model))
+}
+
+/// Loads the agent memory file when `--memory <path>` was given; a missing or
+/// not-yet-created file reads as empty.
+fn load_agent_memory_opt(
+    path: Option<&str>,
+) -> Result<Vec<security_agent::AgentMemoryLine>, String> {
+    path.map_or_else(|| Ok(Vec::new()), security_agent::load_agent_memory)
+}
+
+/// Appends the actions that actually ran to the agent memory file, so later
+/// runs with `--model-proposals` can see what was done for this goal.
+fn remember_agent_run(
+    memory_path: Option<&str>,
+    goal: &str,
+    transcript: &security_agent::AgentTranscript,
+) -> Result<(), String> {
+    let Some(path) = memory_path else {
+        return Ok(());
+    };
+    let ran_actions: Vec<String> = transcript
+        .steps
+        .iter()
+        .filter(|step| {
+            matches!(
+                step.outcome.status,
+                security_agent::ActionStatus::Ran { .. }
+            )
+        })
+        .map(|step| step.call.action.to_string())
+        .collect();
+    if ran_actions.is_empty() {
+        return Ok(());
+    }
+    security_agent::append_agent_memory(
+        path,
+        &security_agent::AgentMemoryLine {
+            goal: goal.to_string(),
+            actions: ran_actions,
+        },
+    )
+}
+
 /// Plans and runs an agent goal under `args` — the shared core behind both the
 /// `--agent` CLI command and the TUI's agent option, so the interactive path
 /// behaves identically to the flag-driven one.
 fn execute_agent(assets: &LocalAgentAssets, args: &AgentArgs) -> ExitCode {
     let model = security_agent::NeuralLanguageModel::bundled();
-    let planner = security_agent::AgentPlanner::new(assets, &model);
+    let proposer = match select_proposer(args.model_proposals, args.model_dir.as_ref()) {
+        Ok(proposer) => proposer,
+        Err(message) => {
+            eprintln!("{message}");
+            return ExitCode::from(2);
+        }
+    };
+    let mut planner = security_agent::AgentPlanner::new(assets, &model);
+    if let Some(proposer) = &proposer {
+        planner = planner.with_proposer(proposer.as_ref());
+    }
     let policy = security_agent::AgentPolicy {
         dry_run: args.dry_run,
         allow_network: args.allow_network,
         max_steps: args.max_steps,
         follow_up_from_output: args.follow_up,
+        model_proposals: args.model_proposals,
+    };
+    let memory = match load_agent_memory_opt(args.memory_path.as_deref()) {
+        Ok(memory) => memory,
+        Err(message) => {
+            eprintln!("{message}");
+            return ExitCode::from(1);
+        }
     };
 
-    // Preview the grounded plan before running anything.
-    let plan = planner.plan(&args.goal);
+    // Preview the plan before running anything — proposals included, so what is
+    // previewed is exactly what runs.
+    let plan = if args.model_proposals {
+        planner.plan_with_proposals(&args.goal, &memory)
+    } else {
+        planner.plan(&args.goal)
+    };
     if plan.is_empty() {
         println!(
             "No in-scope action matched that goal. I plan only from my own command set — \
@@ -2118,6 +2227,15 @@ fn execute_agent(assets: &LocalAgentAssets, args: &AgentArgs) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     println!("Plan ({} step(s)):", plan.len());
+    if args.model_proposals {
+        let base_len = planner.plan(&args.goal).len();
+        if plan.len() > base_len {
+            println!(
+                "  (model proposed {} additional action(s), all registry-verified)",
+                plan.len() - base_len
+            );
+        }
+    }
     for (index, call) in plan.iter().enumerate() {
         let arg = if call.args.is_empty() {
             "-".to_string()
@@ -2145,10 +2263,15 @@ fn execute_agent(assets: &LocalAgentAssets, args: &AgentArgs) -> ExitCode {
         allow_network: args.allow_network,
         allocations: 0,
     };
-    let transcript = security_agent::run_agent(&args.goal, &planner, &mut executor, policy);
+    let transcript =
+        security_agent::run_agent_with_plan(&args.goal, &planner, plan, &mut executor, policy);
 
     print_agent_transcript(&transcript);
     if let Err(message) = persist_agent_audit(&transcript, args) {
+        eprintln!("{message}");
+        return ExitCode::from(1);
+    }
+    if let Err(message) = remember_agent_run(args.memory_path.as_deref(), &args.goal, &transcript) {
         eprintln!("{message}");
         return ExitCode::from(1);
     }
@@ -2229,6 +2352,9 @@ const fn default_agent_args(goal: String) -> AgentArgs {
         max_steps: 8,
         audit_log_path: None,
         audit_db_path: None,
+        model_proposals: false,
+        memory_path: None,
+        model_dir: None,
     }
 }
 

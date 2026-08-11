@@ -70,9 +70,10 @@ pub use advanced::{
     AttackPathEdge, AttackPathGraph, RetestSchedule, ThreatModelNode, propose_retest_schedule,
 };
 pub use agent::{
-    ActionCall, ActionExecutor, ActionOutcome, ActionStatus, AgentAuditContext, AgentPlanner,
-    AgentPolicy, AgentStep, AgentTranscript, Artifact, agent_audit_records, chain_artifacts,
-    run_agent,
+    ActionCall, ActionExecutor, ActionOutcome, ActionStatus, AgentAuditContext, AgentMemoryLine,
+    AgentPlanner, AgentPolicy, AgentStep, AgentTranscript, Artifact, agent_audit_records,
+    append_agent_memory, chain_artifacts, load_agent_memory, run_agent, run_agent_with_memory,
+    run_agent_with_plan,
 };
 pub use anomaly::{AnomalyFlag, DEFAULT_ANOMALY_THRESHOLD, scan_findings};
 pub use audit_log::{AuditLogError, append_audit_records, load_audit_records};

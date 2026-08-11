@@ -17,11 +17,13 @@
 //! model can never invent a command — and **deterministic**: the same goal
 //! and outputs always produce the same transcript.
 
-use crate::action_registry::{ActionClass, ActionSpec, ArgKind, REGISTRY};
+use crate::action_registry::{ActionClass, ActionSpec, ArgKind, REGISTRY, by_command, by_name};
 use crate::governance::{AuditRecord, Role};
-use crate::language_model::NeuralLanguageModel;
+use crate::json::{JsonValue, parse as parse_json};
+use crate::language_model::{LanguageModel, NeuralLanguageModel};
 use crate::local_assets::LocalAgentAssets;
 use std::collections::{BTreeSet, VecDeque};
+use std::fmt::Write as _;
 
 /// A typed artifact one action can produce and another can consume.
 ///
@@ -152,6 +154,9 @@ pub trait ActionExecutor {
 /// operator's run-level choices: preview vs. run, whether to forward the
 /// network opt-in, the loop bound, and the (default-off) output-feedback mode.
 #[derive(Debug, Clone, Copy)]
+// The run-level operator choices are naturally boolean (preview, network
+// opt-in, output feedback, model proposals); the loop reads them as flags.
+#[allow(clippy::struct_excessive_bools)]
 pub struct AgentPolicy {
     /// Preview only: plan and print, but execute nothing. Off by default — the
     /// agent runs the planned commands as instructed.
@@ -173,18 +178,25 @@ pub struct AgentPolicy {
     /// multi-step behavior that matters — "do X then Y" — comes from planning
     /// the *goal*, which is always on.
     pub follow_up_from_output: bool,
+    /// Let the selected language model *propose* additional actions for the
+    /// goal. Off by default, keeping the default plan deterministic and
+    /// keyword-grounded. Every proposal is verified against the action
+    /// registry before it joins the plan — the model can suggest, never
+    /// invent — and the grounded trigger plan always comes first.
+    pub model_proposals: bool,
 }
 
 impl Default for AgentPolicy {
     /// The default: execute the plan, network opt-in off (the tool stays
-    /// offline unless told otherwise), no output-driven follow-ups, up to 8
-    /// steps.
+    /// offline unless told otherwise), no output-driven follow-ups, no
+    /// model-proposed actions, up to 8 steps.
     fn default() -> Self {
         Self {
             dry_run: false,
             allow_network: false,
             max_steps: 8,
             follow_up_from_output: false,
+            model_proposals: false,
         }
     }
 }
@@ -239,13 +251,32 @@ impl AgentTranscript {
 pub struct AgentPlanner<'a> {
     assets: &'a LocalAgentAssets,
     model: &'a NeuralLanguageModel,
+    /// An optional language model the planner may ask to *propose* actions.
+    /// Proposals are always verified against the registry before they join a
+    /// plan, so a weak or chatty model can only ever suggest real commands.
+    proposer: Option<&'a dyn LanguageModel>,
 }
 
 impl<'a> AgentPlanner<'a> {
-    /// A planner over the agent's own assets and language model.
+    /// A planner over the agent's own assets and language model. With no
+    /// proposer, plans are purely deterministic trigger matches; see
+    /// [`Self::with_proposer`] to enable model-proposed actions.
     #[must_use]
     pub const fn new(assets: &'a LocalAgentAssets, model: &'a NeuralLanguageModel) -> Self {
-        Self { assets, model }
+        Self {
+            assets,
+            model,
+            proposer: None,
+        }
+    }
+
+    /// Attaches a language model the planner will consult when
+    /// [`plan_with_proposals`](Self::plan_with_proposals) is used. The
+    /// keyword-grounded [`plan`](Self::plan) never consults it.
+    #[must_use]
+    pub const fn with_proposer(mut self, proposer: &'a dyn LanguageModel) -> Self {
+        self.proposer = Some(proposer);
+        self
     }
 
     /// Plans an ordered, de-duplicated list of action calls for `goal`.
@@ -304,6 +335,226 @@ impl<'a> AgentPlanner<'a> {
             .map(|(_, _, _, call)| call)
             .collect()
     }
+
+    /// Plans `goal` like [`Self::plan`], then — when a proposer is attached —
+    /// asks it for additional action names and appends the ones the registry
+    /// verifies, de-duplicated against the grounded plan and each other, and
+    /// capped at [`MAX_PROPOSALS`] additions. Arguments for proposed actions
+    /// are still resolved from the goal text (the model proposes *which*
+    /// actions, never their arguments), and the same-position/most-specific
+    /// ordering of the grounded plan is preserved: grounded matches always
+    /// come first, proposals follow in registry order. Memory lines (recent
+    /// run history) are folded into the proposal prompt only, never into the
+    /// deterministic trigger matching.
+    #[must_use]
+    pub fn plan_with_proposals(&self, goal: &str, memory: &[AgentMemoryLine]) -> Vec<ActionCall> {
+        let mut plan = self.plan(goal);
+        let Some(proposer) = self.proposer else {
+            return plan;
+        };
+        let lowered = goal.to_ascii_lowercase();
+        let goal_vec = self.model.embed_text(goal);
+        let asset = first_asset(&lowered, self.assets);
+        let mut planned: BTreeSet<&'static str> = plan.iter().map(|call| call.action).collect();
+        for name in propose_actions(goal, memory, proposer) {
+            if !planned.insert(name) {
+                continue;
+            }
+            let Some(spec) = by_name(name) else {
+                continue;
+            };
+            let confidence = semantic_confidence(&goal_vec, spec.examples, self.model);
+            let args = resolve_args(spec, goal, &lowered, asset.as_ref());
+            plan.push(ActionCall {
+                action: spec.name,
+                command: spec.command,
+                class: spec.class,
+                network: spec.network,
+                args,
+                confidence,
+            });
+        }
+        plan
+    }
+}
+
+/// The maximum number of registry-verified actions the model may add to a
+/// plan. Proposals are advisory on top of the grounded plan; capping them
+/// keeps a chatty model from ballooning a preview.
+const MAX_PROPOSALS: usize = 4;
+
+/// One remembered agent run: the goal that was asked and the actions that ran
+/// for it.
+///
+/// Persisted as a JSONL file so later runs — with `--model-proposals` — can
+/// fold recent history into the proposal prompt ("we already scanned X")
+/// without ever affecting the deterministic trigger plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentMemoryLine {
+    /// The goal that was asked.
+    pub goal: String,
+    /// The action names that ran (in run order).
+    pub actions: Vec<String>,
+}
+
+impl AgentMemoryLine {
+    /// Parses one JSONL line, skipping anything malformed (memory is advisory;
+    /// a corrupt line must not fail a run).
+    fn from_json_line(line: &str) -> Option<Self> {
+        let value = parse_json(line)?;
+        Some(Self {
+            goal: value.get("goal")?.as_str()?.to_string(),
+            actions: value
+                .get("actions")?
+                .as_array()?
+                .iter()
+                .filter_map(JsonValue::as_str)
+                .map(ToString::to_string)
+                .collect(),
+        })
+    }
+
+    /// Renders this line as JSON (in-house, escaped — this crate never
+    /// serializes through `crate::json`).
+    fn to_json_line(&self) -> String {
+        format!(
+            "{{\"goal\":\"{}\",\"actions\":[{}]}}",
+            json_escape(&self.goal),
+            self.actions
+                .iter()
+                .map(|action| format!("\"{}\"", json_escape(action)))
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+    }
+}
+
+/// Loads the agent memory file at `path` as a list of lines, newest last.
+/// Missing or malformed lines are skipped; a file that does not exist yet
+/// reads as empty (the first run has no history).
+///
+/// # Errors
+///
+/// Returns `Err` only when the file cannot be read for reasons other than
+/// being absent.
+pub fn load_agent_memory(path: &str) -> Result<Vec<AgentMemoryLine>, String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("cannot read agent memory {path}: {error}")),
+    };
+    Ok(text
+        .lines()
+        .filter_map(AgentMemoryLine::from_json_line)
+        .collect())
+}
+
+/// Appends `line` to the agent memory file at `path`, creating it (and any
+/// missing parent directory) on first use.
+///
+/// # Errors
+///
+/// Returns `Err` when the file cannot be opened or written.
+pub fn append_agent_memory(path: &str, line: &AgentMemoryLine) -> Result<(), String> {
+    use std::io::Write;
+    if let Some(parent) = std::path::Path::new(path).parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                format!(
+                    "cannot create memory directory {}: {error}",
+                    parent.display()
+                )
+            })?;
+        }
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|error| format!("cannot open agent memory {path}: {error}"))?;
+    writeln!(file, "{}", line.to_json_line())
+        .map_err(|error| format!("cannot write agent memory {path}: {error}"))
+}
+
+/// Asks `proposer` which registry actions fit `goal`, folding `memory` (recent
+/// run history) into the prompt, then returns only the action names the
+/// registry verifies. The model never supplies arguments — those stay grounded
+/// in the goal text.
+fn propose_actions(
+    goal: &str,
+    memory: &[AgentMemoryLine],
+    proposer: &dyn LanguageModel,
+) -> Vec<&'static str> {
+    let prompt = proposal_prompt(goal, memory);
+    // A short budget: naming a handful of actions needs few tokens, and a
+    // bigger local model is slow on CPU.
+    extract_proposals(&proposer.generate(&prompt, 48))
+}
+
+/// Builds the proposal prompt: the goal, a compact registry listing, and the
+/// most recent memory lines, with an instruction to reply with action names.
+fn proposal_prompt(goal: &str, memory: &[AgentMemoryLine]) -> String {
+    let mut prompt = String::from(
+        "You are the security-agent planner. Choose which of these actions to run \
+         for the goal. Reply with only the action names, comma-separated.\n\nActions:\n",
+    );
+    for spec in REGISTRY {
+        let _ = writeln!(prompt, "- {} ({})", spec.name, spec.command);
+    }
+    if !memory.is_empty() {
+        prompt.push_str("\nRecent history:\n");
+        for line in memory.iter().rev().take(6).rev() {
+            let _ = writeln!(prompt, "- \"{}\" -> {}", line.goal, line.actions.join(", "));
+        }
+    }
+    let _ = write!(prompt, "\nGoal: {goal}\n\nActions to run:");
+    prompt
+}
+
+/// Extracts registry-verified action names from a model continuation. Only
+/// exact registry names (or their `--command` forms) survive — anything the
+/// model invents is dropped. The result is de-duplicated, order-preserving,
+/// and capped at [`MAX_PROPOSALS`].
+fn extract_proposals(text: &str) -> Vec<&'static str> {
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::new();
+    for raw in text.split([',', '\n', ' ', '\t', ';']) {
+        let token = raw.trim().trim_start_matches('-');
+        if token.is_empty() {
+            continue;
+        }
+        let spec = by_name(token).or_else(|| by_command(&format!("--{token}")));
+        let Some(spec) = spec else {
+            continue;
+        };
+        if seen.insert(spec.name) {
+            out.push(spec.name);
+        }
+        if out.len() >= MAX_PROPOSALS {
+            break;
+        }
+    }
+    out
+}
+
+/// Escapes a string for embedding in the in-house JSON memory format: quotes,
+/// backslashes, and control characters.
+fn json_escape(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len() + 2);
+    for ch in text.chars() {
+        match ch {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            ch if ch.is_control() => {
+                let _ = write!(escaped, "\\u{:04x}", u32::from(ch));
+            }
+            ch => escaped.push(ch),
+        }
+    }
+    escaped
 }
 
 /// Runs the agent loop: plan the goal, then execute steps in order under
@@ -319,7 +570,42 @@ pub fn run_agent(
     executor: &mut dyn ActionExecutor,
     policy: AgentPolicy,
 ) -> AgentTranscript {
-    let mut plan = planner.plan(goal);
+    run_agent_with_plan(goal, planner, planner.plan(goal), executor, policy)
+}
+
+/// Like [`run_agent`], but lets the planner's proposer add registry-verified
+/// actions when `policy.model_proposals` is set.
+///
+/// Memory lines (recent run history) are folded into the proposal prompt.
+/// Without the flag (or without a proposer) this behaves exactly like
+/// [`run_agent`].
+#[must_use]
+pub fn run_agent_with_memory(
+    goal: &str,
+    planner: &AgentPlanner,
+    executor: &mut dyn ActionExecutor,
+    policy: AgentPolicy,
+    memory: &[AgentMemoryLine],
+) -> AgentTranscript {
+    let plan = if policy.model_proposals {
+        planner.plan_with_proposals(goal, memory)
+    } else {
+        planner.plan(goal)
+    };
+    run_agent_with_plan(goal, planner, plan, executor, policy)
+}
+
+/// Executes a caller-provided plan under `policy` — the shared loop behind
+/// [`run_agent`] and [`run_agent_with_memory`], so a precomputed (previewed)
+/// plan is exactly what runs.
+#[must_use]
+pub fn run_agent_with_plan(
+    goal: &str,
+    planner: &AgentPlanner,
+    mut plan: Vec<ActionCall>,
+    executor: &mut dyn ActionExecutor,
+    policy: AgentPolicy,
+) -> AgentTranscript {
     chain_artifacts(&mut plan, executor);
     let mut queue: VecDeque<ActionCall> = plan.into();
     let mut queued: BTreeSet<&'static str> = queue.iter().map(|call| call.action).collect();
@@ -825,6 +1111,7 @@ mod tests {
             allow_network: true,
             max_steps: 8,
             follow_up_from_output: true,
+            model_proposals: false,
         }
     }
 
@@ -1005,6 +1292,7 @@ mod tests {
             allow_network: true,
             max_steps: 1,
             follow_up_from_output: false,
+            model_proposals: false,
         };
         let transcript = run_agent(
             "list your tools and list your skills",
@@ -1243,5 +1531,156 @@ mod tests {
             report_call.args
         );
         assert!(!transcript.is_empty());
+    }
+
+    /// A stub language model returning a fixed continuation, so the proposal
+    /// path is exercised deterministically without a real model.
+    struct StubProposer(&'static str);
+
+    impl LanguageModel for StubProposer {
+        fn generate(&self, _prompt: &str, _max_tokens: usize) -> String {
+            self.0.to_string()
+        }
+
+        fn perplexity(&self, _text: &str) -> f32 {
+            0.0
+        }
+    }
+
+    #[test]
+    fn extract_proposals_keeps_only_registry_verified_actions() {
+        // Real names (in `--command` and bare forms), an invented name, and
+        // free text all mix in; only verified names survive, de-duplicated and
+        // order-preserving.
+        let names = extract_proposals("--report, hash-id, nope, report, definitely-not-real");
+        assert_eq!(names, vec!["report", "hash-id"]);
+    }
+
+    #[test]
+    fn extract_proposals_drops_gibberish() {
+        assert!(extract_proposals("make it so engage the shields").is_empty());
+    }
+
+    #[test]
+    fn extract_proposals_caps_the_additions() {
+        let names = extract_proposals("report, hash-id, generate, list-tools, wps-pin");
+        assert_eq!(names.len(), MAX_PROPOSALS);
+    }
+
+    #[test]
+    fn plan_with_proposals_without_a_proposer_matches_plan() {
+        let assets = LocalAgentAssets::bundled();
+        let model = model();
+        let planner = planner_over(&assets, &model);
+        assert_eq!(
+            planner.plan_with_proposals("list your tools", &[]),
+            planner.plan("list your tools")
+        );
+    }
+
+    #[test]
+    fn plan_with_proposals_appends_verified_actions_after_grounded_plan() {
+        let assets = LocalAgentAssets::bundled();
+        let model = model();
+        let proposer = StubProposer("hash-id, report, not-a-real-action");
+        let planner = planner_over(&assets, &model).with_proposer(&proposer);
+        let plan = planner.plan_with_proposals("list your tools", &[]);
+        let names: Vec<&str> = plan.iter().map(|c| c.action).collect();
+        // Grounded match first, then the registry-verified proposals in the
+        // order the model named them; the invented name is dropped.
+        assert_eq!(names, vec!["list-tools", "hash-id", "report"]);
+    }
+
+    #[test]
+    fn plan_with_proposals_is_deterministic() {
+        let assets = LocalAgentAssets::bundled();
+        let model = model();
+        let proposer = StubProposer("report, hash-id");
+        let planner = planner_over(&assets, &model).with_proposer(&proposer);
+        let a = planner.plan_with_proposals("list your tools", &[]);
+        let b = planner.plan_with_proposals("list your tools", &[]);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn run_agent_with_memory_only_adds_proposals_when_enabled() {
+        let assets = LocalAgentAssets::bundled();
+        let model = model();
+        let proposer = StubProposer("build-info");
+        let planner = planner_over(&assets, &model).with_proposer(&proposer);
+
+        // Default policy (model_proposals off): memory is ignored, exactly
+        // like the plain run_agent path.
+        let mut executor = FakeExecutor::new(|_| String::new());
+        let _ = run_agent_with_memory(
+            "list your tools",
+            &planner,
+            &mut executor,
+            permissive(),
+            &[],
+        );
+        assert!(
+            executor.calls.iter().all(|c| c.action == "list-tools"),
+            "calls: {:?}",
+            executor.calls
+        );
+
+        // With the flag on, the verified proposal runs too (build-info needs
+        // no argument, so it executes rather than being skipped).
+        let mut executor = FakeExecutor::new(|_| String::new());
+        let policy = AgentPolicy {
+            model_proposals: true,
+            ..permissive()
+        };
+        let _ = run_agent_with_memory("list your tools", &planner, &mut executor, policy, &[]);
+        assert!(
+            executor.calls.iter().any(|c| c.action == "build-info"),
+            "calls: {:?}",
+            executor.calls
+        );
+    }
+
+    #[test]
+    fn agent_memory_round_trips_through_json_lines() {
+        let path = std::env::temp_dir().join(format!(
+            "security-agent-memory-roundtrip-{}.jsonl",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let line = AgentMemoryLine {
+            goal: "scan \"web-1\" now\nplease".to_string(),
+            actions: vec!["scan".to_string(), "report".to_string()],
+        };
+        append_agent_memory(path.to_str().expect("path"), &line).expect("append");
+        let loaded = load_agent_memory(path.to_str().expect("path")).expect("load");
+        assert_eq!(loaded, vec![line]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn agent_memory_skips_malformed_lines() {
+        let path = std::env::temp_dir().join(format!(
+            "security-agent-memory-malformed-{}.jsonl",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        std::fs::write(
+            &path,
+            "{\"goal\":\"a\",\"actions\":[\"scan\"]}\nnot json\n{\"goal\":\"b\",\"actions\":[]}\n",
+        )
+        .expect("write memory");
+        let loaded = load_agent_memory(path.to_str().expect("path")).expect("load");
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[1].goal, "b");
+        assert!(loaded[1].actions.is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn missing_memory_file_loads_empty() {
+        let path = std::env::temp_dir().join("security-agent-memory-missing.jsonl");
+        let _ = std::fs::remove_file(&path);
+        let loaded = load_agent_memory(path.to_str().expect("path")).expect("load");
+        assert!(loaded.is_empty());
     }
 }
