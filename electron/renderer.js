@@ -613,10 +613,20 @@
     }
 
     // ── Objectives: agent mode ─────────────────────────────────────────────
+    // Optional flags shared by preview and run: model-proposed actions and a
+    // persistent memory file for the proposal prompt.
+    function agentExtraArgs() {
+        const args = [];
+        if ($('#agent-proposals').checked) args.push('--model-proposals');
+        const memory = $('#agent-memory').value.trim();
+        if (memory) args.push('--memory', memory);
+        return args;
+    }
+
     async function agentPreview() {
         const goal = $('#agent-goal').value.trim();
         if (!goal) return;
-        const args = ['--agent', goal, '--dry-run'];
+        const args = ['--agent', goal, '--dry-run', ...agentExtraArgs()];
         const out = $('#output-agent');
         setLoading(out, 'Planning objective…');
         const res = await runBinary(args, { label: 'agent plan' });
@@ -626,7 +636,7 @@
     async function agentRun() {
         const goal = $('#agent-goal').value.trim();
         if (!goal) return;
-        const args = ['--agent', goal];
+        const args = ['--agent', goal, ...agentExtraArgs()];
         if ($('#agent-dryrun').checked) args.push('--dry-run');
         if ($('#agent-network').checked) args.push('--allow-network');
         args.push('--max-steps', $('#agent-steps').value);

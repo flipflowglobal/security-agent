@@ -1194,6 +1194,27 @@ mod tests {
     }
 
     #[test]
+    fn larger_smollm_shaped_config_parses() {
+        // A SmolLM2-1.7B-shaped config (hidden 2048, 24 layers, 16 heads, 8 KV
+        // heads) parses and validates, showing the loader is generic over the
+        // Llama architecture — a bigger model drops into assets/model/ with no
+        // code change.
+        let config = LocalConfig::from_json(
+            r#"{"hidden_size":2048,"intermediate_size":8192,"num_hidden_layers":24,
+                "num_attention_heads":16,"num_key_value_heads":8,
+                "max_position_embeddings":8192,"vocab_size":49152,
+                "rms_norm_eps":1e-05,"rope_theta":1000000,
+                "tie_word_embeddings":true,"eos_token_id":2}"#,
+        )
+        .expect("1.7B-shaped config");
+        assert_eq!(config.hidden_size, 2048);
+        assert_eq!(config.num_hidden_layers, 24);
+        assert_eq!(config.num_attention_heads, 16);
+        assert_eq!(config.num_key_value_heads, 8);
+        assert_eq!(config.head_dim(), 128);
+    }
+
+    #[test]
     fn repetition_penalty_suppresses_seen_tokens() {
         // A logits vector where id 0 is the greedy favorite.
         let logits = [10.0_f32, 9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0];

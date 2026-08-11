@@ -198,6 +198,10 @@
                                 <label class="checkbox-label"><input type="checkbox" id="agent-network"><span>Allow network opt-in</span></label>
                                 <label class="checkbox-label">Max steps <select id="agent-steps"><option>4</option><option selected>8</option><option>16</option><option>32</option></select></label>
                             </div>
+                            <div class="option-row">
+                                <label class="checkbox-label"><input type="checkbox" id="agent-proposals"><span>Model-proposed actions (registry-verified)</span></label>
+                                <label class="field-label">Memory file <input type="text" id="agent-memory" placeholder="optional path, e.g. agent-memory.jsonl"></label>
+                            </div>
                             <div class="action-bar">
                                 <button class="btn secondary" id="btn-agent-preview">Preview plan</button>
                                 <button class="btn primary" id="btn-agent-run">Run objective</button>
