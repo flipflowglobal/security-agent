@@ -31,6 +31,43 @@ function binaryEnv() {
     return env;
 }
 
+// ── Bundled offline LLM ─────────────────────────────────────────────────────
+// The real local transformer ships with the app (dev: `assets/model` at the
+// repo root, packaged: `<app>/resources/assets/model`). The renderer must not
+// guess paths, so the main process resolves the directory and injects
+// `--model <dir>` into LM-backed runs — guaranteeing the chat page uses the
+// real model rather than the tiny bundled fallback.
+function bundledModelDir() {
+    const roots = [];
+    if (process.resourcesPath) roots.push(process.resourcesPath);
+    roots.push(path.join(__dirname, '..'));
+    for (const root of roots) {
+        const dir = path.join(root, 'assets', 'model');
+        try {
+            if (fs.existsSync(path.join(dir, 'config.json')) &&
+                fs.existsSync(path.join(dir, 'tokenizer.json')) &&
+                fs.existsSync(path.join(dir, 'model.safetensors'))) {
+                return dir;
+            }
+        } catch (_e) { /* keep scanning */ }
+    }
+    return null;
+}
+
+// Adds `--model <dir>` right after the command for LM-backed runs (`--chat-reply`
+// and `--agent`), unless the caller already chose a model. Runs the check on the
+// original args so a user-supplied `--model` always wins.
+function injectBundledModel(args) {
+    if (!Array.isArray(args) || args.length === 0) return args;
+    if (args.includes('--model')) return args;
+    const first = args[0];
+    if (first !== '--chat-reply' && first !== '--agent') return args;
+    const dir = bundledModelDir();
+    if (!dir) return args;
+    emitLog('info', 'injecting bundled offline model: ' + dir);
+    return [first, '--model', dir].concat(args.slice(1));
+}
+
 // ── Run tracking (for Cancel) ─────────────────────────────────────────────
 // Every live child is tracked in a Set so cancel-run can terminate the whole
 // group, and a second run never silently orphans the first.
@@ -257,7 +294,7 @@ ipcMain.handle('run-command', (event, args) => {
             resolve({ ok: false, stdout: '', stderr: refused, exitCode: 1 });
             return;
         }
-        const proc = execFile(binaryPath, args, {
+        const proc = execFile(binaryPath, injectBundledModel(args), {
             timeout: 120_000,
             maxBuffer: 1024 * 1024,
             encoding: 'utf-8',
@@ -294,7 +331,7 @@ ipcMain.handle('run-streaming', (event, args) => {
             resolve({ ok: false, stdout: '', stderr: refused, exitCode: 1 });
             return;
         }
-        const proc = spawn(binaryPath, args, {
+        const proc = spawn(binaryPath, injectBundledModel(args), {
             env: binaryEnv(),
             windowsHide: true,
         });

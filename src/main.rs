@@ -1773,14 +1773,103 @@ fn llm_generate_command(arguments: &mut impl Iterator<Item = String>) -> ExitCod
     ExitCode::SUCCESS
 }
 
+/// Reads one option value, failing when the flag has none.
+fn next_chat_value(
+    arguments: &mut impl Iterator<Item = String>,
+    flag: &str,
+) -> Result<String, String> {
+    arguments
+        .next()
+        .ok_or_else(|| format!("missing value after {flag}"))
+}
+
+/// Parsed `--chat-reply` options plus the message words.
+struct ChatReplyArgs {
+    /// The message words (everything after the leading options).
+    message_words: Vec<String>,
+    /// An optional `--model <dir>` for the reply model.
+    model_dir: Option<String>,
+    /// Tool-result context (`--context`) the assistant can quote.
+    context: String,
+    /// Conversation history (`--turn <role>\t<text>`, repeatable).
+    turns: Vec<(String, String)>,
+}
+
+/// Parses `--chat-reply` options: an optional leading `--model <dir>`, optional
+/// tool-result `--context <text>`, and repeatable `--turn <role>\t<text>`
+/// conversation history. Only flags *before* the message are options — the
+/// first non-flag word starts the message and everything after it (even words
+/// that look like flags) belongs to the message, so a question like "what does
+/// `--model` do?" is never misparsed.
+fn parse_chat_reply_args(
+    arguments: &mut impl Iterator<Item = String>,
+) -> Result<ChatReplyArgs, String> {
+    let mut message_words = Vec::new();
+    let mut model_dir = None;
+    let mut context = String::new();
+    let mut turns = Vec::new();
+    while let Some(word) = arguments.next() {
+        match word.as_str() {
+            "--model" => model_dir = Some(next_chat_value(arguments, "--model")?),
+            "--context" => context = next_chat_value(arguments, "--context")?,
+            "--turn" => {
+                let raw = next_chat_value(arguments, "--turn")?;
+                let (role, text) = raw.split_once('\t').ok_or_else(|| {
+                    "malformed --turn value (expected `role<TAB>text`)".to_string()
+                })?;
+                turns.push((role.to_string(), text.to_string()));
+            }
+            first_word => {
+                message_words.push(first_word.to_string());
+                message_words.extend(arguments);
+                break;
+            }
+        }
+    }
+    Ok(ChatReplyArgs {
+        message_words,
+        model_dir,
+        context,
+        turns,
+    })
+}
+
+/// Trims a generated reply: drops a leading assistant marker the model may
+/// echo, cuts any text past the first end-of-turn marker, and strips padding.
+fn sanitize_chat_reply(reply: &str) -> &str {
+    let mut reply = reply.trim();
+    if let Some(rest) = reply.strip_prefix("<|im_start|>assistant") {
+        reply = rest.trim_start();
+    }
+    if let Some(index) = reply.find("<|im_end|>") {
+        reply = &reply[..index];
+    }
+    reply.trim()
+}
+
 /// Produces a free-form assistant reply to `--chat-reply <message words...>`
 /// from the selected local model — the offline chat backend for the GUI's chat
 /// page. The message is wrapped in the model's `ChatML` instruction format so
 /// the generated continuation *is* the assistant's answer rather than a raw
-/// completion of the user's words. Everything stays local: no network, no
-/// external API, exactly like every other command in this binary.
+/// completion of the user's words. Tool results from an agent run can be
+/// handed in with `--context` and prior turns with repeatable `--turn`, so the
+/// assistant can ground its reply in what actually ran. Everything stays
+/// local: no network, no external API, exactly like every other command.
 fn chat_reply_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
-    let selection = match select_language_model(arguments.collect()) {
+    let parsed = match parse_chat_reply_args(arguments) {
+        Ok(parsed) => parsed,
+        Err(message) => {
+            eprintln!("{message}");
+            return ExitCode::from(2);
+        }
+    };
+    let mut words = Vec::new();
+    if let Some(dir) = parsed.model_dir {
+        words.push("--model".to_string());
+        words.push(dir);
+    }
+    words.extend(parsed.message_words);
+    let selection = match select_language_model(words) {
         Ok(selection) => selection,
         Err(message) => {
             eprintln!("{message}");
@@ -1792,17 +1881,54 @@ fn chat_reply_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode 
         eprintln!("missing message for --chat-reply");
         return ExitCode::from(2);
     }
-    let prompt = format!(
-        "<|im_start|>system\nYou are the Security-Agent offline assistant. \
-         Answer concisely and factually from your own knowledge. \
-         You have no network access.<|im_end|>\n\
-         <|im_start|>user\n{message}<|im_end|>\n<|im_start|>assistant\n"
+    let raw_reply = selection.model.generate_chat(
+        &parsed.context,
+        &parsed.turns,
+        &message,
+        // The GUI runs `--chat-reply` under a 120s timeout and the bundled
+        // transformer generates only a few tokens per second, so a full 256
+        // token budget could be cut off mid-reply. 120 tokens keeps the worst
+        // case well inside the window while the loop detector ends most
+        // replies far earlier.
+        selection.max_generation_tokens.min(120),
     );
-    let reply = selection
-        .model
-        .generate(&prompt, selection.max_generation_tokens);
-    println!("{reply}");
+    let reply = sanitize_chat_reply(&raw_reply);
+    let reply = if chat_reply_is_garbage(reply) {
+        String::new()
+    } else {
+        reply.to_owned()
+    };
+    if reply.trim().is_empty() {
+        println!(
+            "I could not form a reply to that on my own — try rephrasing, or ask about a specific tool."
+        );
+    } else {
+        println!("{reply}");
+    }
     ExitCode::SUCCESS
+}
+
+/// True when a model reply never got off the ground: ChatML-marker residue,
+/// byte-fragment scaffolding (a `<start`/`<_` prefix, runs of `_`/`|`), or a
+/// near-uniform sprinkle of punctuation. Such output reads as broken, so the
+/// caller shows the friendly fallback line instead of printing it.
+fn chat_reply_is_garbage(reply: &str) -> bool {
+    if reply.contains("<|im_start|>") || reply.contains("<|im_end|>") {
+        return true;
+    }
+    if reply.starts_with("<start") || reply.starts_with("<_") || reply.starts_with("<|") {
+        return true;
+    }
+    let total = reply.chars().count();
+    if total == 0 {
+        return true;
+    }
+    let scaffolding = reply.chars().filter(|c| *c == '_' || *c == '|').count();
+    let punctuation = reply
+        .chars()
+        .filter(|c| !c.is_alphanumeric() && !c.is_whitespace())
+        .count();
+    scaffolding * 10 > total || punctuation * 3 > total
 }
 
 /// Runs the held-out evaluation of the built-in language model and prints
@@ -3048,7 +3174,8 @@ const CAPABILITY_ROWS: &[(&str, &str, &str)] = &[
     (
         "Chat reply (LLM)",
         "--chat-reply <message>",
-        "\"summarize my last findings report\" (offline assistant reply; the GUI chat page's backend)",
+        "\"summarize my last findings report\" (offline assistant reply; the GUI chat page's backend; \
+         options: --model <dir>, --context <tool results>, --turn role\\ttext ...)",
     ),
     (
         "Score text for anomaly (LLM)",

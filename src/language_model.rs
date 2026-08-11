@@ -59,6 +59,43 @@
 //! Being tiny, its text is modest; like the cognitive layer, it is
 //! advisory and never affects authorization.
 
+/// Strips the model's own `ChatML` markers from free-form text so user or tool
+/// content can never break the turn structure (or impersonate another role).
+#[must_use]
+pub fn strip_chat_markers(text: &str) -> String {
+    text.replace("<|im_start|>", "").replace("<|im_end|>", "")
+}
+
+/// Builds the `ChatML` prompt for a chat turn.
+///
+/// Prior `user`/`assistant` turns, an optional block of tool results (the
+/// context the assistant can quote), and the current user message are joined,
+/// ending with the assistant marker so the generated continuation *is* the
+/// reply.
+#[must_use]
+pub fn chat_prompt(context: &str, turns: &[(String, String)], message: &str) -> String {
+    let mut prompt = String::with_capacity(256 + context.len() + message.len());
+    for (role, text) in turns {
+        if role != "user" && role != "assistant" {
+            continue;
+        }
+        prompt.push_str("<|im_start|>");
+        prompt.push_str(role);
+        prompt.push('\n');
+        prompt.push_str(&strip_chat_markers(text));
+        prompt.push_str("<|im_end|>\n");
+    }
+    if !context.trim().is_empty() {
+        prompt.push_str("<|im_start|>user\nTool results from this session:\n");
+        prompt.push_str(&strip_chat_markers(context));
+        prompt.push_str("<|im_end|>\n");
+    }
+    prompt.push_str("<|im_start|>user\n");
+    prompt.push_str(&strip_chat_markers(message));
+    prompt.push_str("<|im_end|>\n<|im_start|>assistant\n");
+    prompt
+}
+
 /// Anything that can continue a prompt and score how surprising text is.
 /// Implemented by [`NeuralLanguageModel`]; kept as a trait so a larger
 /// backend can be substituted without touching callers.
@@ -74,6 +111,22 @@ pub trait LanguageModel {
     /// The model's perplexity on `text` — its average per-token surprise.
     /// Lower means the text looks more like what the model was trained on.
     fn perplexity(&self, text: &str) -> f32;
+
+    /// Produces the assistant's reply to `message` given optional tool-result
+    /// `context` and prior `turns` (each `(role, text)`, role `user` or
+    /// `assistant`). The default builds the `ChatML` prompt and delegates to
+    /// [`LanguageModel::generate`]; backends that wrap prompts internally
+    /// (so a double wrap would confuse the model) override it.
+    fn generate_chat(
+        &self,
+        context: &str,
+        turns: &[(String, String)],
+        message: &str,
+        max_tokens: usize,
+    ) -> String {
+        let prompt = chat_prompt(context, turns, message);
+        self.generate(&prompt, max_tokens)
+    }
 }
 
 /// Number of previous tokens in the temporal window the model transforms.

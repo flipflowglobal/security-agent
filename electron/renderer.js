@@ -2089,6 +2089,48 @@
         ta.style.height = Math.min(ta.scrollHeight, 160) + 'px';
     }
 
+    // Compact transcript of the agent run's steps (command → status → short
+    // detail) passed to the LLM as `--context`, so the assistant's reply is
+    // grounded in the tool results the user can see in the run card.
+    function chatToolContext(res) {
+        if (!res || !res.ok || !res.stdout) return '';
+        let json = null;
+        try { json = JSON.parse(res.stdout); } catch (_e) { /* not JSON */ }
+        if (!json || !Array.isArray(json.steps)) return '';
+        const lines = [];
+        json.steps.forEach(function (s, i) {
+            const cmd = s.command + (s.args && s.args.length ? ' ' + s.args.join(' ') : '');
+            let line = (i + 1) + '. ' + cmd + ' → ' + s.status;
+            if (s.detail && String(s.detail) !== '0') {
+                line += ': ' + String(s.detail).slice(0, 200);
+            }
+            lines.push(line);
+        });
+        return lines.join('\n').slice(0, 4000);
+    }
+
+    // Recent conversation as `role<TAB>text` turns for repeatable `--turn`.
+    // The current message is added to history only after the reply is built,
+    // so this is exactly the prior context. Tabs are replaced so the TAB
+    // separator survives, and ChatML markers are stripped so user/assistant
+    // text can never break the model's turn structure.
+    function chatHistoryTurns() {
+        const hist = state.chat.history || [];
+        const turns = [];
+        const start = Math.max(0, hist.length - 8);
+        for (let i = start; i < hist.length; i++) {
+            const item = hist[i];
+            const role = item.type === 'assistant' ? 'assistant' : 'user';
+            const text = String(item.text || '')
+                .replace(/\t/g, ' ')
+                .replace(/<\|im_(start|end)\|>/g, '')
+                .trim();
+            if (!text) continue;
+            turns.push(role + '\t' + text.slice(0, 600));
+        }
+        return turns;
+    }
+
     async function chatSend() {
         const input = $('#chat-input');
         const text = input.value.trim();
@@ -2118,9 +2160,15 @@
         }
         const agentRes = await runBinary(agentArgs, { label: 'agent: ' + text });
 
-        // 2) Assistant textual reply from the offline model.
-        const replyArgs = ['--chat-reply', text];
+        // 2) Assistant textual reply from the offline model. Flags come
+        // before the message so the message itself can mention flags like
+        // `--model` without being misparsed.
+        const replyArgs = ['--chat-reply'];
         if (state.chat.modelDir) replyArgs.push('--model', state.chat.modelDir);
+        const context = chatToolContext(agentRes);
+        if (context) replyArgs.push('--context', context);
+        chatHistoryTurns().forEach(function (t) { replyArgs.push('--turn', t); });
+        replyArgs.push(text);
         const replyRes = await runBinary(replyArgs, { label: 'chat reply' });
 
         typing.remove();

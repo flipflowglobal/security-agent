@@ -902,33 +902,12 @@ fn hash_prompt(prompt: &str) -> u64 {
     hash
 }
 
-/// Samples one token id from `logits` with temperature, top-k filtering, and
-/// an HF-style multiplicative repetition penalty for already-seen tokens.
+/// Samples one token id from `logits` with temperature and top-k filtering.
 #[allow(clippy::cast_possible_truncation)] // probabilities are stored as f32 by design.
-fn sample_token(
-    logits: &[f32],
-    rng: &mut SplitMix64,
-    penalty: f32,
-    seen: &std::collections::HashSet<u32>,
-) -> Option<u32> {
-    const TEMPERATURE: f32 = 0.7;
-    const TOP_K: usize = 40;
-    let scaled: Vec<f32> = logits
-        .iter()
-        .enumerate()
-        .map(|(index, &value)| {
-            let value = value / TEMPERATURE;
-            if seen.contains(&u32::try_from(index).unwrap_or(u32::MAX)) {
-                if value > 0.0 {
-                    value / penalty
-                } else {
-                    value * penalty
-                }
-            } else {
-                value
-            }
-        })
-        .collect();
+fn sample_token(logits: &[f32], rng: &mut SplitMix64) -> Option<u32> {
+    const TEMPERATURE: f32 = 0.01;
+    const TOP_K: usize = 1;
+    let scaled: Vec<f32> = logits.iter().map(|&value| value / TEMPERATURE).collect();
     let mut order: Vec<usize> = (0..scaled.len()).collect();
     order.sort_unstable_by(|&a, &b| {
         scaled[b]
@@ -1079,21 +1058,18 @@ impl LocalTextModel {
     pub fn tokenize(&self, text: &str) -> Vec<u32> {
         self.tokenizer.encode(text)
     }
-}
 
-impl LanguageModel for LocalTextModel {
-    fn generate(&self, prompt: &str, max_tokens: usize) -> String {
-        const REPETITION_PENALTY: f32 = 1.1;
-        // ChatML wrap (SmolLM2 instruct format). Empirically this model
-        // follows instructions without a system message; adding one makes it
-        // echo "user"/"system" role tokens instead of answering.
-        let wrapped = format!("<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n");
-        let mut ids = self.tokenizer.encode(&wrapped);
-        // Only tokens the model has *generated* are penalized: repeating the
-        // prompt verbatim (e.g. "The capital of France is The capital...") is
-        // a legitimate continuation and must not be suppressed.
-        let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
-        let mut rng = SplitMix64::from_seed(hash_prompt(prompt));
+    /// Generates from pre-tokenized ids using the shared sampling loop (see
+    /// [`LanguageModel::generate`]). `seed_text` drives the deterministic RNG
+    /// so the same conversational input always yields the same reply.
+    fn generate_from_ids(&self, ids: &[u32], max_tokens: usize, seed_text: &str) -> String {
+        // No repetition penalty: for a small model the penalty pushes the
+        // distribution off the coherent path into byte-fragment garbage,
+        // while letting it repeat keeps every phrase clean. Repetition is
+        // instead bounded by phrase-level loop detection below, which cuts
+        // the generation the moment a tail phrase starts repeating.
+        let mut ids = ids.to_vec();
+        let mut rng = SplitMix64::from_seed(hash_prompt(seed_text));
         let mut cache = KvCache::new();
         let mut output_ids: Vec<u32> = Vec::with_capacity(max_tokens);
         for _ in 0..max_tokens {
@@ -1106,17 +1082,53 @@ impl LanguageModel for LocalTextModel {
             let Some(last) = rows.last() else {
                 break;
             };
-            let Some(id) = sample_token(last, &mut rng, REPETITION_PENALTY, &seen) else {
+            let Some(id) = sample_token(last, &mut rng) else {
                 break;
             };
             if id == self.config.eos_token_id {
                 break;
             }
             output_ids.push(id);
-            seen.insert(id);
+            // Text-level loop detection: when the decoded tail (a phrase's
+            // worth) already appears earlier in the reply, the model has
+            // started repeating — cut it there.
+            let decoded = self.tokenizer.decode(&output_ids);
+            const LOOP_TAIL: usize = 40;
+            if decoded.len() >= 2 * LOOP_TAIL {
+                let tail = &decoded[decoded.len() - LOOP_TAIL..];
+                if decoded[..decoded.len() - LOOP_TAIL].contains(tail) {
+                    break;
+                }
+            }
             ids = vec![id];
         }
         self.tokenizer.decode(&output_ids)
+    }
+}
+
+impl LanguageModel for LocalTextModel {
+    fn generate(&self, prompt: &str, max_tokens: usize) -> String {
+        // ChatML wrap (SmolLM2 instruct format). Empirically this model
+        // follows instructions without a system message; adding one makes it
+        // echo "user"/"system" role tokens instead of answering.
+        let wrapped = format!("<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n");
+        let ids = self.tokenizer.encode(&wrapped);
+        self.generate_from_ids(&ids, max_tokens, prompt)
+    }
+
+    fn generate_chat(
+        &self,
+        context: &str,
+        turns: &[(String, String)],
+        message: &str,
+        max_tokens: usize,
+    ) -> String {
+        // Decode directly from the assembled conversation prompt rather than
+        // routing through `generate`, which would wrap the whole thing in a
+        // second `user` turn.
+        let prompt = crate::language_model::chat_prompt(context, turns, message);
+        let ids = self.tokenizer.encode(&prompt);
+        self.generate_from_ids(&ids, max_tokens, message)
     }
 
     fn perplexity(&self, text: &str) -> f32 {
