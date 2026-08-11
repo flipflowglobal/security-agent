@@ -484,6 +484,7 @@
             $('#stat-skills').textContent = '—';
             $('#stat-coverage').textContent = '—';
         }
+        renderToolLauncher();
     }
 
     const QUICK_ACTIONS = [
@@ -512,6 +513,55 @@
         setLibraryTab('quick');
         openQuickTool(id, {});
         $('#quick-search').focus();
+    }
+
+    // Dashboard tool launcher — every cataloged tool, one click to open.
+    function toolChipStatus(t) {
+        if (toolHasReal(t)) {
+            return { label: 'real', cls: 'badge-ok', title: 'Native in-app engine + executable detected' };
+        }
+        return { label: 'native', cls: 'badge-info', title: 'Native in-app engine (no external executable detected)' };
+    }
+
+    function renderToolLauncher() {
+        const grid = $('#tool-chip-grid');
+        if (!grid) return;
+        grid.innerHTML = '';
+        const tools = (state.catalog && state.catalog.tools) || [];
+        const ordered = tools.slice().sort(function (a, b) {
+            const ra = toolHasReal(a) ? 0 : 1;
+            const rb = toolHasReal(b) ? 0 : 1;
+            if (ra !== rb) return ra - rb;
+            return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0);
+        });
+        ordered.forEach(function (t) {
+            const chip = document.createElement('button');
+            chip.className = 'tool-chip';
+            const name = document.createElement('span');
+            name.className = 'tc-name';
+            name.textContent = t.name;
+            const st = toolChipStatus(t);
+            const badge = document.createElement('span');
+            badge.className = 'badge ' + st.cls;
+            badge.textContent = st.label;
+            chip.appendChild(name);
+            chip.appendChild(badge);
+            chip.title = st.title;
+            chip.onclick = function () { openToolFromHome(t); };
+            grid.appendChild(chip);
+        });
+        const count = $('#tool-chip-count');
+        if (count) count.textContent = tools.length + ' tools';
+        if (!tools.length) {
+            grid.innerHTML = '<div class="empty-state">Tool catalog unavailable.</div>';
+        }
+    }
+
+    function openToolFromHome(tool) {
+        state.currentTool = tool;
+        renderToolDetail(tool);
+        renderToolList($('#tool-search').value);
+        switchView('analyze');
     }
 
     async function runStatusInline() {
@@ -1768,6 +1818,9 @@
         $('#btn-agent-run').onclick = agentRun;
         // Analyze
         $('#tool-search').addEventListener('input', function () { renderToolList(this.value); });
+        // Home tool launcher
+        const browseAll = $('#btn-browse-all');
+        if (browseAll) browseAll.onclick = function () { switchView('analyze'); };
         // Engage
         $('#btn-eng-config').onclick = function () { generateConfig(); };
         $('#btn-eng-plan').onclick = engPlan;

@@ -216,20 +216,43 @@ impl LocalAgentAssets {
 }
 
 fn find_executable(name: &str) -> Option<PathBuf> {
-    let path = env::var_os("PATH")?;
+    bundled_tool_dirs()
+        .into_iter()
+        .chain(path_dirs())
+        .find_map(|dir| find_in_dir(&dir, name))
+}
 
-    for directory in env::split_paths(&path) {
-        let candidate = directory.join(name);
+/// Directories searched before `PATH`. The Electron GUI sets
+/// `SECURITY_AGENT_TOOL_DIR` to the real tools bundled with the desktop app
+/// (dev: `electron/tools`, packaged: `resources/tools`), so a shipped binary
+/// is found even when it is not installed on `PATH`.
+fn bundled_tool_dirs() -> Vec<PathBuf> {
+    env::var_os("SECURITY_AGENT_TOOL_DIR")
+        .map(|raw| parse_tool_dirs(&raw))
+        .unwrap_or_default()
+}
+
+fn path_dirs() -> Vec<PathBuf> {
+    env::var_os("PATH")
+        .map(|raw| parse_tool_dirs(&raw))
+        .unwrap_or_default()
+}
+
+fn parse_tool_dirs(raw: &std::ffi::OsStr) -> Vec<PathBuf> {
+    env::split_paths(raw).collect()
+}
+
+fn find_in_dir(directory: &Path, name: &str) -> Option<PathBuf> {
+    let candidate = directory.join(name);
+    if is_executable_file(&candidate) {
+        return Some(candidate);
+    }
+
+    #[cfg(windows)]
+    for extension in executable_extensions() {
+        let candidate = directory.join(format!("{name}{extension}"));
         if is_executable_file(&candidate) {
             return Some(candidate);
-        }
-
-        #[cfg(windows)]
-        for extension in executable_extensions() {
-            let candidate = directory.join(format!("{name}{extension}"));
-            if is_executable_file(&candidate) {
-                return Some(candidate);
-            }
         }
     }
 
@@ -342,5 +365,48 @@ mod tests {
             1,
             "tools shared by packs should appear once"
         );
+    }
+
+    #[test]
+    fn find_in_dir_detects_bundled_binary() {
+        let dir = std::env::temp_dir().join(format!("sa-tooldir-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file_name = if cfg!(windows) {
+            "probe-tool.exe"
+        } else {
+            "probe-tool"
+        };
+        let path = dir.join(file_name);
+        std::fs::write(&path, b"probe").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
+        }
+
+        let found = find_in_dir(&dir, "probe-tool");
+        assert_eq!(found.as_deref(), Some(path.as_path()));
+
+        let missing = find_in_dir(&dir, "probe-tool-absent");
+        assert_eq!(missing, None);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_tool_dirs_splits_on_platform_separator() {
+        use std::ffi::OsString;
+
+        #[cfg(windows)]
+        let raw = OsString::from(r"C:\app\tools;D:\extra\tools");
+        #[cfg(not(windows))]
+        let raw = OsString::from("/opt/app/tools:/opt/extra/tools");
+
+        let dirs = parse_tool_dirs(&raw);
+        assert_eq!(dirs.len(), 2);
+        #[cfg(windows)]
+        assert_eq!(dirs[0], std::path::PathBuf::from(r"C:\app\tools"));
+        #[cfg(not(windows))]
+        assert_eq!(dirs[0], std::path::PathBuf::from("/opt/app/tools"));
     }
 }

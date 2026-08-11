@@ -38,6 +38,8 @@ pub mod language_model;
 pub mod lm_eval;
 pub mod local_analyzers;
 pub mod local_assets;
+#[cfg(feature = "inference")]
+pub mod local_llm;
 pub mod memory_store;
 pub mod mission;
 pub mod model;
@@ -133,6 +135,8 @@ pub use local_analyzers::{
     run_hashdeep,
 };
 pub use local_assets::{LocalAgentAssets, LocalSkill, LocalTool};
+#[cfg(feature = "inference")]
+pub use local_llm::{LocalConfig, LocalModelError, LocalTextModel};
 pub use memory_store::load_memory;
 pub use mission::MISSION_STATEMENT;
 pub use model::{

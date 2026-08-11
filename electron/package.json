@@ -42,7 +42,21 @@
     "extraResources": [
       {
         "from": "../target/release/security-agent.exe",
-        "to": "security-agent",
+        "to": "security-agent.exe",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "../assets/model",
+        "to": "assets/model",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "tools",
+        "to": "tools",
         "filter": [
           "**/*"
         ]

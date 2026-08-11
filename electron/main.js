@@ -7,6 +7,30 @@ const os = require('os');
 let mainWindow = null;
 let binaryPath = null;
 
+// ── Bundled real tools ─────────────────────────────────────────────────────
+// The app ships real tool binaries in a `tools/` directory (dev:
+// `electron/tools`, packaged: `<app>/resources/tools`). SECURITY_AGENT_TOOL_DIR
+// points the Rust binary at that directory so `--list-tools` reports those
+// tools as executable even when they are not installed on PATH.
+function bundledToolsDir() {
+    const root = process.resourcesPath || path.join(__dirname, '..');
+    const dirs = [path.join(root, 'tools')];
+    // Multi-file tools keep their runtime folders (hashcat needs modules/,
+    // john needs its run/ tree, nmap needs its data files); each is scanned.
+    for (const sub of ['hashcat', path.join('john', 'run'), 'aircrack-ng', 'nmap', 'ncrack', path.join('python', 'Scripts')]) {
+        dirs.push(path.join(root, 'tools', sub));
+    }
+    const existing = dirs.filter((d) => fs.existsSync(d));
+    return existing.length ? existing.join(path.delimiter) : null;
+}
+
+function binaryEnv() {
+    const env = { ...process.env, TERM: 'dumb' };
+    const tools = bundledToolsDir();
+    if (tools) env.SECURITY_AGENT_TOOL_DIR = tools;
+    return env;
+}
+
 // ── Run tracking (for Cancel) ─────────────────────────────────────────────
 // Every live child is tracked in a Set so cancel-run can terminate the whole
 // group, and a second run never silently orphans the first.
@@ -238,6 +262,7 @@ ipcMain.handle('run-command', (event, args) => {
             maxBuffer: 1024 * 1024,
             encoding: 'utf-8',
             windowsHide: true,
+            env: binaryEnv(),
         }, (error, stdout, stderr) => {
             liveChildren.delete(proc);
             const cancelled = !!proc._cancelled;
@@ -270,7 +295,7 @@ ipcMain.handle('run-streaming', (event, args) => {
             return;
         }
         const proc = spawn(binaryPath, args, {
-            env: { ...process.env, TERM: 'dumb' },
+            env: binaryEnv(),
             windowsHide: true,
         });
         liveChildren.add(proc);
@@ -487,6 +512,7 @@ ipcMain.handle('gen-shell', (event, shellType, lhost, lport) => {
             maxBuffer: 1024 * 1024,
             encoding: 'utf-8',
             windowsHide: true,
+            env: binaryEnv(),
         }, (error, stdout, stderr) => {
             if (error) {
                 const code = error.code != null ? error.code : 1;
@@ -522,7 +548,7 @@ ipcMain.handle('get-shell-types', async (event) => {
     if (!binaryPath) return { ok: false, types: fallback, error: 'binary not found' };
     try {
         const listOut = await new Promise((resolve, reject) => {
-            execFile(binaryPath, ['--gen-shell', '--list'], { timeout: 30_000, maxBuffer: 1024 * 1024, windowsHide: true },
+            execFile(binaryPath, ['--gen-shell', '--list'], { timeout: 30_000, maxBuffer: 1024 * 1024, windowsHide: true, env: binaryEnv() },
                 (error, stdout) => error ? reject(error) : resolve(stdout));
         });
         const types = [];
@@ -643,7 +669,7 @@ ipcMain.handle('get-tool-catalog', async (event) => {
     if (!binaryPath) return { ok: false, tools: [], skills: 0, error: 'binary not found' };
     try {
         const run = (flag) => new Promise((resolve, reject) => {
-            execFile(binaryPath, [flag], { timeout: 30_000, maxBuffer: 1024 * 1024, windowsHide: true },
+            execFile(binaryPath, [flag], { timeout: 30_000, maxBuffer: 1024 * 1024, windowsHide: true, env: binaryEnv() },
                 (error, stdout, stderr) => error ? reject(error) : resolve(stdout));
         });
         const [listOut, statusOut] = await Promise.all([run('--list-tools'), run('--offline-status')]);

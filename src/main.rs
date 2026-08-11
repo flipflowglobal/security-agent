@@ -1666,14 +1666,26 @@ fn record_findings_command(arguments: &mut impl Iterator<Item = String>) -> Exit
 /// the same prompt always yields the same continuation. Text is modest
 /// given the model's size; this exists to make the offline language-model
 /// capability usable and inspectable.
+/// A selected language-model backend plus the generation budget that fits it.
+struct LanguageSelection {
+    model: Box<dyn security_agent::LanguageModel>,
+    /// The remaining words (the prompt/text), after any leading
+    /// `--model <dir>` option was consumed.
+    words: Vec<String>,
+    /// How many tokens `--llm-generate` should ask for. The bundled local
+    /// transformer is much larger than the toy model and can produce useful
+    /// continuations, so it gets a bigger budget.
+    max_generation_tokens: usize,
+}
+
 /// Selects the language-model backend from a leading `--model <dir>` option,
 /// consuming it from `words` when present. With the `inference` feature that
-/// loads a candle-backed model from `<dir>` (`config.json` + `model.safetensors`);
-/// otherwise, or when the option is absent, the bundled model is used. Returns
-/// the backend plus the remaining words (the prompt/text).
-fn select_language_model(
-    mut words: Vec<String>,
-) -> Result<(Box<dyn security_agent::LanguageModel>, Vec<String>), String> {
+/// first tries the bundled local Llama backend from `<dir>` (SmolLM-style
+/// `config.json` + `tokenizer.json` + `model.safetensors`) and falls back to
+/// the candle byte-GPT backend; without `--model` it auto-loads the bundled
+/// model resources when they ship next to the binary. Otherwise, the bundled
+/// toy model is used.
+fn select_language_model(mut words: Vec<String>) -> Result<LanguageSelection, String> {
     if words.first().map(String::as_str) == Some("--model") {
         let dir = words
             .get(1)
@@ -1682,8 +1694,22 @@ fn select_language_model(
         words.drain(0..2);
         #[cfg(feature = "inference")]
         {
-            let model = load_candle_model(Path::new(&dir))?;
-            return Ok((Box::new(model), words));
+            let path = Path::new(&dir);
+            if let Some(model) =
+                security_agent::LocalTextModel::from_dir(path).map_err(|error| error.to_string())?
+            {
+                return Ok(LanguageSelection {
+                    model: Box::new(model),
+                    words,
+                    max_generation_tokens: 256,
+                });
+            }
+            let model = load_candle_model(path)?;
+            return Ok(LanguageSelection {
+                model: Box::new(model),
+                words,
+                max_generation_tokens: 24,
+            });
         }
         #[cfg(not(feature = "inference"))]
         {
@@ -1695,10 +1721,19 @@ fn select_language_model(
             );
         }
     }
-    Ok((
-        Box::new(security_agent::NeuralLanguageModel::bundled()),
+    #[cfg(feature = "inference")]
+    if let Some(model) = security_agent::LocalTextModel::auto() {
+        return Ok(LanguageSelection {
+            model: Box::new(model),
+            words,
+            max_generation_tokens: 256,
+        });
+    }
+    Ok(LanguageSelection {
+        model: Box::new(security_agent::NeuralLanguageModel::bundled()),
         words,
-    ))
+        max_generation_tokens: 24,
+    })
 }
 
 /// Loads a candle model from a directory holding `config.json` and
@@ -1713,19 +1748,21 @@ fn load_candle_model(dir: &Path) -> Result<security_agent::CandleTextModel, Stri
 }
 
 fn llm_generate_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
-    let (model, words) = match select_language_model(arguments.collect()) {
+    let selection = match select_language_model(arguments.collect()) {
         Ok(selection) => selection,
         Err(message) => {
             eprintln!("{message}");
             return ExitCode::from(2);
         }
     };
-    let prompt = words.join(" ");
+    let prompt = selection.words.join(" ");
     if prompt.trim().is_empty() {
         eprintln!("missing prompt for --llm-generate");
         return ExitCode::from(2);
     }
-    let continuation = model.generate(&prompt, 24);
+    let continuation = selection
+        .model
+        .generate(&prompt, selection.max_generation_tokens);
     // Avoid a trailing space when the model produces no continuation.
     if continuation.is_empty() {
         println!("{prompt}");
@@ -1757,19 +1794,19 @@ fn lm_eval_command() -> ExitCode {
 /// (`--llm-perplexity <text words...>`). Lower perplexity means the text
 /// reads more like the security-domain corpus the model learned.
 fn llm_perplexity_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
-    let (model, words) = match select_language_model(arguments.collect()) {
+    let selection = match select_language_model(arguments.collect()) {
         Ok(selection) => selection,
         Err(message) => {
             eprintln!("{message}");
             return ExitCode::from(2);
         }
     };
-    let text = words.join(" ");
+    let text = selection.words.join(" ");
     if text.trim().is_empty() {
         eprintln!("missing text for --llm-perplexity");
         return ExitCode::from(2);
     }
-    println!("perplexity={:.3}", model.perplexity(&text));
+    println!("perplexity={:.3}", selection.model.perplexity(&text));
     ExitCode::SUCCESS
 }
 

@@ -79,9 +79,55 @@
             <!-- ═══ VIEW: HOME ═══ -->
             <section class="view active" id="view-home">
                 <div class="view-inner">
+
+                    <div class="ops-strip" id="ops-strip">
+                        <div class="ops-item">
+                            <div class="ops-icon green">&#10003;</div>
+                            <div class="ops-body">
+                                <div class="ops-value" id="stat-binary">…</div>
+                                <div class="ops-label">Binary</div>
+                            </div>
+                        </div>
+                        <div class="ops-item">
+                            <div class="ops-icon blue">&#9874;</div>
+                            <div class="ops-body">
+                                <div class="ops-value" id="stat-tools">…</div>
+                                <div class="ops-label">Cataloged tools</div>
+                            </div>
+                        </div>
+                        <div class="ops-item">
+                            <div class="ops-icon purple">&#9670;</div>
+                            <div class="ops-body">
+                                <div class="ops-value" id="stat-builtin">…</div>
+                                <div class="ops-label">Offline engines</div>
+                            </div>
+                        </div>
+                        <div class="ops-item">
+                            <div class="ops-icon orange">&#9635;</div>
+                            <div class="ops-body">
+                                <div class="ops-value" id="stat-skills">…</div>
+                                <div class="ops-label">Embedded skills</div>
+                            </div>
+                        </div>
+                        <div class="ops-item">
+                            <div class="ops-icon teal">&#9733;</div>
+                            <div class="ops-body">
+                                <div class="ops-value" id="stat-coverage">…</div>
+                                <div class="ops-label">Capability coverage</div>
+                            </div>
+                        </div>
+                        <div class="ops-item">
+                            <div class="ops-icon gray">&#127760;</div>
+                            <div class="ops-body">
+                                <div class="ops-value" id="stat-mode">…</div>
+                                <div class="ops-label">Network mode</div>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="hero">
                         <h1>Security operations, minus the setup.</h1>
-                        <p class="subtitle">Run real tools, chain them into objectives, and audit everything — from one box.</p>
+                        <p class="subtitle">Type a task, launch a real tool, or use a one-click action — everything runs locally.</p>
                         <div class="cmd-bar">
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
                             <input type="text" id="cmd-bar" placeholder="Describe a security task in plain language — then run, plan, or open a tool" autocomplete="off" spellcheck="false">
@@ -90,60 +136,30 @@
                         <div class="cmd-suggestions" id="cmd-suggestions"></div>
                     </div>
 
-                    <div class="stat-grid" id="stat-grid">
-                        <div class="stat-card">
-                            <div class="stat-icon green">&#10003;</div>
-                            <div class="stat-body">
-                                <div class="stat-value" id="stat-binary">…</div>
-                                <div class="stat-label">Binary</div>
+                    <div class="dash-grid">
+                        <div class="dash-panel tools-panel">
+                            <div class="panel-head">
+                                <h3>Tool launcher</h3>
+                                <span class="badge badge-ok" id="tool-chip-count">…</span>
                             </div>
+                            <p class="field-hint">Every cataloged tool runs in-app with a native engine. Green marks the real external binaries also detected on this machine.</p>
+                            <div class="tool-chip-grid" id="tool-chip-grid"></div>
+                            <button class="browse-all" id="btn-browse-all">Browse all tools &#8594;</button>
                         </div>
-                        <div class="stat-card">
-                            <div class="stat-icon blue">&#9874;</div>
-                            <div class="stat-body">
-                                <div class="stat-value" id="stat-tools">…</div>
-                                <div class="stat-label">Cataloged tools</div>
+                        <div class="dash-side">
+                            <div class="dash-panel">
+                                <div class="panel-head">
+                                    <h3>Quick actions</h3>
+                                </div>
+                                <div class="action-grid" id="quick-actions"></div>
                             </div>
-                        </div>
-                        <div class="stat-card">
-                            <div class="stat-icon purple">&#9670;</div>
-                            <div class="stat-body">
-                                <div class="stat-value" id="stat-builtin">…</div>
-                                <div class="stat-label">Offline substitutes</div>
-                            </div>
-                        </div>
-                        <div class="stat-card">
-                            <div class="stat-icon orange">&#9635;</div>
-                            <div class="stat-body">
-                                <div class="stat-value" id="stat-skills">…</div>
-                                <div class="stat-label">Embedded skills</div>
-                            </div>
-                        </div>
-                        <div class="stat-card">
-                            <div class="stat-icon teal">&#9733;</div>
-                            <div class="stat-body">
-                                <div class="stat-value" id="stat-coverage">…</div>
-                                <div class="stat-label">Capability coverage</div>
-                            </div>
-                        </div>
-                        <div class="stat-card">
-                            <div class="stat-icon gray">&#128225;</div>
-                            <div class="stat-body">
-                                <div class="stat-value" id="stat-mode">…</div>
-                                <div class="stat-label">Network mode</div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="home-split">
-                        <div>
-                            <h3>Quick actions</h3>
-                            <div class="action-grid" id="quick-actions"></div>
-                        </div>
-                        <div>
-                            <h3>Recent activity</h3>
-                            <div class="recent-list" id="recent-list">
-                                <div class="empty-state">Nothing run yet. Your last tasks will appear here for one-click re-runs.</div>
+                            <div class="dash-panel">
+                                <div class="panel-head">
+                                    <h3>Recent activity</h3>
+                                </div>
+                                <div class="recent-list" id="recent-list">
+                                    <div class="empty-state">Nothing run yet. Your last tasks will appear here for one-click re-runs.</div>
+                                </div>
                             </div>
                         </div>
                     </div>
