@@ -438,15 +438,27 @@ impl AgentMemoryLine {
 /// Returns `Err` only when the file cannot be read for reasons other than
 /// being absent.
 pub fn load_agent_memory(path: &str) -> Result<Vec<AgentMemoryLine>, String> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
+    use std::io::BufRead as _;
+
+    const MAX_MEMORY_LINES: usize = 2048;
+
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(format!("cannot read agent memory {path}: {error}")),
     };
-    Ok(text
-        .lines()
-        .filter_map(AgentMemoryLine::from_json_line)
-        .collect())
+
+    let reader = std::io::BufReader::new(file);
+    let mut out = std::collections::VecDeque::new();
+    for line in reader.lines().filter_map(Result::ok) {
+        if let Some(parsed) = AgentMemoryLine::from_json_line(&line) {
+            if out.len() == MAX_MEMORY_LINES {
+                out.pop_front();
+            }
+            out.push_back(parsed);
+        }
+    }
+    Ok(out.into_iter().collect())
 }
 
 /// Appends `line` to the agent memory file at `path`, creating it (and any
