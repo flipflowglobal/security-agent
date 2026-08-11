@@ -484,7 +484,10 @@ pub fn append_agent_memory(path: &str, line: &AgentMemoryLine) -> Result<(), Str
         .append(true)
         .open(path)
         .map_err(|error| format!("cannot open agent memory {path}: {error}"))?;
-    writeln!(file, "{}", line.to_json_line())
+
+    let mut buf = line.to_json_line();
+    buf.push('\n');
+    file.write_all(buf.as_bytes())
         .map_err(|error| format!("cannot write agent memory {path}: {error}"))
 }
 
