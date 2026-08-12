@@ -203,6 +203,9 @@ fn print_offline_status(assets: &LocalAgentAssets) {
         .filter(|tool| tool.integrity == security_agent::IntegrityStatus::Verified)
         .count();
 
+    let environment = security_agent::Environment::detect();
+    println!("runtime_environment={}", environment.platform.label());
+    println!("data_home={}", environment.home.display());
     println!("network_required=false");
     println!("external_api_required=false");
     println!("default_network_mode=offline");
@@ -2471,7 +2474,13 @@ fn dispatch_tui_choice(
             let _ = tui_plan_scan(lines);
         }
         "9" => tui_record_findings(lines),
-        "10" => tui_run_with_prompted_path(lines, "audit log path: ", view_audit_command),
+        "10" => tui_run_with_discovered_path(
+            lines,
+            "audit log path",
+            "audit.jsonl",
+            &[".jsonl"],
+            view_audit_command,
+        ),
         "11" => tui_run_with_prompted_path(lines, "findings log path: ", schedule_retest_command),
         "12" => {
             let Some(prompt) = tui_prompt(lines, "prompt: ") else {
@@ -2494,18 +2503,32 @@ fn dispatch_tui_choice(
             let _ = llm_perplexity_command(&mut std::iter::once(text));
         }
         "14" => tui_listen(lines),
-        "15" => tui_run_with_prompted_path(lines, "audit database path: ", view_audit_db_command),
-        "16" => {
-            tui_run_with_prompted_path(lines, "findings database path: ", view_findings_db_command);
-        }
-        "17" => tui_run_with_prompted_path(
+        "15" => tui_run_with_discovered_path(
             lines,
-            "calibration database path: ",
+            "audit database path",
+            "audit.sadb",
+            &[".sadb"],
+            view_audit_db_command,
+        ),
+        "16" => tui_run_with_discovered_path(
+            lines,
+            "findings database path",
+            "findings.sadb",
+            &[".sadb"],
+            view_findings_db_command,
+        ),
+        "17" => tui_run_with_discovered_path(
+            lines,
+            "calibration database path",
+            "calibration.sadb",
+            &[".sadb"],
             view_calibration_db_command,
         ),
-        "18" => tui_run_with_prompted_path(
+        "18" => tui_run_with_discovered_path(
             lines,
-            "reasoning log database path: ",
+            "reasoning log database path",
+            "reasoning.sadb",
+            &[".sadb"],
             view_reasoning_log_db_command,
         ),
         "19" => {
@@ -2565,6 +2588,44 @@ fn tui_run_with_prompted_path(
         return;
     }
     let _ = command(&mut std::iter::once(path));
+}
+
+/// Like [`tui_run_with_prompted_path`], but automates the path entry for the
+/// current environment (Termux / UserLAnd / desktop): it auto-detects existing
+/// files matching `extensions` in the platform's usual locations and offers
+/// them as a numbered pick-list, and pre-fills a platform-appropriate default
+/// (`<home>/<default_name>`) that a bare Enter accepts — so an operator on a
+/// phone rarely types a full path. A number picks a detected file; anything
+/// else is taken as a literal path.
+fn tui_run_with_discovered_path(
+    lines: &mut impl Iterator<Item = io::Result<String>>,
+    prompt_label: &str,
+    default_name: &str,
+    extensions: &[&str],
+    command: fn(&mut std::iter::Once<String>) -> ExitCode,
+) {
+    let environment = security_agent::Environment::detect();
+    let candidates =
+        security_agent::discover_inputs_in(&environment.candidate_dirs(), extensions, 9);
+    let default = environment.default_data_path(default_name);
+    if candidates.is_empty() {
+        println!(
+            "no existing files found ({}); enter a path or accept the default.",
+            environment.platform.label()
+        );
+    } else {
+        println!("found existing files ({}):", environment.platform.label());
+        for (index, path) in candidates.iter().enumerate() {
+            println!("  {}) {}", index + 1, path.display());
+        }
+        println!("enter a number to pick one, or type a path.");
+    }
+    let prompt = format!("{prompt_label} [{}]: ", default.display());
+    let Some(raw) = tui_prompt(lines, &prompt) else {
+        return;
+    };
+    let chosen = security_agent::resolve_input_choice(&raw, &candidates, &default);
+    let _ = command(&mut std::iter::once(chosen.to_string_lossy().into_owned()));
 }
 
 /// Reads one line from `lines`. Returns `None` at clean end-of-input (e.g. a
