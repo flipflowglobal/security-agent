@@ -204,6 +204,9 @@ fn print_offline_status(assets: &LocalAgentAssets) {
         .filter(|tool| tool.integrity == security_agent::IntegrityStatus::Verified)
         .count();
 
+    let environment = security_agent::Environment::detect();
+    println!("runtime_environment={}", environment.platform.label());
+    println!("data_home={}", environment.home.display());
     println!("network_required=false");
     println!("external_api_required=false");
     println!("default_network_mode=offline");
@@ -2219,8 +2222,14 @@ impl security_agent::ActionExecutor for CliExecutor {
         };
         let mut command = std::process::Command::new(exe);
         command.arg(call.command);
+        // `--run-external-tool` expects the network opt-in immediately after the
+        // command, before the tool name; every other command accepts it last.
+        let network_optin = call.network && self.allow_network;
+        if network_optin && call.command == "--run-external-tool" {
+            command.arg("--allow-network");
+        }
         command.args(&call.args);
-        if call.network && self.allow_network {
+        if network_optin && call.command != "--run-external-tool" {
             command.arg("--allow-network");
         }
         match command.output() {
@@ -2707,6 +2716,9 @@ fn run_tui_command(assets: &LocalAgentAssets) -> ExitCode {
 
 /// Runs one menu choice (or, for anything unrecognized, the plain-English
 /// chat bar) against the shared command functions.
+// A flat dispatch table: one arm per menu entry. It reads long by nature and
+// stays clearer in one place than split across helpers.
+#[allow(clippy::too_many_lines)]
 fn dispatch_tui_choice(
     input: &str,
     assets: &LocalAgentAssets,
@@ -2740,7 +2752,13 @@ fn dispatch_tui_choice(
             let _ = tui_plan_scan(lines);
         }
         "9" => tui_record_findings(lines),
-        "10" => tui_run_with_prompted_path(lines, "audit log path: ", view_audit_command),
+        "10" => tui_run_with_discovered_path(
+            lines,
+            "audit log path",
+            "audit.jsonl",
+            &[".jsonl"],
+            view_audit_command,
+        ),
         "11" => tui_run_with_prompted_path(lines, "findings log path: ", schedule_retest_command),
         "12" => {
             let Some(prompt) = tui_prompt(lines, "prompt: ") else {
@@ -2763,18 +2781,32 @@ fn dispatch_tui_choice(
             let _ = llm_perplexity_command(&mut std::iter::once(text));
         }
         "14" => tui_listen(lines),
-        "15" => tui_run_with_prompted_path(lines, "audit database path: ", view_audit_db_command),
-        "16" => {
-            tui_run_with_prompted_path(lines, "findings database path: ", view_findings_db_command);
-        }
-        "17" => tui_run_with_prompted_path(
+        "15" => tui_run_with_discovered_path(
             lines,
-            "calibration database path: ",
+            "audit database path",
+            "audit.sadb",
+            &[".sadb"],
+            view_audit_db_command,
+        ),
+        "16" => tui_run_with_discovered_path(
+            lines,
+            "findings database path",
+            "findings.sadb",
+            &[".sadb"],
+            view_findings_db_command,
+        ),
+        "17" => tui_run_with_discovered_path(
+            lines,
+            "calibration database path",
+            "calibration.sadb",
+            &[".sadb"],
             view_calibration_db_command,
         ),
-        "18" => tui_run_with_prompted_path(
+        "18" => tui_run_with_discovered_path(
             lines,
-            "reasoning log database path: ",
+            "reasoning log database path",
+            "reasoning.sadb",
+            &[".sadb"],
             view_reasoning_log_db_command,
         ),
         "19" => {
@@ -2795,6 +2827,87 @@ fn dispatch_tui_choice(
             let _ = tool_help_command(&mut std::iter::once(name));
         }
         "22" => tui_agent(assets, lines),
+        "23" => {
+            let _ = build_info_command(&mut std::iter::empty::<String>());
+        }
+        // Credentials.
+        "24" => tui_run_args(lines, "hash to identify: ", hash_id_command),
+        "25" => tui_run_args(lines, "password to score: ", password_strength_command),
+        "26" => tui_run_args(
+            lines,
+            "wordlist seeds (space-separated): ",
+            gen_wordlist_command,
+        ),
+        // Payloads & evasion.
+        "27" => tui_run_args(
+            lines,
+            "shell (type lhost lport, or --list): ",
+            gen_shell_command,
+        ),
+        "28" => tui_run_args(lines, "payload to analyze: ", analyze_payload_command),
+        "29" => tui_run_args(
+            lines,
+            "PowerShell command to obfuscate: ",
+            obfuscate_ps_command,
+        ),
+        "30" => tui_run_args(lines, "decoy spec (count [seed]): ", gen_decoys_command),
+        "31" => tui_run_args(lines, "payload to fragment: ", fragment_payload_command),
+        "32" => tui_run_args(lines, "IP-ID spec (count [seed]): ", gen_ipids_command),
+        "33" => tui_run_args(
+            lines,
+            "header bytes for the IP checksum: ",
+            ip_checksum_command,
+        ),
+        // Wireless (captures live under shared storage on Android).
+        "34" => tui_run_with_discovered_path(
+            lines,
+            "handshake capture path",
+            "handshake.pcap",
+            &[".pcap", ".cap", ".pcapng"],
+            analyze_handshake_command,
+        ),
+        "35" => tui_run_with_discovered_path(
+            lines,
+            "deauth capture path",
+            "capture.pcap",
+            &[".pcap", ".cap", ".pcapng"],
+            analyze_deauth_command,
+        ),
+        "36" => tui_run_args(lines, "WPS pin to check: ", wps_pin_command),
+        "37" => tui_run_with_discovered_path(
+            lines,
+            "wifi capture path",
+            "capture.pcap",
+            &[".pcap", ".cap", ".pcapng"],
+            audit_wifi_command,
+        ),
+        // Host & privilege analysis.
+        "38" => tui_run_with_prompted_path(lines, "host list path: ", analyze_hosts_command),
+        "39" => tui_run_with_prompted_path(lines, "passwd file path: ", analyze_passwd_command),
+        "40" => tui_run_with_prompted_path(lines, "sudoers file path: ", analyze_sudoers_command),
+        "41" => tui_run_with_prompted_path(lines, "authorized_keys path: ", analyze_keys_command),
+        "42" => {
+            let _ = postexploit_overview_command(&mut std::iter::empty::<String>());
+        }
+        // Engagement & reports.
+        "43" => tui_run_args(
+            lines,
+            "report args (findings-log [--format sarif|json|markdown]): ",
+            report_command,
+        ),
+        "44" => tui_run_args(
+            lines,
+            "engagement config path [flags]: ",
+            run_engagement_command,
+        ),
+        "45" => tui_run_args(
+            lines,
+            "engagement control args: ",
+            engagement_control_command,
+        ),
+        "46" => {
+            let _ = lm_eval_command();
+        }
         // The chat bar: anything else typed is a plain-English instruction. A
         // line that begins with `agent ` drives the multi-step agent loop
         // (plan & run — Stage 16/17); everything else routes through the same
@@ -2834,6 +2947,75 @@ fn tui_run_with_prompted_path(
         return;
     }
     let _ = command(&mut std::iter::once(path));
+}
+
+/// Like [`tui_run_with_prompted_path`], but automates the path entry for the
+/// current environment (Termux / `UserLAnd` / desktop): it auto-detects existing
+/// files matching `extensions` in the platform's usual locations and offers
+/// them as a numbered pick-list, and pre-fills a platform-appropriate default
+/// (`<home>/<default_name>`) that a bare Enter accepts — so an operator on a
+/// phone rarely types a full path. A number picks a detected file; anything
+/// else is taken as a literal path.
+fn tui_run_with_discovered_path(
+    lines: &mut impl Iterator<Item = io::Result<String>>,
+    prompt_label: &str,
+    default_name: &str,
+    extensions: &[&str],
+    command: fn(&mut std::iter::Once<String>) -> ExitCode,
+) {
+    let environment = security_agent::Environment::detect();
+    let candidates =
+        security_agent::discover_inputs_in(&environment.candidate_dirs(), extensions, 9);
+    let default = environment.default_data_path(default_name);
+    if candidates.is_empty() {
+        println!(
+            "no existing files found ({}); enter a path or accept the default.",
+            environment.platform.label()
+        );
+    } else {
+        println!("found existing files ({}):", environment.platform.label());
+        for (index, path) in candidates.iter().enumerate() {
+            println!("  {}) {}", index + 1, path.display());
+        }
+        println!("enter a number to pick one, or type a path.");
+    }
+    let prompt = format!("{prompt_label} [{}]: ", default.display());
+    let Some(raw) = tui_prompt(lines, &prompt) else {
+        return;
+    };
+    let chosen = security_agent::resolve_input_choice(&raw, &candidates, &default);
+    let _ = command(&mut std::iter::once(chosen.to_string_lossy().into_owned()));
+}
+
+/// Menu flow for a command that takes a whitespace-separated argument list:
+/// prompts once, splits the line into arguments, and runs `command` over them
+/// (a blank line runs it with no arguments, for the ones that accept that).
+/// Covers the credential/payload/wireless/host-analysis and report/engagement
+/// commands, which all read their arguments from the same iterator the CLI
+/// passes.
+fn tui_run_args(
+    lines: &mut impl Iterator<Item = io::Result<String>>,
+    prompt: &str,
+    command: fn(&mut std::vec::IntoIter<String>) -> ExitCode,
+) {
+    let Some(raw) = tui_prompt(lines, prompt) else {
+        return;
+    };
+    let args = split_args(&raw);
+    // Every command wired through here requires arguments, so a blank line is a
+    // cancellation — matching the other TUI prompts — not a no-arg run that
+    // would just print usage noise.
+    if args.is_empty() {
+        println!("cancelled.");
+        return;
+    }
+    let _ = command(&mut args.into_iter());
+}
+
+/// Splits a prompt line into a whitespace-separated argument vector (the shape
+/// every CLI-style command handler reads).
+fn split_args(line: &str) -> Vec<String> {
+    line.split_whitespace().map(str::to_string).collect()
 }
 
 /// Reads one line from `lines`. Returns `None` at clean end-of-input (e.g. a
@@ -3117,18 +3299,35 @@ fn tui_banner() -> String {
 
 fn tui_menu() -> String {
     "\n\
-     [1]  Offline status              [2]  About\n\
-     [3]  List tools                  [4]  Show a skill or tool\n\
-     [5]  List skills                 [6]  Run a built-in local tool\n\
-     [7]  Run a real external tool    [8]  Plan a scan (engagement config)\n\
-     [9]  Record findings (merge)     [10] View audit log\n\
-     [11] Schedule retest             [12] Generate text (LLM)\n\
-     [13] Score text for anomaly (LLM) [14] Reverse shell listener\n\
-     [15] View audit database          [16] View findings database\n\
-     [17] View calibration database    [18] View reasoning log database\n\
-     [19] Plain-language guide          [20] Reverse shell tutorial\n\
-     [21] Guide for one tool/command   [22] Agent — plan & run a goal\n\
-     [0]  Help / full capability summary [q]  Quit"
+     ── CORE ──\n\
+     [1]  Offline status            [2]  About                   [23] Build info\n\
+     [3]  List tools                [5]  List skills             [4]  Show a skill/tool\n\
+     ── AGENT & LANGUAGE MODEL ──\n\
+     [22] Agent — plan & run a goal [12] Generate text           [13] Score text for anomaly\n\
+     [46] Language-model self-eval\n\
+     ── ENGAGEMENT ──\n\
+     [8]  Plan a scan               [44] Run engagement          [45] Engagement control\n\
+     [43] Render a report           [11] Schedule retest         [9]  Record findings (merge)\n\
+     ── TOOLS ──\n\
+     [6]  Run a built-in local tool [7]  Run a real external tool\n\
+     ── DATA & LOGS ──\n\
+     [10] View audit log            [15] Audit database          [16] Findings database\n\
+     [17] Calibration database      [18] Reasoning-log database\n\
+     ── CREDENTIALS ──\n\
+     [24] Identify a hash           [25] Password strength       [26] Generate a wordlist\n\
+     ── PAYLOADS & EVASION ──\n\
+     [27] Generate a shell          [28] Analyze a payload       [29] Obfuscate PowerShell\n\
+     [30] Generate decoys           [31] Fragment a payload      [32] Generate IP IDs\n\
+     [33] IP checksum\n\
+     ── WIRELESS ──\n\
+     [34] Analyze WPA handshake     [35] Analyze deauth          [36] Check a WPS pin\n\
+     [37] Audit a wifi capture\n\
+     ── HOST & PRIVILEGE ──\n\
+     [38] Analyze a host list       [39] Analyze /etc/passwd     [40] Analyze sudoers\n\
+     [41] Analyze SSH keys          [42] Post-exploitation overview  [14] Reverse shell listener\n\
+     ── GUIDES ──\n\
+     [19] Plain-language guide      [20] Reverse shell tutorial  [21] Guide for one tool/command\n\
+     [0]  Help / full capability summary  [q]  Quit"
         .to_string()
 }
 
@@ -5593,10 +5792,57 @@ criticality=2
     #[test]
     fn tui_menu_lists_every_agent_function() {
         let menu = tui_menu();
-        // One numbered entry per underlying command, plus quit.
-        for token in ["[1]", "[5]", "[9]", "[13]", "[0]", "[q]"] {
-            assert!(menu.contains(token), "menu should list {token}");
+        // Every numbered entry (1..=46) must appear, plus help/quit — so the
+        // menu stays a complete index of the agent's commands.
+        for number in 0..=46 {
+            let token = format!("[{number}]");
+            assert!(menu.contains(&token), "menu should list {token}");
         }
+        assert!(menu.contains("[q]"), "menu should list quit");
+    }
+
+    #[test]
+    fn tui_menu_is_organized_into_labeled_sections() {
+        let menu = tui_menu();
+        for section in [
+            "CORE",
+            "CREDENTIALS",
+            "PAYLOADS & EVASION",
+            "WIRELESS",
+            "HOST & PRIVILEGE",
+        ] {
+            assert!(
+                menu.contains(section),
+                "menu should have a {section} section"
+            );
+        }
+    }
+
+    #[test]
+    fn split_args_breaks_a_line_into_the_expected_argument_vector() {
+        assert_eq!(
+            split_args("bash 10.0.0.1 4444"),
+            vec![
+                "bash".to_string(),
+                "10.0.0.1".to_string(),
+                "4444".to_string()
+            ]
+        );
+        // Extra/leading/trailing whitespace collapses to clean tokens.
+        assert_eq!(
+            split_args("   spaced    out  "),
+            vec!["spaced".to_string(), "out".to_string()]
+        );
+        // A blank line yields no arguments (the helper treats this as cancel).
+        assert!(split_args("   ").is_empty());
+    }
+
+    #[test]
+    fn tui_run_args_cancels_on_a_blank_line_without_running_the_command() {
+        // A blank response must not reach the command (which would print usage
+        // noise); it cancels, like every other TUI prompt.
+        let mut lines = vec![Ok("   ".to_string())].into_iter();
+        tui_run_args(&mut lines, "> ", hash_id_command);
     }
 
     #[test]

@@ -59,6 +59,12 @@ pub enum ArgKind {
     Path,
     /// Free text (the remainder of the goal after command words).
     Text,
+    /// Two positionals for `--run-tool`: the offline analyzer's name (one of
+    /// the built-in forensic tools) followed by the local input path.
+    BuiltinToolPath,
+    /// The positionals for `--run-external-tool`: the cataloged tool's name
+    /// followed by any target/arguments resolved from the goal.
+    CatalogToolArgs,
 }
 
 /// One invocable action: a command, its safety class, the argument it takes,
@@ -398,6 +404,41 @@ pub static REGISTRY: &[ActionSpec] = &[
             "run the engagement from this config",
             "execute the staged scan",
             "run the assessment",
+        ],
+    },
+    // Runs one of the offline forensic analyzers on a local file. Anchored by
+    // naming a built-in analyzer under an execution verb (see the agent
+    // planner), so "run volatility on <path>" routes here rather than to
+    // show-skill; the phrase triggers below are a fallback.
+    ActionSpec {
+        name: "run-tool",
+        command: "--run-tool",
+        summary: "Run an offline forensic analyzer on a local file.",
+        class: ActionClass::ReadOnly,
+        network: false,
+        arg: ArgKind::BuiltinToolPath,
+        triggers: &["run the analyzer", "run analyzer", "forensic analyzer"],
+        examples: &[
+            "run volatility on the memory image",
+            "analyze the disk image with autopsy",
+            "carve files from the image with foremost",
+        ],
+    },
+    // Runs a real, cataloged external tool (e.g. nmap). Live tools need the
+    // network opt-in; the tool's own guardrail refuses a live run offline.
+    // Anchored by naming a cataloged tool under an execution verb.
+    ActionSpec {
+        name: "run-external-tool",
+        command: "--run-external-tool",
+        summary: "Run a cataloged external tool (live tools need --allow-network).",
+        class: ActionClass::Privileged,
+        network: true,
+        arg: ArgKind::CatalogToolArgs,
+        triggers: &["run external tool", "external tool", "cataloged tool"],
+        examples: &[
+            "run nmap against the host",
+            "execute nikto on the target",
+            "scan the target with masscan",
         ],
     },
 ];
