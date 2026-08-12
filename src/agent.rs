@@ -1153,10 +1153,10 @@ fn resolve_args(
         // local input path.
         ArgKind::BuiltinToolPath => {
             if let Some((_, name)) = forensic {
-                args.push(name.clone());
-            }
-            if let Some(path) = path_token(goal) {
-                args.push(path);
+                if let Some(path) = path_token(goal) {
+                    args.push(name.clone());
+                    args.push(path);
+                }
             }
         }
         // `--run-external-tool <tool> [target]`: the cataloged tool, then a
