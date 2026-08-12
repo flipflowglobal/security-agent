@@ -921,6 +921,17 @@ fn anchor_position(
     best
 }
 
+/// Word-boundary predicate for tokenizing a goal into trigger/asset tokens.
+///
+/// Alphanumerics plus `-` and `_` are word characters, so hyphenated and
+/// underscored names (`aircrack-ng`, `bulk_extractor`, `evil-winrm`) tokenize
+/// whole and can anchor as a single-word trigger or a named asset. Splitting on
+/// them instead — the earlier behavior — silently made those names unmatchable,
+/// so a goal that explicitly named such a tool planned nothing.
+const fn is_token_boundary(c: char) -> bool {
+    !(c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 /// The byte position where `trigger` matches in `lowered` — `contains` for a
 /// phrase (has a space), whole-token stem match for a single word — or `None`.
 fn trigger_position(lowered: &str, trigger: &str) -> Option<usize> {
@@ -929,7 +940,7 @@ fn trigger_position(lowered: &str, trigger: &str) -> Option<usize> {
     }
     let trigger_stem = stem(trigger);
     let mut index = 0usize;
-    for token in lowered.split(|c: char| !c.is_ascii_alphanumeric()) {
+    for token in lowered.split(is_token_boundary) {
         if !token.is_empty() && stem(token) == trigger_stem {
             return Some(index);
         }
@@ -943,7 +954,7 @@ fn trigger_position(lowered: &str, trigger: &str) -> Option<usize> {
 /// with its byte position.
 fn first_asset(lowered: &str, assets: &LocalAgentAssets) -> Option<(usize, String)> {
     let mut index = 0usize;
-    for token in lowered.split(|c: char| !c.is_ascii_alphanumeric()) {
+    for token in lowered.split(is_token_boundary) {
         if !token.is_empty() && (assets.tool(token).is_some() || assets.skill(token).is_some()) {
             return Some((index, token.to_string()));
         }
@@ -1173,6 +1184,22 @@ mod tests {
         let plan = planner_over(&assets, &model).plan("list your tools");
         assert_eq!(plan.len(), 1);
         assert_eq!(plan[0].action, "list-tools");
+    }
+
+    #[test]
+    fn a_hyphenated_asset_name_anchors_and_resolves_as_the_argument() {
+        // Regression: the goal tokenizer split on `-`/`_`, so an explicitly
+        // named tool like `aircrack-ng` never matched `assets.tool()` and the
+        // action planned no argument (or nothing at all). It must now anchor
+        // whole and resolve as the show-skill argument.
+        let assets = LocalAgentAssets::bundled();
+        let model = model();
+        let plan = planner_over(&assets, &model).plan("describe aircrack-ng");
+        let show = plan
+            .iter()
+            .find(|call| call.action == "show-skill")
+            .expect("naming aircrack-ng should plan show-skill");
+        assert_eq!(show.primary_arg(), Some("aircrack-ng"));
     }
 
     #[test]
