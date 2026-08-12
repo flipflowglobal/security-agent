@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "description": "Desktop GUI for the Security-Agent orchestration platform",
   "main": "main.js",
-  "author": "Security-Agent Contributors <security-agent@example.com>",
-  "homepage": "https://github.com/user/security-agent",
-  "license": "MIT",
+  "author": "FlipFlow Global",
+  "homepage": "https://github.com/flipflowglobal/security-agent",
+  "license": "BUSL-1.1",
   "scripts": {
     "start": "electron .",
     "build": "electron-builder --dir",
