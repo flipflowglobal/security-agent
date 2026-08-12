@@ -265,13 +265,17 @@ A tiny, fully-offline model — no cloud, no API keys.
 |---|---|---|
 | `--llm-generate <words...>` | Continues a prompt with the built-in model. | `security-agent --llm-generate the attacker likely` |
 | `--llm-perplexity <words...>` | Scores how "in-domain" text reads (higher = odder). | `security-agent --llm-perplexity buffer overflow in parser` |
+| `--allow-network --ollama-status` | Probes a locally-running Ollama service and lists installed models. | `security-agent --allow-network --ollama-status` |
+| `--allow-network --ollama-generate <model> <words...>` | Continues a prompt with a model served by a local Ollama instance. | `security-agent --allow-network --ollama-generate llama3.2 explain SQL injection` |
+| `--allow-network --ollama-chat <model> [--system <text>] <words...>` | Single-turn chat with a local Ollama model. | `security-agent --allow-network --ollama-chat llama3.2 what is XSS?` |
 
 ### Optional: a stronger model (`--features inference`) 🧠⚡
 
 The default build uses the tiny built-in model and pulls **zero dependencies**.
 If you build with the optional inference back-end
-(`cargo build --features inference`), the two commands above accept a
-`--model <dir>` option that runs a real, candle-backed transformer instead:
+(`cargo build --features inference`), `--llm-generate` / `--llm-perplexity`
+accept a `--model <dir>` option that runs a real, candle-backed transformer
+instead:
 
 ```sh
 security-agent --llm-generate --model ./my-model the attacker likely
@@ -283,6 +287,17 @@ security-agent --llm-perplexity --model ./my-model buffer overflow in parser
 file needed. It stays fully offline: the model runs locally, on CPU, no
 download. (Without `--features inference`, `--model` reports that the binary was
 built without the back-end.)
+
+### Alternative: a local Ollama service 🌐
+
+The `--ollama-*` commands talk to a locally-running
+[Ollama](https://ollama.com) service (v0.32+) over `127.0.0.1:11434`, so you
+can use much larger models without building with `--features inference`. They
+open a local socket, so each invocation requires the explicit
+`--allow-network` opt-in, exactly like `--listen`. Ollama is deliberately not
+wired into `--model`: its API exposes no per-token probabilities, so there is
+no honest perplexity to route, and failures surface as hard errors rather than
+silent empty output.
 
 ---
 

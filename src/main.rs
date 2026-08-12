@@ -80,7 +80,7 @@ fn main() -> ExitCode {
         Some("--gen-ipids") => gen_ipids_command(&mut arguments),
         Some("--ip-checksum") => ip_checksum_command(&mut arguments),
         Some("--analyze-deauth") => analyze_deauth_command(&mut arguments),
-        Some("--guide") => guide_command(&mut arguments),
+        Some("--guide" | "--help" | "-h") => guide_command(&mut arguments),
         Some("--tool-help") => tool_help_command(&mut arguments),
         Some("--shell-guide") => shell_guide_command(),
         Some("--listen") => listen_command(&mut arguments, allow_network),

@@ -198,6 +198,9 @@ Run these from the repository root after `cargo build --release`:
 ./target/release/security-agent --llm-generate <prompt words...>
 ./target/release/security-agent --llm-perplexity <text words...>
 ./target/release/security-agent --ask <plain-English instruction...>
+./target/release/security-agent --allow-network --ollama-status
+./target/release/security-agent --allow-network --ollama-generate <model> <prompt words...>
+./target/release/security-agent --allow-network --ollama-chat <model> <message words...>
 ./target/release/security-agent --tui
 ```
 
@@ -275,6 +278,15 @@ Run these from the repository root after `cargo build --release`:
   trained deterministically on a bundled security corpus — no network, no
   weights on disk. `--llm-perplexity <text>` scores how in-domain the text
   reads (lower is more expected). Advisory/inspection only.
+- `--allow-network --ollama-status` probes the locally-running Ollama service
+  (`127.0.0.1:11434`) and lists its version and installed models.
+  `--allow-network --ollama-generate <model> <prompt>` continues a prompt
+  with a named Ollama model, and `--allow-network --ollama-chat <model>
+  [--system <text>] <message>` runs a single-turn chat. These open a local
+  socket, so they require the explicit `--allow-network` opt-in. Ollama is
+  *not* wired into `--model`: its API exposes no per-token probabilities, so
+  there is no honest perplexity, and any failure is a hard error rather than
+  silent empty output.
 - `--ask <plain-English instruction>` interprets a natural-language
   instruction against the agent's own capabilities (`src/nlu.rs`), prints the
   understood intent, a confidence, and a reply, then carries out the

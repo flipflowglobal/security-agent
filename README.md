@@ -323,6 +323,9 @@ external skill source:
 ./target/release/security-agent --llm-generate <prompt words...>
 ./target/release/security-agent --llm-perplexity <text words...>
 ./target/release/security-agent --ask <plain-English instruction...>
+./target/release/security-agent --allow-network --ollama-status
+./target/release/security-agent --allow-network --ollama-generate <model> <prompt words...>
+./target/release/security-agent --allow-network --ollama-chat <model> [--system <text>] <message words...>
 ./target/release/security-agent --tui
 ```
 
@@ -397,6 +400,15 @@ The `LanguageModel` trait is the seam where a larger model could plug in
 later; this is distinct from the still-optional `inference` feature flag
 (below), which is reserved for a heavier candle-based back-end and is not
 used by the core.
+
+For a much larger local model, the `--ollama-*` commands talk to a
+locally-running [Ollama](https://ollama.com) service over `127.0.0.1:11434`
+(`--allow-network --ollama-status` to probe, `--ollama-generate <model>
+<prompt>` to continue a prompt, `--ollama-chat <model> <message>` for a
+single-turn chat). They open a local socket, so each invocation requires the
+explicit `--allow-network` opt-in. Ollama is deliberately *not* wired into
+`--model`: its API exposes no per-token probabilities, so there is no honest
+perplexity, and any failure is a hard error rather than silent empty output.
 
 The same perplexity signal is looped back into the cognitive layer as an
 **anomaly lens**: during a `--plan-scan ... --cognitive-review --memory
