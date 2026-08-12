@@ -226,6 +226,18 @@ The `MobileAndroid` specialist uses a dedicated tool set for APK/DEX analysis an
 
 ---
 
+## Licensing
+
+Security-Agent is source-available under the Business Source License 1.1.
+Development, testing, research, and non-commercial evaluation are permitted.
+Production or commercial use requires a separate commercial license from
+FlipFlow Global until the change date stated in [`LICENSE`](./LICENSE).
+
+For commercial licensing, OEM integration, or enterprise support, contact
+FlipFlow Global through the repository's GitHub Issues.
+
+---
+
 ## Development
 
 For a full contributor guide see [`CONTRIBUTING.md`](./CONTRIBUTING.md).
