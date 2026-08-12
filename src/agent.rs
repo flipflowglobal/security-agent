@@ -294,17 +294,29 @@ impl<'a> AgentPlanner<'a> {
         let lowered = goal.to_ascii_lowercase();
         let goal_vec = self.model.embed_text(goal);
         let asset = first_asset(&lowered, self.assets);
+        let tool = first_cataloged_tool(&lowered, self.assets);
         let forensic = first_forensic(&lowered);
 
         let mut hits: Vec<(usize, usize, usize, ActionCall)> = Vec::new();
         for (order, spec) in REGISTRY.iter().enumerate() {
-            let Some((position, specificity)) =
-                anchor_position(&lowered, spec, asset.as_ref(), forensic.as_ref())
-            else {
+            let Some((position, specificity)) = anchor_position(
+                &lowered,
+                spec,
+                asset.as_ref(),
+                tool.as_ref(),
+                forensic.as_ref(),
+            ) else {
                 continue;
             };
             let confidence = semantic_confidence(&goal_vec, spec.examples, self.model);
-            let args = resolve_args(spec, goal, &lowered, asset.as_ref(), forensic.as_ref());
+            let args = resolve_args(
+                spec,
+                goal,
+                &lowered,
+                asset.as_ref(),
+                tool.as_ref(),
+                forensic.as_ref(),
+            );
             hits.push((
                 position,
                 specificity,
@@ -357,6 +369,7 @@ impl<'a> AgentPlanner<'a> {
         let lowered = goal.to_ascii_lowercase();
         let goal_vec = self.model.embed_text(goal);
         let asset = first_asset(&lowered, self.assets);
+        let tool = first_cataloged_tool(&lowered, self.assets);
         let forensic = first_forensic(&lowered);
         let mut planned: BTreeSet<&'static str> = plan.iter().map(|call| call.action).collect();
         for name in propose_actions(goal, memory, proposer) {
@@ -367,7 +380,14 @@ impl<'a> AgentPlanner<'a> {
                 continue;
             };
             let confidence = semantic_confidence(&goal_vec, spec.examples, self.model);
-            let args = resolve_args(spec, goal, &lowered, asset.as_ref(), forensic.as_ref());
+            let args = resolve_args(
+                spec,
+                goal,
+                &lowered,
+                asset.as_ref(),
+                tool.as_ref(),
+                forensic.as_ref(),
+            );
             plan.push(ActionCall {
                 action: spec.name,
                 command: spec.command,
@@ -713,6 +733,19 @@ fn handle_call(
             output: String::new(),
         };
     }
+    // `--run-tool` needs *both* positionals (analyzer name and local path);
+    // running it with only one always fails in the child, so skip instead.
+    if call.command == "--run-tool" {
+        let positionals = call.args.iter().filter(|arg| !arg.starts_with('-')).count();
+        if positionals < 2 {
+            return ActionOutcome {
+                status: ActionStatus::Skipped(
+                    "run-tool needs both an analyzer name and a local input path".to_string(),
+                ),
+                output: String::new(),
+            };
+        }
+    }
     executor.execute(call)
 }
 
@@ -895,6 +928,7 @@ fn anchor_position(
     lowered: &str,
     spec: &ActionSpec,
     asset: Option<&(usize, String)>,
+    tool: Option<&(usize, String)>,
     forensic: Option<&(usize, String)>,
 ) -> Option<(usize, usize)> {
     let mut best: Option<(usize, usize)> = None;
@@ -928,11 +962,12 @@ fn anchor_position(
             // naming a cataloged tool under an execution verb ("run", "scan",
             // "execute"...) anchors at the tool's position with higher
             // specificity than the show-skill asset anchor, so it wins the
-            // same-position tie. The seven forensic analyzers are excluded —
-            // they route to run-tool below.
+            // same-position tie. Only a cataloged *tool* anchors here — a
+            // skill-only name must not route to a tool run — and the seven
+            // forensic analyzers are excluded (they route to run-tool below).
             ArgKind::CatalogToolArgs => {
                 if has_execution_verb(lowered) {
-                    if let Some((position, name)) = asset {
+                    if let Some((position, name)) = tool {
                         if !is_forensic(name) {
                             consider(*position, 200 + name.len());
                         }
@@ -989,6 +1024,22 @@ fn first_asset(lowered: &str, assets: &LocalAgentAssets) -> Option<(usize, Strin
     let mut index = 0usize;
     for token in lowered.split(is_token_boundary) {
         if !token.is_empty() && (assets.tool(token).is_some() || assets.skill(token).is_some()) {
+            return Some((index, token.to_string()));
+        }
+        index += token.len() + 1;
+    }
+    None
+}
+
+/// The first token naming a cataloged *tool* (not a skill), with its position.
+/// `run-external-tool` runs real tools, so it anchors only on these — a
+/// skill-only name (e.g. the bundled `security-agent` skill) must never route
+/// to a tool run, which would deterministically fail as "unknown cataloged
+/// tool".
+fn first_cataloged_tool(lowered: &str, assets: &LocalAgentAssets) -> Option<(usize, String)> {
+    let mut index = 0usize;
+    for token in lowered.split(is_token_boundary) {
+        if !token.is_empty() && assets.tool(token).is_some() {
             return Some((index, token.to_string()));
         }
         index += token.len() + 1;
@@ -1073,6 +1124,7 @@ fn resolve_args(
     goal: &str,
     lowered: &str,
     asset: Option<&(usize, String)>,
+    tool: Option<&(usize, String)>,
     forensic: Option<&(usize, String)>,
 ) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
@@ -1110,7 +1162,7 @@ fn resolve_args(
         // `--run-external-tool <tool> [target]`: the cataloged tool, then a
         // best-effort target argument.
         ArgKind::CatalogToolArgs => {
-            if let Some((_, name)) = asset {
+            if let Some((_, name)) = tool {
                 args.push(name.clone());
                 if let Some(target) = external_tool_target(goal, name) {
                     args.push(target);
@@ -1389,6 +1441,59 @@ mod tests {
                 .iter()
                 .any(|call| call.action == "run-external-tool" || call.action == "run-tool"),
             "explain must not schedule a run"
+        );
+    }
+
+    #[test]
+    fn a_skill_only_name_does_not_route_to_run_external_tool() {
+        // `security-agent` is a bundled skill, not a cataloged tool. Even under
+        // an execution verb it must not plan a tool run (which would fail as
+        // "unknown cataloged tool").
+        let assets = LocalAgentAssets::bundled();
+        let model = model();
+        let plan = planner_over(&assets, &model).plan("run security-agent");
+        assert!(
+            !plan.iter().any(|call| call.action == "run-external-tool"),
+            "a skill-only name must not route to run-external-tool"
+        );
+    }
+
+    #[test]
+    fn run_tool_without_a_path_is_skipped_not_executed() {
+        // Naming an analyzer but no local path leaves run-tool a positional
+        // short; it must be skipped, not executed into a guaranteed failure.
+        let assets = LocalAgentAssets::bundled();
+        let model = model();
+        let planner = planner_over(&assets, &model);
+        let plan = planner.plan("run volatility");
+        assert!(
+            plan.iter().any(|call| call.action == "run-tool"),
+            "naming an analyzer should still plan run-tool"
+        );
+        let mut executor = FakeExecutor::new(|_| String::new());
+        let transcript = run_agent_with_plan(
+            "run volatility",
+            &planner,
+            plan,
+            &mut executor,
+            permissive(),
+        );
+        let step = transcript
+            .steps
+            .iter()
+            .find(|step| step.call.action == "run-tool")
+            .expect("run-tool step present");
+        assert!(
+            matches!(step.outcome.status, ActionStatus::Skipped(_)),
+            "incomplete run-tool must be skipped, got {:?}",
+            step.outcome.status
+        );
+        assert!(
+            !executor
+                .calls
+                .iter()
+                .any(|call| call.command == "--run-tool"),
+            "a skipped run-tool must never reach the executor"
         );
     }
 
