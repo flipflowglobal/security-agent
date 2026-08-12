@@ -2726,12 +2726,21 @@ fn tui_run_args(
     let Some(raw) = tui_prompt(lines, prompt) else {
         return;
     };
-    let mut args = raw
-        .split_whitespace()
-        .map(str::to_string)
-        .collect::<Vec<_>>()
-        .into_iter();
-    let _ = command(&mut args);
+    let args = split_args(&raw);
+    // Every command wired through here requires arguments, so a blank line is a
+    // cancellation — matching the other TUI prompts — not a no-arg run that
+    // would just print usage noise.
+    if args.is_empty() {
+        println!("cancelled.");
+        return;
+    }
+    let _ = command(&mut args.into_iter());
+}
+
+/// Splits a prompt line into a whitespace-separated argument vector (the shape
+/// every CLI-style command handler reads).
+fn split_args(line: &str) -> Vec<String> {
+    line.split_whitespace().map(str::to_string).collect()
 }
 
 /// Reads one line from `lines`. Returns `None` at clean end-of-input (e.g. a
@@ -5529,10 +5538,29 @@ criticality=2
     }
 
     #[test]
-    fn tui_run_args_splits_a_line_and_runs_the_command() {
-        // Drives a real argument-list command (hash-id) through the shared
-        // helper: a whitespace-split line becomes the command's arguments.
-        let mut lines = vec![Ok("5d41402abc4b2a76b9719d911017c592".to_string())].into_iter();
+    fn split_args_breaks_a_line_into_the_expected_argument_vector() {
+        assert_eq!(
+            split_args("bash 10.0.0.1 4444"),
+            vec![
+                "bash".to_string(),
+                "10.0.0.1".to_string(),
+                "4444".to_string()
+            ]
+        );
+        // Extra/leading/trailing whitespace collapses to clean tokens.
+        assert_eq!(
+            split_args("   spaced    out  "),
+            vec!["spaced".to_string(), "out".to_string()]
+        );
+        // A blank line yields no arguments (the helper treats this as cancel).
+        assert!(split_args("   ").is_empty());
+    }
+
+    #[test]
+    fn tui_run_args_cancels_on_a_blank_line_without_running_the_command() {
+        // A blank response must not reach the command (which would print usage
+        // noise); it cancels, like every other TUI prompt.
+        let mut lines = vec![Ok("   ".to_string())].into_iter();
         tui_run_args(&mut lines, "> ", hash_id_command);
     }
 
