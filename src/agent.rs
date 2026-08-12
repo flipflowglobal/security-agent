@@ -294,15 +294,17 @@ impl<'a> AgentPlanner<'a> {
         let lowered = goal.to_ascii_lowercase();
         let goal_vec = self.model.embed_text(goal);
         let asset = first_asset(&lowered, self.assets);
+        let forensic = first_forensic(&lowered);
 
         let mut hits: Vec<(usize, usize, usize, ActionCall)> = Vec::new();
         for (order, spec) in REGISTRY.iter().enumerate() {
-            let Some((position, specificity)) = anchor_position(&lowered, spec, asset.as_ref())
+            let Some((position, specificity)) =
+                anchor_position(&lowered, spec, asset.as_ref(), forensic.as_ref())
             else {
                 continue;
             };
             let confidence = semantic_confidence(&goal_vec, spec.examples, self.model);
-            let args = resolve_args(spec, goal, &lowered, asset.as_ref());
+            let args = resolve_args(spec, goal, &lowered, asset.as_ref(), forensic.as_ref());
             hits.push((
                 position,
                 specificity,
@@ -355,6 +357,7 @@ impl<'a> AgentPlanner<'a> {
         let lowered = goal.to_ascii_lowercase();
         let goal_vec = self.model.embed_text(goal);
         let asset = first_asset(&lowered, self.assets);
+        let forensic = first_forensic(&lowered);
         let mut planned: BTreeSet<&'static str> = plan.iter().map(|call| call.action).collect();
         for name in propose_actions(goal, memory, proposer) {
             if !planned.insert(name) {
@@ -364,7 +367,7 @@ impl<'a> AgentPlanner<'a> {
                 continue;
             };
             let confidence = semantic_confidence(&goal_vec, spec.examples, self.model);
-            let args = resolve_args(spec, goal, &lowered, asset.as_ref());
+            let args = resolve_args(spec, goal, &lowered, asset.as_ref(), forensic.as_ref());
             plan.push(ActionCall {
                 action: spec.name,
                 command: spec.command,
@@ -735,6 +738,8 @@ fn requires_arg(command: &str) -> bool {
             | "--obfuscate-ps"
             | "--llm-generate"
             | "--llm-perplexity"
+            | "--run-tool"
+            | "--run-external-tool"
     )
 }
 
@@ -890,6 +895,7 @@ fn anchor_position(
     lowered: &str,
     spec: &ActionSpec,
     asset: Option<&(usize, String)>,
+    forensic: Option<&(usize, String)>,
 ) -> Option<(usize, usize)> {
     let mut best: Option<(usize, usize)> = None;
     {
@@ -910,12 +916,39 @@ fn anchor_position(
                 consider(position, trigger.len());
             }
         }
-        if spec.arg == ArgKind::AssetName {
-            if let Some((position, name)) = asset {
-                // A named asset is highly specific: it outranks any word
-                // trigger anchored at the same position.
-                consider(*position, 100 + name.len());
+        match spec.arg {
+            ArgKind::AssetName => {
+                if let Some((position, name)) = asset {
+                    // A named asset is highly specific: it outranks any word
+                    // trigger anchored at the same position (specificity 100+).
+                    consider(*position, 100 + name.len());
+                }
             }
+            // "run <cataloged-tool>" routes here rather than to show-skill:
+            // naming a cataloged tool under an execution verb ("run", "scan",
+            // "execute"...) anchors at the tool's position with higher
+            // specificity than the show-skill asset anchor, so it wins the
+            // same-position tie. The seven forensic analyzers are excluded —
+            // they route to run-tool below.
+            ArgKind::CatalogToolArgs => {
+                if has_execution_verb(lowered) {
+                    if let Some((position, name)) = asset {
+                        if !is_forensic(name) {
+                            consider(*position, 200 + name.len());
+                        }
+                    }
+                }
+            }
+            // "run <forensic-analyzer> on <path>" routes here. Outranks both
+            // show-skill and run-external-tool at the same position.
+            ArgKind::BuiltinToolPath => {
+                if has_execution_verb(lowered) {
+                    if let Some((position, name)) = forensic {
+                        consider(*position, 210 + name.len());
+                    }
+                }
+            }
+            ArgKind::None | ArgKind::Path | ArgKind::Text => {}
         }
     }
     best
@@ -963,6 +996,75 @@ fn first_asset(lowered: &str, assets: &LocalAgentAssets) -> Option<(usize, Strin
     None
 }
 
+/// The offline forensic analyzers `--run-tool` runs natively on a local file.
+/// These route to `run-tool`; every other cataloged tool routes to
+/// `run-external-tool`.
+const FORENSIC_ANALYZERS: [&str; 7] = [
+    "autopsy",
+    "volatility",
+    "wireshark",
+    "binwalk",
+    "foremost",
+    "bulk_extractor",
+    "hashdeep",
+];
+
+/// Whether `name` is one of the offline forensic analyzers.
+fn is_forensic(name: &str) -> bool {
+    FORENSIC_ANALYZERS.contains(&name)
+}
+
+/// The first token in `lowered` naming a forensic analyzer, with its position.
+fn first_forensic(lowered: &str) -> Option<(usize, String)> {
+    let mut index = 0usize;
+    for token in lowered.split(is_token_boundary) {
+        if is_forensic(token) {
+            return Some((index, token.to_string()));
+        }
+        index += token.len() + 1;
+    }
+    None
+}
+
+/// Whether the goal contains an execution verb — the signal that a named tool
+/// should be *run*, not explained. Distinguishes "run nmap" (run-external-tool)
+/// from "explain nmap" (show-skill).
+fn has_execution_verb(lowered: &str) -> bool {
+    lowered.split(is_token_boundary).any(|token| {
+        matches!(
+            token,
+            "run" | "execute" | "exec" | "launch" | "scan" | "carve" | "analyze" | "analyse"
+        )
+    })
+}
+
+/// The first token that looks like a filesystem path (contains a `/`), used as
+/// the local input for `--run-tool`.
+fn path_token(goal: &str) -> Option<String> {
+    goal.split_whitespace()
+        .find(|token| token.contains('/'))
+        .map(ToString::to_string)
+}
+
+/// A best-effort target/host argument for `--run-external-tool`: the first
+/// host-like token (containing `.` or `-`) that isn't the tool name itself. A
+/// deterministic single-target extraction — precise multi-flag invocations
+/// still belong on the raw CLI.
+fn external_tool_target(goal: &str, tool_name: &str) -> Option<String> {
+    goal.split_whitespace()
+        .map(|word| {
+            word.trim_matches(|c: char| {
+                !(c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' || c == '/')
+            })
+        })
+        .find(|word| {
+            word.len() > 2
+                && !word.eq_ignore_ascii_case(tool_name)
+                && (word.contains('.') || word.contains('-') || word.contains('/'))
+        })
+        .map(ToString::to_string)
+}
+
 /// Resolves the full argument vector `spec` takes from the goal: its
 /// positional argument (a path, asset name, or free text), followed by any
 /// flags the goal implies for that command (see [`flag_modifiers`]).
@@ -971,22 +1073,50 @@ fn resolve_args(
     goal: &str,
     lowered: &str,
     asset: Option<&(usize, String)>,
+    forensic: Option<&(usize, String)>,
 ) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
-    let positional = match spec.arg {
-        ArgKind::None => None,
-        ArgKind::AssetName => asset.map(|(_, name)| name.clone()),
-        ArgKind::Path => goal
-            .split_whitespace()
-            .find(|token| token.contains('/') || token.contains('.'))
-            .map(ToString::to_string),
+    match spec.arg {
+        ArgKind::None => {}
+        ArgKind::AssetName => {
+            if let Some((_, name)) = asset {
+                args.push(name.clone());
+            }
+        }
+        ArgKind::Path => {
+            if let Some(path) = goal
+                .split_whitespace()
+                .find(|token| token.contains('/') || token.contains('.'))
+            {
+                args.push(path.to_string());
+            }
+        }
         ArgKind::Text => {
             let remainder = strip_leading_triggers(goal, lowered, spec.triggers);
-            (!remainder.is_empty()).then_some(remainder)
+            if !remainder.is_empty() {
+                args.push(remainder);
+            }
         }
-    };
-    if let Some(positional) = positional {
-        args.push(positional);
+        // `--run-tool <analyzer> <path>`: the named forensic analyzer, then the
+        // local input path.
+        ArgKind::BuiltinToolPath => {
+            if let Some((_, name)) = forensic {
+                args.push(name.clone());
+            }
+            if let Some(path) = path_token(goal) {
+                args.push(path);
+            }
+        }
+        // `--run-external-tool <tool> [target]`: the cataloged tool, then a
+        // best-effort target argument.
+        ArgKind::CatalogToolArgs => {
+            if let Some((_, name)) = asset {
+                args.push(name.clone());
+                if let Some(target) = external_tool_target(goal, name) {
+                    args.push(target);
+                }
+            }
+        }
     }
     args.extend(flag_modifiers(spec.name, lowered));
     args
@@ -1200,6 +1330,66 @@ mod tests {
             .find(|call| call.action == "show-skill")
             .expect("naming aircrack-ng should plan show-skill");
         assert_eq!(show.primary_arg(), Some("aircrack-ng"));
+    }
+
+    #[test]
+    fn running_a_cataloged_tool_routes_to_run_external_tool_not_show_skill() {
+        let assets = LocalAgentAssets::bundled();
+        let model = model();
+        let plan = planner_over(&assets, &model).plan("run nmap against api-staging.example.com");
+        let call = plan
+            .iter()
+            .find(|call| call.action == "run-external-tool")
+            .expect("'run nmap' should plan run-external-tool");
+        assert_eq!(call.command, "--run-external-tool");
+        assert!(call.network, "a cataloged live tool is a network action");
+        assert_eq!(call.args.first().map(String::as_str), Some("nmap"));
+        assert_eq!(
+            call.args.get(1).map(String::as_str),
+            Some("api-staging.example.com"),
+            "the host should be resolved as the tool's target"
+        );
+        // An execution verb means run it, not explain it.
+        assert!(
+            !plan.iter().any(|call| call.action == "show-skill"),
+            "naming a tool under 'run' must not also plan show-skill"
+        );
+    }
+
+    #[test]
+    fn running_a_forensic_analyzer_routes_to_run_tool_with_name_and_path() {
+        let assets = LocalAgentAssets::bundled();
+        let model = model();
+        let plan = planner_over(&assets, &model).plan("run volatility on /cases/mem.raw");
+        let call = plan
+            .iter()
+            .find(|call| call.action == "run-tool")
+            .expect("'run volatility on <path>' should plan run-tool");
+        assert_eq!(call.command, "--run-tool");
+        assert!(!call.network);
+        assert_eq!(
+            call.args,
+            vec!["volatility".to_string(), "/cases/mem.raw".to_string()]
+        );
+        // A forensic analyzer routes to run-tool, never run-external-tool.
+        assert!(!plan.iter().any(|call| call.action == "run-external-tool"));
+    }
+
+    #[test]
+    fn explaining_a_tool_still_routes_to_show_skill_not_run() {
+        let assets = LocalAgentAssets::bundled();
+        let model = model();
+        let plan = planner_over(&assets, &model).plan("explain nmap");
+        assert!(
+            plan.iter().any(|call| call.action == "show-skill"),
+            "no execution verb means explain, not run"
+        );
+        assert!(
+            !plan
+                .iter()
+                .any(|call| call.action == "run-external-tool" || call.action == "run-tool"),
+            "explain must not schedule a run"
+        );
     }
 
     #[test]
