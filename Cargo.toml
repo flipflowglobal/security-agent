@@ -1,10 +1,10 @@
 [package]
 name = "security-agent"
-version = "0.1.0"
+version = "2.0.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Defensive and offensive security orchestration agent for authorized vulnerability and penetration testing."
-license = "MIT"
+license = "BUSL-1.1"
 repository = "https://github.com/flipflowglobal/security-agent"
 
 # Core orchestration logic uses no external runtime crates — JSON, SHA-256,

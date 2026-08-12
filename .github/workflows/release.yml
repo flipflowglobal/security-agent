@@ -91,3 +91,59 @@ jobs:
           files: |
             dist/*.tar.gz
             dist/*.sha256
+
+  # ── Desktop GUI installers (Windows + macOS + Linux) ────────────────────────
+  # The `host` job above already ran the full fmt/clippy/test gate on
+  # identical source, so this job builds the release binary directly (no
+  # --skip-checks flag exists for a plain `cargo build`, but re-running the
+  # gate here would be redundant work, not extra safety).
+  electron:
+    name: Package Desktop GUI (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            script: installer:win
+          - os: macos-latest
+            script: installer:mac
+          - os: ubuntu-latest
+            script: installer:linux
+    env:
+      # No code-signing certificate is configured yet, so builds are
+      # unsigned — this stops electron-builder from probing for a local
+      # keychain identity on macOS and failing the job. See EULA.md and
+      # README.md for the current signing status.
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release CLI binary (bundled into the GUI package)
+        run: cargo build --release
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Electron dependencies
+        working-directory: electron
+        run: npm ci
+
+      - name: Build installer
+        working-directory: electron
+        run: npm run ${{ matrix.script }}
+
+      - name: Attach artifacts to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            electron/dist/*.exe
+            electron/dist/*.dmg
+            electron/dist/*.AppImage
+            electron/dist/*.deb
+            electron/dist/*.rpm
