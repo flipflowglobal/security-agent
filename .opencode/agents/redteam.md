@@ -1,6 +1,6 @@
 ---
 description: Offensive security testing agent — recon, web exploitation, credential attacks, wireless analysis, payload generation, reverse shell listening, cloud misconfiguration, and supply-chain auditing.
-mode: subagent
+mode: primary
 permission:
   edit: allow
   bash:

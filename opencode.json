@@ -1,6 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "default_agent": "coder",
+  "default_agent": "aureon",
   "instructions": ["ARCHITECTURE.md", "CONTRIBUTING.md", "OPERATING_GUIDE.md"],
   "skills": {
     "paths": [".github/skills"]
