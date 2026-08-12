@@ -2052,8 +2052,14 @@ impl security_agent::ActionExecutor for CliExecutor {
         };
         let mut command = std::process::Command::new(exe);
         command.arg(call.command);
+        // `--run-external-tool` expects the network opt-in immediately after the
+        // command, before the tool name; every other command accepts it last.
+        let network_optin = call.network && self.allow_network;
+        if network_optin && call.command == "--run-external-tool" {
+            command.arg("--allow-network");
+        }
         command.args(&call.args);
-        if call.network && self.allow_network {
+        if network_optin && call.command != "--run-external-tool" {
             command.arg("--allow-network");
         }
         match command.output() {
