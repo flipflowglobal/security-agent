@@ -47,6 +47,7 @@ pub mod network_policy;
 pub mod nlu;
 pub mod observability;
 pub mod offensive;
+pub mod ollama;
 pub mod orchestrator;
 pub mod pcap;
 pub mod pipeline;
@@ -150,6 +151,7 @@ pub use observability::{
     CollectingSink, EngagementEvent, EventSink, NullSink, ProgressSummary, WriterSink,
 };
 pub use offensive::*;
+pub use ollama::{ChatMessage, OllamaClient, OllamaError, OllamaModel, probe_ollama};
 pub use orchestrator::{OrchestrationSchedule, OrchestrationStep, ToolOrchestrator};
 pub use pcap::{CaptureTimestamp, ProtocolCounts, WiresharkReport, run_wireshark};
 pub use pipeline::{

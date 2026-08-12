@@ -55,6 +55,9 @@ fn main() -> ExitCode {
         Some("--lm-eval") => lm_eval_command(),
         Some("--llm-generate") => llm_generate_command(&mut arguments),
         Some("--llm-perplexity") => llm_perplexity_command(&mut arguments),
+        Some("--ollama-status") => ollama_status_command(allow_network),
+        Some("--ollama-generate") => ollama_generate_command(&mut arguments, allow_network),
+        Some("--ollama-chat") => ollama_chat_command(&mut arguments, allow_network),
         Some("--ask") => ask_command(&assets, &mut arguments),
         Some("--agent") => agent_command(&assets, &mut arguments),
         Some("--tui") => run_tui_command(&assets),
@@ -1682,22 +1685,30 @@ struct LanguageSelection {
 }
 
 /// Selects the language-model backend from a leading `--model <dir>` option,
-/// consuming it from `words` when present. With the `inference` feature that
-/// first tries the bundled local Llama backend from `<dir>` (SmolLM-style
-/// `config.json` + `tokenizer.json` + `model.safetensors`) and falls back to
-/// the candle byte-GPT backend; without `--model` it auto-loads the bundled
-/// model resources when they ship next to the binary. Otherwise, the bundled
-/// toy model is used.
+/// consuming it from `words` when present.
+///
+/// **Backends, in order of precedence:**
+///
+/// 1. `--model <dir>` with `inference` feature — Llama/candle backend from a
+///    `HuggingFace` checkpoint directory.
+/// 2. Auto-detect a bundled local Llama checkpoint (`inference` feature).
+/// 3. Fall back to the compiled-in tiny neural LM.
+///
+/// Ollama is *not* routed through here: `--ollama-status`, `--ollama-generate`,
+/// and `--ollama-chat` are its dedicated, network-gated entry points, because
+/// Ollama cannot compute the perplexity this selection's consumers rely on.
 fn select_language_model(mut words: Vec<String>) -> Result<LanguageSelection, String> {
     if words.first().map(String::as_str) == Some("--model") {
-        let dir = words
+        let spec = words
             .get(1)
             .cloned()
-            .ok_or("missing directory after --model")?;
+            .ok_or("missing model specifier after --model")?;
         words.drain(0..2);
+
+        // ── candle / local Llama backend: `--model <dir>` ─────────────────
         #[cfg(feature = "inference")]
         {
-            let path = Path::new(&dir);
+            let path = Path::new(&spec);
             if let Some(model) =
                 security_agent::LocalTextModel::from_dir(path).map_err(|error| error.to_string())?
             {
@@ -1716,10 +1727,11 @@ fn select_language_model(mut words: Vec<String>) -> Result<LanguageSelection, St
         }
         #[cfg(not(feature = "inference"))]
         {
-            let _ = dir;
+            let _ = spec;
             return Err(
-                "--model requires a build with `--features inference`; this binary was built \
-                 without it"
+                "--model <dir> requires a build with `--features inference`; \
+                 for a local Ollama service use --ollama-generate/--ollama-chat \
+                 (each requires --allow-network)"
                     .to_string(),
             );
         }
@@ -1811,6 +1823,141 @@ fn llm_perplexity_command(arguments: &mut impl Iterator<Item = String>) -> ExitC
     }
     println!("perplexity={:.3}", selection.model.perplexity(&text));
     ExitCode::SUCCESS
+}
+
+// ── Ollama commands ──────────────────────────────────────────────────────────
+
+/// Probes the locally-running Ollama service and prints its version and the
+/// list of installed models (`--ollama-status`).
+///
+/// Requires `--allow-network` because it opens a local TCP socket.
+fn ollama_status_command(allow_network: bool) -> ExitCode {
+    match security_agent::probe_ollama(allow_network) {
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+        Ok((version, models)) => {
+            println!("Ollama {version} — {} model(s) installed", models.len());
+            for model in &models {
+                let mb = model.size / 1_048_576;
+                println!("  {:<30} {}MB", model.name, mb);
+            }
+            ExitCode::SUCCESS
+        }
+    }
+}
+
+/// Continues a prompt using a locally-running Ollama model
+/// (`--allow-network --ollama-generate <model> <prompt words...>`).
+///
+/// Usage:
+///   security-agent --allow-network --ollama-generate llama3.2 explain SQL injection
+///
+/// The first argument after `--ollama-generate` is the Ollama model tag; all
+/// subsequent words are joined as the prompt.
+fn ollama_generate_command(
+    arguments: &mut impl Iterator<Item = String>,
+    allow_network: bool,
+) -> ExitCode {
+    let args: Vec<String> = arguments.collect();
+    let Some((model_tag, prompt_words)) = args.split_first() else {
+        eprintln!(
+            "usage: security-agent --allow-network --ollama-generate <model> <prompt words...>"
+        );
+        return ExitCode::from(2);
+    };
+    let model_tag = model_tag.as_str();
+    let prompt = prompt_words.join(" ");
+    if prompt.trim().is_empty() {
+        eprintln!("missing prompt for --ollama-generate");
+        return ExitCode::from(2);
+    }
+    let client = match security_agent::OllamaClient::default_addr(model_tag, allow_network) {
+        Ok(client) => client,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match client.generate_raw(&prompt, 512) {
+        Ok(continuation) => {
+            if continuation.is_empty() {
+                println!("{prompt}");
+            } else {
+                print!("{prompt}");
+                // Models sometimes echo the prompt; print a space only when
+                // the continuation does not start with one already.
+                if !continuation.starts_with(' ') {
+                    print!(" ");
+                }
+                println!("{continuation}");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Runs a single-turn chat exchange with a locally-running Ollama model
+/// (`--allow-network --ollama-chat <model> [--system <system-prompt>] <message words...>`).
+///
+/// Usage:
+///   security-agent --allow-network --ollama-chat llama3.2 what is XSS?
+///   security-agent --allow-network --ollama-chat llama3.2 --system "You are a pentester" explain buffer overflows
+fn ollama_chat_command(
+    arguments: &mut impl Iterator<Item = String>,
+    allow_network: bool,
+) -> ExitCode {
+    let args: Vec<String> = arguments.collect();
+    let Some(model_tag) = args.first() else {
+        eprintln!(
+            "usage: security-agent --allow-network --ollama-chat <model> \
+             [--system <text>] <message words...>"
+        );
+        return ExitCode::from(2);
+    };
+
+    // Optional `--system <text>` consumes the next single argument.
+    let mut messages: Vec<security_agent::ChatMessage> = Vec::new();
+    let rest: &[String] = if args.get(1).map(String::as_str) == Some("--system") {
+        let Some(system_text) = args.get(2) else {
+            eprintln!("missing system prompt after --system");
+            return ExitCode::from(2);
+        };
+        messages.push(security_agent::ChatMessage::system(system_text));
+        &args[3..]
+    } else {
+        &args[1..]
+    };
+
+    let user_text = rest.join(" ");
+    if user_text.trim().is_empty() {
+        eprintln!("missing message for --ollama-chat");
+        return ExitCode::from(2);
+    }
+    messages.push(security_agent::ChatMessage::user(&user_text));
+
+    let client = match security_agent::OllamaClient::default_addr(model_tag, allow_network) {
+        Ok(client) => client,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match client.chat(&messages, 512) {
+        Ok(reply) => {
+            println!("{reply}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// Plain-English entry point (`--ask <instruction words...>`).
@@ -2552,6 +2699,7 @@ fn dispatch_tui_choice(
             let _ = tool_help_command(&mut std::iter::once(name));
         }
         "22" => tui_agent(assets, lines),
+        "23" => tui_ollama_status(lines),
         // The chat bar: anything else typed is a plain-English instruction. A
         // line that begins with `agent ` drives the multi-step agent loop
         // (plan & run — Stage 16/17); everything else routes through the same
@@ -2897,6 +3045,21 @@ fn tui_listen(lines: &mut impl Iterator<Item = io::Result<String>>) {
     let _ = listen_command(&mut args.into_iter(), true);
 }
 
+fn tui_ollama_status(lines: &mut impl Iterator<Item = io::Result<String>>) {
+    let online = tui_prompt(
+        lines,
+        "opt into local network access (opens a socket to Ollama)? (y/N): ",
+    );
+    let Some(online) = online else {
+        return;
+    };
+    if !tui_answered_yes(&online) {
+        println!("cancelled — Ollama requires the --allow-network opt-in.");
+        return;
+    }
+    let _ = ollama_status_command(true);
+}
+
 fn tui_banner() -> String {
     "Security-Agent — Interactive Terminal UI\n\
      =========================================\n\
@@ -2923,6 +3086,7 @@ fn tui_menu() -> String {
      [17] View calibration database    [18] View reasoning log database\n\
      [19] Plain-language guide          [20] Reverse shell tutorial\n\
      [21] Guide for one tool/command   [22] Agent — plan & run a goal\n\
+     [23] Ollama status (requires --allow-network)\n\
      [0]  Help / full capability summary [q]  Quit"
         .to_string()
 }
@@ -2970,6 +3134,21 @@ const CAPABILITY_ROWS: &[(&str, &str, &str)] = &[
         "Score text for anomaly (LLM)",
         "--llm-perplexity <words>",
         "\"is this suspicious: <quoted text>\"",
+    ),
+    (
+        "Ollama status",
+        "--allow-network --ollama-status",
+        "check Ollama version and installed models (requires --allow-network)",
+    ),
+    (
+        "Ollama generate",
+        "--allow-network --ollama-generate <model> <prompt>",
+        "generate text with an Ollama model (e.g. llama3.2)",
+    ),
+    (
+        "Ollama chat",
+        "--allow-network --ollama-chat <model> [--system <text>] <message>",
+        "single-turn chat with an Ollama model",
     ),
     (
         "Plan a scan",

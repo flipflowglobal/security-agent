@@ -257,6 +257,38 @@ pub static ALL_COMMANDS: &[CommandHelp] = &[
         network_action: false,
     },
     CommandHelp {
+        command: "--ollama-status",
+        summary: "Probes a locally-running Ollama service and lists installed models.",
+        outcome: "Prints the Ollama version and every installed model with its disk size, or a hard error when the service is unreachable.",
+        usage: "--allow-network --ollama-status",
+        examples: &["security-agent --allow-network --ollama-status"],
+        when_to_use: "To confirm a local Ollama instance is up before calling --ollama-generate/--ollama-chat.",
+        network_action: true,
+    },
+    CommandHelp {
+        command: "--ollama-generate",
+        summary: "Continues a prompt using a model served by a local Ollama instance.",
+        outcome: "Sends the prompt to the named model and prints its non-streaming completion.",
+        usage: "--allow-network --ollama-generate <model> <prompt words...>",
+        examples: &[
+            "security-agent --allow-network --ollama-generate llama3.2 explain SQL injection",
+        ],
+        when_to_use: "For text generation with a larger local model when the bundled tiny model is not enough.",
+        network_action: true,
+    },
+    CommandHelp {
+        command: "--ollama-chat",
+        summary: "Single-turn chat with a model served by a local Ollama instance.",
+        outcome: "Sends an optional system prompt plus the user message and prints the assistant's reply.",
+        usage: "--allow-network --ollama-chat <model> [--system <text>] <message words...>",
+        examples: &[
+            "security-agent --allow-network --ollama-chat llama3.2 what is XSS?",
+            "security-agent --allow-network --ollama-chat llama3.2 --system 'You are a pentester' explain buffer overflows",
+        ],
+        when_to_use: "For structured chat-style queries against a local model.",
+        network_action: true,
+    },
+    CommandHelp {
         command: "--obfuscate-ps",
         summary: "Applies PowerShell obfuscation techniques to a command.",
         outcome: "Returns several encoded/obfuscated variants that are harder for naive string matching to catch.",
@@ -524,6 +556,9 @@ pub static GUIDE_SECTIONS: &[(&str, &str, &[&str])] = &[
         &[
             "--llm-generate",
             "--llm-perplexity",
+            "--ollama-status",
+            "--ollama-generate",
+            "--ollama-chat",
             "--ask",
             "--tui",
             "--lm-eval",
