@@ -50,6 +50,7 @@ pub mod offensive;
 pub mod orchestrator;
 pub mod pcap;
 pub mod pipeline;
+pub mod platform;
 pub mod policy;
 pub mod reasoning_log_db;
 pub mod registry;
@@ -155,6 +156,7 @@ pub use pipeline::{
     EngagementGuards, EngagementReport, StageOutcome, record_report_artifacts,
     run_engagement_pipeline,
 };
+pub use platform::{Environment, Platform, discover_inputs_in, resolve_input_choice};
 pub use policy::{AuthorizationError, AuthorizationOutcome, PolicyEngine};
 pub use registry::{
     CapabilityRegistry, ExecutionClass, SpecialistCapability, ToolDefinition, ToolchainPack,
