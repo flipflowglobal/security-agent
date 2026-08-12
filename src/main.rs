@@ -2441,6 +2441,9 @@ fn run_tui_command(assets: &LocalAgentAssets) -> ExitCode {
 
 /// Runs one menu choice (or, for anything unrecognized, the plain-English
 /// chat bar) against the shared command functions.
+// A flat dispatch table: one arm per menu entry. It reads long by nature and
+// stays clearer in one place than split across helpers.
+#[allow(clippy::too_many_lines)]
 fn dispatch_tui_choice(
     input: &str,
     assets: &LocalAgentAssets,
@@ -2591,7 +2594,7 @@ fn tui_run_with_prompted_path(
 }
 
 /// Like [`tui_run_with_prompted_path`], but automates the path entry for the
-/// current environment (Termux / UserLAnd / desktop): it auto-detects existing
+/// current environment (Termux / `UserLAnd` / desktop): it auto-detects existing
 /// files matching `extensions` in the platform's usual locations and offers
 /// them as a numbered pick-list, and pre-fills a platform-appropriate default
 /// (`<home>/<default_name>`) that a bare Enter accepts — so an operator on a
