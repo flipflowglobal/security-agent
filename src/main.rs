@@ -2536,6 +2536,286 @@ fn tui_agent(assets: &LocalAgentAssets, lines: &mut impl Iterator<Item = io::Res
     let _ = execute_agent(assets, &default_agent_args(goal));
 }
 
+/// Which kind of engagement target a session target string represents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionTargetKind {
+    /// A `scheme://host...` URL — planned as a `WebApp` target.
+    WebApp,
+    /// An IPv4 address, CIDR range, or bare hostname — planned as an
+    /// `Infrastructure` target.
+    Infrastructure,
+}
+
+/// Session-scoped state for the `--tui` REPL.
+///
+/// Two operator-flipped toggles persist for the rest of the session and
+/// apply to every command routed through the UI:
+///
+/// - `allow_network` is the session-wide `--allow-network` opt-in. When on,
+///   external-tool runs, discovery scans, the listener, and Ollama run
+///   online without a per-command y/N prompt; when off, each keeps refusing
+///   live/active work exactly as the CLI does.
+/// - `master_full_scope` makes planning/running use a full-authorization
+///   session engagement config built from the session target list —
+///   declared scope, every technique, aggressive ceiling, approvals —
+///   instead of prompting for a config file path.
+///
+/// Both start OFF on every fresh session (offline-by-default is an
+/// invariant: a new `--tui` process must not inherit online scope from a
+/// previous one) and nothing here persists to disk. The policy engine and
+/// the audit trail are unaffected: the session config merely declares
+/// authorization fields, it never bypasses the engine, and every plan/run
+/// still records to the audit log exactly as the CLI does.
+#[derive(Debug, Default)]
+struct TuiSession {
+    allow_network: bool,
+    master_full_scope: bool,
+    /// Targets in the order they were added (deduplicated): URLs, IPs,
+    /// CIDRs, or hostnames.
+    targets: Vec<String>,
+}
+
+impl TuiSession {
+    const fn toggle_allow_network(&mut self) -> bool {
+        self.allow_network = !self.allow_network;
+        self.allow_network
+    }
+
+    const fn toggle_master_full_scope(&mut self) -> bool {
+        self.master_full_scope = !self.master_full_scope;
+        self.master_full_scope
+    }
+
+    /// Adds a target. Rejects blank or whitespace-containing strings (a
+    /// whitespace-containing target would break argument splitting) and
+    /// ignores duplicates.
+    fn add_target(&mut self, raw: &str) -> Result<(), String> {
+        let target = raw.trim();
+        if target.is_empty() {
+            return Err("target must not be blank".to_string());
+        }
+        if target.split_whitespace().count() > 1 {
+            return Err("target must be a single token (IP, CIDR, URL, or hostname)".to_string());
+        }
+        if self
+            .targets
+            .iter()
+            .any(|existing| existing.as_str() == target)
+        {
+            return Ok(());
+        }
+        self.targets.push(target.to_string());
+        Ok(())
+    }
+
+    fn clear_targets(&mut self) -> usize {
+        let count = self.targets.len();
+        self.targets.clear();
+        count
+    }
+
+    /// One-line status shown after toggles and list operations.
+    fn summary(&self) -> String {
+        let network = if self.allow_network { "on" } else { "off" };
+        let scope = if self.master_full_scope { "on" } else { "off" };
+        format!(
+            "session: allow-network={network} master-full-scope={scope} targets={}",
+            self.targets.len()
+        )
+    }
+
+    /// Builds the full-authorization session engagement config text for the
+    /// current target list. Every target becomes an in-scope `[target]`
+    /// section; the authorization preamble declares the same full scope as
+    /// `engagements/master-full-scope.conf` — a window that always contains
+    /// the session, every technique, the aggressive ceiling, and all
+    /// approvals — so the policy engine authorizes exactly the declared
+    /// target set and nothing else.
+    fn engagement_config_text(&self, now_epoch_seconds: u64) -> String {
+        use std::fmt::Write as _;
+        let mut text = String::new();
+        let _ = writeln!(text, "engagement_id=eng-tui-session");
+        let _ = writeln!(text, "authorized_by=tui.session.operator");
+        let _ = writeln!(text, "authorized_by_role=SecurityAdmin");
+        let _ = writeln!(
+            text,
+            "time_window_start={}",
+            now_epoch_seconds.saturating_sub(3600)
+        );
+        let _ = writeln!(
+            text,
+            "time_window_end={}",
+            now_epoch_seconds.saturating_add(30 * 24 * 60 * 60)
+        );
+        let ids: Vec<String> = self
+            .targets
+            .iter()
+            .enumerate()
+            .map(|(index, _)| format!("tgt-{}", index + 1))
+            .collect();
+        let _ = writeln!(text, "in_scope_targets={}", ids.join(","));
+        let _ = writeln!(
+            text,
+            "allowed_techniques=PassiveRecon,ConfigurationAudit,Sast,Dast,ApiSecurity,\
+             DependencyAudit,CloudPosture,ContainerPosture,SecretScan,MalwareScan,\
+             ThreatModeling,AttackPathAnalysis,ExploitValidationSandboxed,\
+             AndroidStaticAnalysis,MobileRuntime"
+        );
+        let _ = writeln!(text, "max_intensity=Aggressive");
+        let _ = writeln!(text, "high_impact_approved=true");
+        let _ = writeln!(text, "penetrative_testing_approved=true");
+        for (index, target) in self.targets.iter().enumerate() {
+            let kind = classify_session_target(target);
+            let target_type = match kind {
+                SessionTargetKind::WebApp => "WebApp",
+                SessionTargetKind::Infrastructure => "Infrastructure",
+            };
+            let network_address = match kind {
+                SessionTargetKind::WebApp => url_host(target).unwrap_or(target),
+                SessionTargetKind::Infrastructure => target.as_str(),
+            };
+            let _ = writeln!(text, "\n[target]");
+            let _ = writeln!(text, "id=tgt-{}", index + 1);
+            let _ = writeln!(text, "target_type={target_type}");
+            let _ = writeln!(text, "criticality=5");
+            let _ = writeln!(text, "network_address={network_address}");
+        }
+        text
+    }
+}
+
+/// Classifies a session target string for planning: URLs plan as `WebApp`,
+/// everything else (IPv4, CIDR, bare hostname) plans as `Infrastructure`.
+fn classify_session_target(target: &str) -> SessionTargetKind {
+    if target.contains("://") {
+        SessionTargetKind::WebApp
+    } else {
+        SessionTargetKind::Infrastructure
+    }
+}
+
+/// The host portion of a `scheme://host[:port][/path]` URL. Returns `None`
+/// for strings without a scheme or with an empty host. IPv6 literals are
+/// not supported (hostnames and IPv4 only).
+fn url_host(url: &str) -> Option<&str> {
+    let rest = url.split_once("://")?.1;
+    let host = rest.split(['/', ':', '?', '#']).next().unwrap_or(rest);
+    (!host.is_empty()).then_some(host)
+}
+
+/// Whether `token` is a dotted-quad IPv4 address.
+fn is_ipv4(token: &str) -> bool {
+    let parts: Vec<&str> = token.split('.').collect();
+    parts.len() == 4 && parts.iter().all(|part| part.parse::<u8>().is_ok())
+}
+
+/// Whether `token` is an IPv4 CIDR range (`a.b.c.d/prefix`).
+fn is_ipv4_cidr(token: &str) -> bool {
+    let Some((address, prefix)) = token.split_once('/') else {
+        return false;
+    };
+    is_ipv4(address) && prefix.parse::<u8>().is_ok_and(|bits| bits <= 32)
+}
+
+/// Hosts discovered in `nmap -sn`-style output: hostnames from
+/// `Nmap scan report for <host>` lines (skipping bare IPs) plus every IPv4
+/// token in the output. Deduplicated, in first-seen order.
+fn extract_nmap_hosts(output: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("Nmap scan report for ") {
+            // "for name (ip)" — prefer the explicit hostname when present.
+            let host = rest
+                .split('(')
+                .next()
+                .unwrap_or(rest)
+                .split_whitespace()
+                .next()
+                .unwrap_or(rest);
+            let host = host.trim_end_matches(['(', ')', ',', ';', ':']);
+            if !host.is_empty() && !is_ipv4(host) && !is_ipv4_cidr(host) {
+                push_unique(&mut found, host.to_string());
+            }
+        }
+    }
+    for token in output.split_whitespace() {
+        // "for name (ip)" lines also carry the bare IP in parens; trim
+        // brackets/punctuation from both ends so the IPv4 token survives.
+        let clean = token.trim_matches(['(', ')', '[', ']', ',', ';', ':']);
+        if is_ipv4(clean) {
+            push_unique(&mut found, clean.to_string());
+        }
+    }
+    found
+}
+
+/// URLs found in tool output (`http://`/`https://` tokens, surrounding
+/// brackets and trailing punctuation stripped), deduplicated, first-seen.
+fn extract_urls(output: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for token in output.split_whitespace() {
+        let token = token.trim_start_matches(['(', '[', '{', '"', '\'', '<']);
+        let url = if let Some(rest) = token.strip_prefix("http://") {
+            format!("http://{rest}")
+        } else if let Some(rest) = token.strip_prefix("https://") {
+            format!("https://{rest}")
+        } else {
+            continue;
+        };
+        let url = url
+            .trim_end_matches([')', ']', '}', ',', ';', '.', '"', '\'', '<', '>'])
+            .to_string();
+        push_unique(&mut found, url);
+    }
+    found
+}
+
+/// Pushes `value` onto `into` unless it is already present.
+fn push_unique<T: PartialEq>(into: &mut Vec<T>, value: T) {
+    if !into.contains(&value) {
+        into.push(value);
+    }
+}
+
+/// Writes the session engagement config to a temp file and returns its
+/// path. Refuses when the session has no targets. The file is regenerated
+/// (overwritten) on every plan/run so it always reflects the current
+/// session target list.
+fn write_session_config(session: &TuiSession) -> Option<String> {
+    if session.targets.is_empty() {
+        println!("no session targets — add them with [26] or discover them with [29].");
+        return None;
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs());
+    let path = std::env::temp_dir().join("security-agent-tui-session.conf");
+    let text = session.engagement_config_text(now);
+    if fs::write(&path, text).is_err() {
+        eprintln!("failed to write session config to {}", path.display());
+        return None;
+    }
+    println!("session engagement config: {}", path.display());
+    Some(path.to_string_lossy().into_owned())
+}
+
+/// Prompts for a value with a default: a blank line selects the default,
+/// end-of-input returns `None`.
+fn tui_prompt_with_default(
+    lines: &mut impl Iterator<Item = io::Result<String>>,
+    prompt: &str,
+    default: &str,
+) -> Option<String> {
+    let raw = tui_prompt(lines, &format!("{prompt} [{default}]: "))?;
+    let trimmed = raw.trim();
+    Some(if trimmed.is_empty() {
+        default.to_string()
+    } else {
+        trimmed.to_string()
+    })
+}
+
 /// Interactive terminal UI (`--tui`): a menu- and chat-bar-driven REPL over
 /// the exact same command functions the plain CLI dispatches to, so behavior
 /// is identical either way — no duplicated business logic. Any input that
@@ -2555,6 +2835,11 @@ fn run_tui_command(assets: &LocalAgentAssets) -> ExitCode {
     println!("{}", tui_banner());
     println!("{}", tui_menu());
 
+    // Session-scoped toggles ([24]/[25]) and the session target list start
+    // fresh on every `--tui` process: offline-by-default is an invariant, so
+    // nothing here persists to disk or across sessions.
+    let mut session = TuiSession::default();
+    println!("{}", session.summary());
     loop {
         print!("\n> ");
         let _ = io::stdout().flush();
@@ -2581,19 +2866,21 @@ fn run_tui_command(assets: &LocalAgentAssets) -> ExitCode {
             println!("goodbye.");
             break;
         }
-        dispatch_tui_choice(input, assets, &mut lines);
+        dispatch_tui_choice(input, assets, &mut session, &mut lines);
     }
     ExitCode::SUCCESS
 }
 
 /// Runs one menu choice (or, for anything unrecognized, the plain-English
-/// chat bar) against the shared command functions.
+/// chat bar) against the shared command functions. `session` carries the
+/// session-scoped toggles and target list across choices.
 // A flat dispatch table: one arm per menu entry. It reads long by nature and
 // stays clearer in one place than split across helpers.
 #[allow(clippy::too_many_lines)]
 fn dispatch_tui_choice(
     input: &str,
     assets: &LocalAgentAssets,
+    session: &mut TuiSession,
     lines: &mut impl Iterator<Item = io::Result<String>>,
 ) {
     match input {
@@ -2619,9 +2906,9 @@ fn dispatch_tui_choice(
             let _ = list_skills(assets);
         }
         "6" => tui_run_builtin_tool(lines),
-        "7" => tui_run_external_tool(lines, assets),
+        "7" => tui_run_external_tool(lines, assets, session),
         "8" => {
-            let _ = tui_plan_scan(lines);
+            let _ = tui_plan_scan(lines, session);
         }
         "9" => tui_record_findings(lines),
         "10" => tui_run_with_discovered_path(
@@ -2652,7 +2939,7 @@ fn dispatch_tui_choice(
             }
             let _ = llm_perplexity_command(&mut std::iter::once(text));
         }
-        "14" => tui_listen(lines),
+        "14" => tui_listen(lines, session),
         "15" => tui_run_with_discovered_path(
             lines,
             "audit database path",
@@ -2699,7 +2986,51 @@ fn dispatch_tui_choice(
             let _ = tool_help_command(&mut std::iter::once(name));
         }
         "22" => tui_agent(assets, lines),
-        "23" => tui_ollama_status(lines),
+        "23" => tui_ollama_status(lines, session),
+        "24" => {
+            let state = session.toggle_allow_network();
+            println!(
+                "allow-network (session): {}",
+                if state { "ON" } else { "OFF" }
+            );
+            println!("{}", session.summary());
+        }
+        "25" => {
+            let state = session.toggle_master_full_scope();
+            println!(
+                "master full-scope (session): {}",
+                if state { "ON" } else { "OFF" }
+            );
+            println!("{}", session.summary());
+        }
+        "26" => {
+            let Some(raw) = tui_prompt(lines, "target (IP / CIDR / URL / hostname): ") else {
+                return;
+            };
+            match session.add_target(&raw) {
+                Ok(()) => println!("added — {}", session.summary()),
+                Err(message) => println!("not added: {message}"),
+            }
+        }
+        "27" => {
+            if session.targets.is_empty() {
+                println!("no session targets yet — add with [26] or find with [29].");
+            } else {
+                println!("session targets:");
+                for (index, target) in session.targets.iter().enumerate() {
+                    println!("  {}) {target}", index + 1);
+                }
+            }
+            println!("{}", session.summary());
+        }
+        "28" => {
+            let cleared = session.clear_targets();
+            println!("cleared {cleared} target(s) — {}", session.summary());
+        }
+        "29" => tui_find_targets(lines, assets, session),
+        "30" => {
+            let _ = tui_run_session_engagement(lines, session);
+        }
         // The chat bar: anything else typed is a plain-English instruction. A
         // line that begins with `agent ` drives the multi-step agent loop
         // (plan & run — Stage 16/17); everything else routes through the same
@@ -2853,6 +3184,7 @@ fn tui_run_builtin_tool(lines: &mut impl Iterator<Item = io::Result<String>>) {
 fn tui_run_external_tool(
     lines: &mut impl Iterator<Item = io::Result<String>>,
     assets: &LocalAgentAssets,
+    session: &TuiSession,
 ) {
     let Some(name) = tui_prompt(lines, "cataloged tool name: ") else {
         return;
@@ -2862,18 +3194,25 @@ fn tui_run_external_tool(
         println!("cancelled.");
         return;
     }
-    let Some(online) = tui_prompt(
-        lines,
-        "opt into live network / active testing for this run? (y/N): ",
-    ) else {
-        return;
-    };
+    // The session allow-network toggle ([24]) substitutes for the per-run
+    // y/N prompt: when it is on, live/active tool runs go online for the
+    // whole session without asking again.
+    let mut online = session.allow_network;
+    if !online {
+        let Some(answer) = tui_prompt(
+            lines,
+            "opt into live network / active testing for this run? (y/N): ",
+        ) else {
+            return;
+        };
+        online = tui_answered_yes(&answer);
+    }
     let Some(extra) = tui_prompt(lines, "tool arguments (space-separated, blank for none): ")
     else {
         return;
     };
     let mut args = Vec::new();
-    if tui_answered_yes(&online) {
+    if online {
         args.push("--allow-network".to_string());
     }
     args.push(name);
@@ -2905,13 +3244,24 @@ fn tui_optional_path_flag(
 /// [--findings-log <p>] [--findings-db <p>] [--reasoning-log-db <p>]
 /// [--allow-network] [--execute <args>]`. Prompts follow the exact flag
 /// order `parse_plan_scan_args` expects.
-fn tui_plan_scan(lines: &mut impl Iterator<Item = io::Result<String>>) -> Option<()> {
-    let config = tui_prompt(lines, "engagement config path: ")?;
-    let config = config.trim().to_string();
-    if config.is_empty() {
-        println!("cancelled.");
-        return Some(());
-    }
+fn tui_plan_scan(
+    lines: &mut impl Iterator<Item = io::Result<String>>,
+    session: &TuiSession,
+) -> Option<()> {
+    // Under session master full-scope ([25] on) the engagement config comes
+    // from the session target list — no path prompt. Otherwise the operator
+    // types a config path exactly as before.
+    let config = if session.master_full_scope {
+        write_session_config(session)?
+    } else {
+        let config = tui_prompt(lines, "engagement config path: ")?;
+        let config = config.trim().to_string();
+        if config.is_empty() {
+            println!("cancelled.");
+            return Some(());
+        }
+        config
+    };
     let mut args = vec![config];
 
     tui_optional_path_flag(
@@ -2966,12 +3316,19 @@ fn tui_plan_scan(lines: &mut impl Iterator<Item = io::Result<String>>) -> Option
 
     let execute = tui_prompt(lines, "execute approved tools now? (y/N): ")?;
     if tui_answered_yes(&execute) {
-        let online = tui_prompt(
-            lines,
-            "opt into live network / active tools for execution? (y/N): ",
-        )?;
-        if tui_answered_yes(&online) {
+        // The session allow-network toggle ([24]) is the persistent opt-in;
+        // when it is off, fall back to the per-command y/N prompt so the
+        // offline-by-default behavior is unchanged.
+        if session.allow_network {
             args.push("--allow-network".to_string());
+        } else {
+            let online = tui_prompt(
+                lines,
+                "opt into live network / active tools for execution? (y/N): ",
+            )?;
+            if tui_answered_yes(&online) {
+                args.push("--allow-network".to_string());
+            }
         }
         args.push("--execute".to_string());
         let exec_args = tui_prompt(
@@ -2982,6 +3339,124 @@ fn tui_plan_scan(lines: &mut impl Iterator<Item = io::Result<String>>) -> Option
     }
 
     let _ = plan_scan_command(&mut args.into_iter());
+    Some(())
+}
+
+/// Menu flow for finding targets with real tooling (option 29): a URL or
+/// bare hostname runs `whatweb` (find web apps / websites), an IP or CIDR
+/// runs `nmap -sn` (find hosts / networks). Discovery is live network work,
+/// so it requires the session allow-network opt-in ([24]) — the same
+/// offline-by-default gate the CLI applies. Discovered hosts and web-app
+/// URLs are added to the session target list, which then feeds planning and
+/// the session engagement runner ([8]/[30] under master full-scope).
+fn tui_find_targets(
+    lines: &mut impl Iterator<Item = io::Result<String>>,
+    assets: &LocalAgentAssets,
+    session: &mut TuiSession,
+) {
+    if !session.allow_network {
+        println!("discovery needs the session allow-network opt-in — toggle it on first ([24]).");
+        return;
+    }
+    let Some(raw) = tui_prompt(
+        lines,
+        "discovery input — URL or hostname (find web apps) or IP/CIDR (find hosts): ",
+    ) else {
+        return;
+    };
+    let input = raw.trim().to_string();
+    if input.is_empty() {
+        println!("cancelled.");
+        return;
+    }
+    // A URL or a non-IP token is a web-app find; an IP or CIDR is a host
+    // find. Bare hostnames are probed over http.
+    let webapp_find = input.contains("://") || (!is_ipv4(&input) && !is_ipv4_cidr(&input));
+    let (tool_name, tool_arguments) = if webapp_find {
+        let probe = if input.contains("://") {
+            input.clone()
+        } else {
+            format!("http://{input}")
+        };
+        ("whatweb", vec![probe])
+    } else {
+        ("nmap", vec!["-sn".to_string(), input.clone()])
+    };
+    let Some(tool) = assets.tool(tool_name) else {
+        println!("discovery tool '{tool_name}' is not cataloged.");
+        return;
+    };
+    if tool.definition.execution_class != security_agent::ExecutionClass::StaticLocalAnalysis {
+        print_intensity_advisories(&tool_arguments, security_agent::TestIntensity::Standard);
+    }
+    println!("online mode engaged (session allow-network): running {tool_name} on {input}");
+    match run_external_tool_with_default_timeout(
+        tool,
+        &tool_arguments,
+        security_agent::NetworkMode::Online,
+    ) {
+        Ok(report) => {
+            println!("{report}");
+            let added = if webapp_find {
+                let mut candidates = vec![input.clone()];
+                if !input.contains("://") {
+                    candidates[0] = format!("http://{input}");
+                }
+                candidates.extend(extract_urls(&report.stdout));
+                let mut count = 0;
+                for candidate in candidates {
+                    if session.add_target(&candidate).is_ok() {
+                        count += 1;
+                    }
+                }
+                count
+            } else {
+                let mut count = 0;
+                for host in extract_nmap_hosts(&report.stdout) {
+                    if session.add_target(&host).is_ok() {
+                        count += 1;
+                    }
+                }
+                count
+            };
+            println!("discovery added {added} target(s) — {}", session.summary());
+            for target in &session.targets {
+                println!("  {target}");
+            }
+        }
+        Err(error) => eprintln!("discovery failed: {error}"),
+    }
+}
+
+/// Menu flow for running the engagement end-to-end under session master
+/// full-scope (option 30): plans and executes the session target list with
+/// audit-log, findings-log, and report outputs, honoring the session
+/// allow-network opt-in. The policy engine still authorizes the generated
+/// config and the audit trail still records the run — "full scope" here
+/// means the config declares the scope, not that enforcement is disabled.
+fn tui_run_session_engagement(
+    lines: &mut impl Iterator<Item = io::Result<String>>,
+    session: &TuiSession,
+) -> Option<()> {
+    if !session.master_full_scope {
+        println!("session engagement running needs master full-scope on — toggle it on with [25].");
+        return Some(());
+    }
+    let Some(config_path) = write_session_config(session) else {
+        return Some(());
+    };
+    let mut args = vec![config_path];
+    let audit = tui_prompt_with_default(lines, "audit log path", "audit-session.jsonl")?;
+    args.extend(["--audit-log".to_string(), audit]);
+    let findings = tui_prompt_with_default(lines, "findings log path", "findings-session.jsonl")?;
+    args.extend(["--findings-log".to_string(), findings]);
+    let report = tui_prompt_with_default(lines, "report output path", "report-session.md")?;
+    args.extend(["--report-out".to_string(), report]);
+    args.extend(["--report-format".to_string(), "markdown".to_string()]);
+    if session.allow_network {
+        args.push("--allow-network".to_string());
+    }
+    let _ = run_engagement_command(&mut args.into_iter());
     Some(())
 }
 
@@ -3006,15 +3481,20 @@ fn tui_record_findings(lines: &mut impl Iterator<Item = io::Result<String>>) {
     let _ = record_findings_command(&mut vec![dest, src].into_iter());
 }
 
-fn tui_listen(lines: &mut impl Iterator<Item = io::Result<String>>) {
-    let online = tui_prompt(
-        lines,
-        "opt into live network (opens a listening socket)? (y/N): ",
-    );
-    let Some(online) = online else {
-        return;
-    };
-    if !tui_answered_yes(&online) {
+fn tui_listen(lines: &mut impl Iterator<Item = io::Result<String>>, session: &TuiSession) {
+    // The session allow-network toggle ([24]) is the persistent opt-in for
+    // the listening socket; when it is off, fall back to the per-run y/N.
+    let mut online = session.allow_network;
+    if !online {
+        let Some(answer) = tui_prompt(
+            lines,
+            "opt into live network (opens a listening socket)? (y/N): ",
+        ) else {
+            return;
+        };
+        online = tui_answered_yes(&answer);
+    }
+    if !online {
         println!("cancelled — listener requires the --allow-network opt-in.");
         return;
     }
@@ -3045,15 +3525,19 @@ fn tui_listen(lines: &mut impl Iterator<Item = io::Result<String>>) {
     let _ = listen_command(&mut args.into_iter(), true);
 }
 
-fn tui_ollama_status(lines: &mut impl Iterator<Item = io::Result<String>>) {
-    let online = tui_prompt(
-        lines,
-        "opt into local network access (opens a socket to Ollama)? (y/N): ",
-    );
-    let Some(online) = online else {
-        return;
-    };
-    if !tui_answered_yes(&online) {
+fn tui_ollama_status(lines: &mut impl Iterator<Item = io::Result<String>>, session: &TuiSession) {
+    // Same session opt-in as the listener: [24] on means no per-run prompt.
+    let mut online = session.allow_network;
+    if !online {
+        let Some(answer) = tui_prompt(
+            lines,
+            "opt into local network access (opens a socket to Ollama)? (y/N): ",
+        ) else {
+            return;
+        };
+        online = tui_answered_yes(&answer);
+    }
+    if !online {
         println!("cancelled — Ollama requires the --allow-network opt-in.");
         return;
     }
@@ -3069,7 +3553,10 @@ fn tui_banner() -> String {
      Enter — that's the chat bar, routed through the same grounded router as\n\
      --ask, including prompting the built-in language model. Prefix a line with\n\
      'agent ' (or pick [22]) to have it plan & run a multi-step goal. Type '0'\n\
-     for the full capability summary, or 'q' / 'quit' / 'exit' to leave."
+     for the full capability summary, or 'q' / 'quit' / 'exit' to leave.\n\
+     Session toggles: [24] allow-network and [25] master full-scope persist for\n\
+     this session only (they start off and never touch the audit trail or the\n\
+     policy engine); [26]/[27]/[28] manage targets, [29] discovers them."
         .to_string()
 }
 
@@ -3087,6 +3574,10 @@ fn tui_menu() -> String {
      [19] Plain-language guide          [20] Reverse shell tutorial\n\
      [21] Guide for one tool/command   [22] Agent — plan & run a goal\n\
      [23] Ollama status (requires --allow-network)\n\
+     [24] Toggle allow-network (session)  [25] Toggle master full-scope (session)\n\
+     [26] Add a target (manual)           [27] List session targets\n\
+     [28] Clear session targets           [29] Find targets (discovery)\n\
+     [30] Run engagement end-to-end (session scope)\n\
      [0]  Help / full capability summary [q]  Quit"
         .to_string()
 }
@@ -3224,6 +3715,26 @@ const CAPABILITY_ROWS: &[(&str, &str, &str)] = &[
         "Guide for one tool/command",
         "--tool-help <command-or-tool>",
         "\"how do i use --listen\"",
+    ),
+    (
+        "TUI session toggles",
+        "--tui",
+        "[24]/[25] persist allow-network and master full-scope for the session",
+    ),
+    (
+        "TUI target management",
+        "--tui",
+        "[26]/[27]/[28] add, list, and clear session targets",
+    ),
+    (
+        "TUI target discovery",
+        "--tui",
+        "[29] find hosts/networks (nmap -sn) and web apps (whatweb) — needs [24]",
+    ),
+    (
+        "TUI session engagement run",
+        "--tui",
+        "[30] run end-to-end against session targets with audit + findings + report",
     ),
 ];
 
@@ -5565,6 +6076,11 @@ criticality=2
         for token in ["[1]", "[5]", "[9]", "[13]", "[0]", "[q]"] {
             assert!(menu.contains(token), "menu should list {token}");
         }
+        // The session toggles, target management, discovery, and the
+        // session engagement runner must all be reachable from the menu.
+        for token in ["[24]", "[25]", "[26]", "[27]", "[28]", "[29]", "[30]"] {
+            assert!(menu.contains(token), "menu should list {token}");
+        }
     }
 
     #[test]
@@ -5608,7 +6124,173 @@ criticality=2
         // and must be handled entirely by the chat-bar (--ask) path; this
         // just asserts it runs to completion without needing further input.
         let assets = LocalAgentAssets::bundled();
+        let mut session = TuiSession::default();
         let mut lines = std::iter::empty::<io::Result<String>>();
-        dispatch_tui_choice("what tools do you have", &assets, &mut lines);
+        dispatch_tui_choice("what tools do you have", &assets, &mut session, &mut lines);
+    }
+
+    #[test]
+    fn tui_session_defaults_to_offline_with_no_targets() {
+        let session = TuiSession::default();
+        assert!(!session.allow_network);
+        assert!(!session.master_full_scope);
+        assert!(session.targets.is_empty());
+        assert_eq!(
+            session.summary(),
+            "session: allow-network=off master-full-scope=off targets=0"
+        );
+    }
+
+    #[test]
+    fn tui_session_toggles_flip_and_report_state() {
+        let mut session = TuiSession::default();
+        assert!(session.toggle_allow_network());
+        assert!(!session.toggle_allow_network());
+        assert!(session.toggle_master_full_scope());
+        assert!(session.master_full_scope);
+        assert!(!session.allow_network);
+    }
+
+    #[test]
+    fn tui_session_add_target_validates_single_tokens_and_dedups() {
+        let mut session = TuiSession::default();
+        assert!(session.add_target("10.0.0.1").is_ok());
+        // Duplicates are accepted silently and stay single.
+        assert!(session.add_target("10.0.0.1").is_ok());
+        assert_eq!(session.targets.len(), 1);
+        // Blank and whitespace-containing input is rejected.
+        assert!(session.add_target("  ").is_err());
+        assert!(session.add_target("two words").is_err());
+        // Trailing whitespace is trimmed before storing.
+        assert!(session.add_target(" example.com ").is_ok());
+        assert_eq!(session.targets, ["10.0.0.1", "example.com"]);
+        // Clearing reports how many were removed.
+        assert_eq!(session.clear_targets(), 2);
+        assert!(session.targets.is_empty());
+    }
+
+    #[test]
+    fn tui_session_classifies_and_hosts_urls() {
+        assert_eq!(
+            classify_session_target("https://app.example.com:8443/login"),
+            SessionTargetKind::WebApp
+        );
+        assert_eq!(
+            classify_session_target("192.168.1.5"),
+            SessionTargetKind::Infrastructure
+        );
+        assert_eq!(
+            classify_session_target("10.0.0.0/24"),
+            SessionTargetKind::Infrastructure
+        );
+        assert_eq!(
+            classify_session_target("db1.internal"),
+            SessionTargetKind::Infrastructure
+        );
+        assert_eq!(
+            url_host("https://app.example.com:8443/login"),
+            Some("app.example.com")
+        );
+        assert_eq!(url_host("http://example.com/"), Some("example.com"));
+        assert_eq!(url_host("example.com"), None);
+        assert!(is_ipv4("192.168.1.5"));
+        assert!(!is_ipv4("192.168.1.999"));
+        assert!(is_ipv4_cidr("10.0.0.0/24"));
+        assert!(!is_ipv4_cidr("10.0.0.0/33"));
+    }
+
+    #[test]
+    fn tui_session_engagement_config_authorizes_exactly_the_declared_targets() {
+        let mut session = TuiSession::default();
+        assert!(
+            session
+                .add_target("https://app.example.com:8443/login")
+                .is_ok()
+        );
+        assert!(session.add_target("10.0.0.0/24").is_ok());
+        assert!(session.add_target("192.168.1.5").is_ok());
+        assert!(session.add_target("db1.internal").is_ok());
+
+        let now = 1_785_542_400;
+        let text = session.engagement_config_text(now);
+        let path = std::env::temp_dir().join(format!(
+            "security-agent-main-session-config-{}.conf",
+            std::process::id()
+        ));
+        fs::write(&path, &text).expect("write session config");
+        let (profile, targets) = load_engagement_config(&path).expect("session config must parse");
+        fs::remove_file(&path).expect("remove temp config");
+
+        // Every declared gate is present and the target list is exact.
+        assert_eq!(
+            profile.in_scope_targets,
+            ["tgt-1", "tgt-2", "tgt-3", "tgt-4"]
+        );
+        assert_eq!(profile.allowed_techniques.len(), 15);
+        assert_eq!(
+            profile.max_intensity,
+            security_agent::TestIntensity::Aggressive
+        );
+        assert!(profile.high_impact_approved);
+        assert!(profile.penetrative_testing_approved);
+        assert!(profile.deny_list_targets.is_empty());
+        assert_eq!(
+            profile.authorized_by_role,
+            security_agent::Role::SecurityAdmin
+        );
+        assert_eq!(profile.time_window.start_epoch_seconds, now - 3600);
+        assert_eq!(
+            profile.time_window.end_epoch_seconds,
+            now + 30 * 24 * 60 * 60
+        );
+
+        // The URL plans as a WebApp with its host as the network address;
+        // the IP/CIDR/hostname plan as Infrastructure.
+        assert_eq!(targets.len(), 4);
+        assert_eq!(targets[0].target_type, security_agent::TargetType::WebApp);
+        assert_eq!(
+            targets[0].network_address.as_deref(),
+            Some("app.example.com")
+        );
+        for target in &targets[1..] {
+            assert_eq!(
+                target.target_type,
+                security_agent::TargetType::Infrastructure
+            );
+        }
+        assert_eq!(targets[1].network_address.as_deref(), Some("10.0.0.0/24"));
+    }
+
+    #[test]
+    fn extract_nmap_hosts_parses_report_lines_and_ipv4_tokens() {
+        let output = "\
+Nmap scan report for 192.168.1.5
+Host is up (0.0010s latency).
+Nmap scan report for printer.local (192.168.1.9)
+Host is up.
+Nmap scan report for 10.0.0.2
+Host is up (0.0004s latency).
+";
+        let hosts = extract_nmap_hosts(output);
+        // printer.local is the only bare hostname; all three IPs are found.
+        assert!(hosts.contains(&"printer.local".to_string()));
+        for ip in ["192.168.1.5", "192.168.1.9", "10.0.0.2"] {
+            assert!(hosts.contains(&ip.to_string()), "missing {ip}: {hosts:?}");
+        }
+        assert_eq!(hosts.len(), 4);
+    }
+
+    #[test]
+    fn extract_urls_finds_http_and_https_tokens_without_trailing_punctuation() {
+        let output = "http://example.com/ https://app.example.com:8443/login [200 OK] (https://blog.example.com/posts,).";
+        let urls = extract_urls(output);
+        assert_eq!(
+            urls,
+            [
+                "http://example.com/",
+                "https://app.example.com:8443/login",
+                "https://blog.example.com/posts"
+            ]
+        );
     }
 }

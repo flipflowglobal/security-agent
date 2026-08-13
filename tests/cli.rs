@@ -640,6 +640,39 @@ fn tui_chat_bar_routes_plain_english_through_ask() {
 }
 
 #[test]
+fn tui_session_toggles_and_targets_plan_end_to_end() {
+    // Master full-scope on, one manual target, then plan via option 8: the
+    // session builds a full-authorization config from the target list, the
+    // policy engine authorizes it (it still enforces — the config declares
+    // the scope), and the plan prints. No config-path prompt, no execution,
+    // no network: the 8 prompts of the plan flow are answered with blanks
+    // (skip) and "n" (no cognitive review / no execute).
+    let script = "25\n26\n10.0.0.0/24\n8\n\n\nn\n\n\n\n\n\nn\nq\n";
+    let output = run_with_stdin(&["--tui"], script);
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("master full-scope (session): ON"));
+    assert!(
+        text.contains("added — session: allow-network=off master-full-scope=on targets=1"),
+        "target should be added and reflected in the session summary"
+    );
+    assert!(text.contains("session engagement config"));
+    assert!(text.contains("Execution Plan"));
+    assert!(text.contains("goodbye"));
+}
+
+#[test]
+fn tui_session_toggles_reset_on_a_fresh_process() {
+    // Session state must not leak between processes: a fresh --tui starts
+    // with both toggles off and no targets, even though a previous process
+    // (the test above) left them on in its own session.
+    let output = run_with_stdin(&["--tui"], "q\n");
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("session: allow-network=off master-full-scope=off targets=0"));
+}
+
+#[test]
 fn tui_menu_option_show_skill_prompts_for_and_prints_a_skill() {
     let output = run_with_stdin(&["--tui"], "4\nnmap\nq\n");
     assert!(output.status.success());
