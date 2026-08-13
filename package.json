@@ -1,6 +1,6 @@
 {
   "name": "security-agent-desktop",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Security Agent — Autonomous Offline Security Operations Desktop Console",
   "main": "electron/main.js",
   "scripts": {

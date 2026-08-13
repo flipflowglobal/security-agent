@@ -14,7 +14,31 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+/// `println!`/`print!` panic on a write failure, which happens whenever
+/// stdout is a pipe that the reader closed early — piping into `head`,
+/// `less -F` (quit before EOF), or a GUI parent process that stops reading
+/// its child's stdout. That is normal, expected behavior for a CLI, not a
+/// bug, so treat it as a quiet, successful exit instead of a panic dump.
+/// Any other panic still goes through the default hook unchanged.
+fn install_broken_pipe_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let is_broken_pipe = info
+            .payload()
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| info.payload().downcast_ref::<&str>().copied())
+            .is_some_and(|message| message.contains("failed printing to stdout"));
+        if is_broken_pipe {
+            std::process::exit(0);
+        }
+        default_hook(info);
+    }));
+}
+
 fn main() -> ExitCode {
+    install_broken_pipe_panic_hook();
+
     let assets = LocalAgentAssets::bundled();
     let mut arguments = std::env::args().skip(1).peekable();
 
@@ -54,6 +78,7 @@ fn main() -> ExitCode {
         Some("--report") => report_command(&mut arguments),
         Some("--lm-eval") => lm_eval_command(),
         Some("--llm-generate") => llm_generate_command(&mut arguments),
+        Some("--chat-reply") => chat_reply_command(&mut arguments),
         Some("--llm-perplexity") => llm_perplexity_command(&mut arguments),
         Some("--ask") => ask_command(&assets, &mut arguments),
         Some("--agent") => agent_command(&assets, &mut arguments),
@@ -1775,6 +1800,164 @@ fn llm_generate_command(arguments: &mut impl Iterator<Item = String>) -> ExitCod
     ExitCode::SUCCESS
 }
 
+/// Reads one option value, failing when the flag has none.
+fn next_chat_value(
+    arguments: &mut impl Iterator<Item = String>,
+    flag: &str,
+) -> Result<String, String> {
+    arguments
+        .next()
+        .ok_or_else(|| format!("missing value after {flag}"))
+}
+
+/// Parsed `--chat-reply` options plus the message words.
+struct ChatReplyArgs {
+    /// The message words (everything after the leading options).
+    message_words: Vec<String>,
+    /// An optional `--model <dir>` for the reply model.
+    model_dir: Option<String>,
+    /// Tool-result context (`--context`) the assistant can quote.
+    context: String,
+    /// Conversation history (`--turn <role>\t<text>`, repeatable).
+    turns: Vec<(String, String)>,
+}
+
+/// Parses `--chat-reply` options: an optional leading `--model <dir>`, optional
+/// tool-result `--context <text>`, and repeatable `--turn <role>\t<text>`
+/// conversation history. Only flags *before* the message are options — the
+/// first non-flag word starts the message and everything after it (even words
+/// that look like flags) belongs to the message, so a question like "what does
+/// `--model` do?" is never misparsed.
+fn parse_chat_reply_args(
+    arguments: &mut impl Iterator<Item = String>,
+) -> Result<ChatReplyArgs, String> {
+    let mut message_words = Vec::new();
+    let mut model_dir = None;
+    let mut context = String::new();
+    let mut turns = Vec::new();
+    while let Some(word) = arguments.next() {
+        match word.as_str() {
+            "--model" => model_dir = Some(next_chat_value(arguments, "--model")?),
+            "--context" => context = next_chat_value(arguments, "--context")?,
+            "--turn" => {
+                let raw = next_chat_value(arguments, "--turn")?;
+                let (role, text) = raw.split_once('\t').ok_or_else(|| {
+                    "malformed --turn value (expected `role<TAB>text`)".to_string()
+                })?;
+                turns.push((role.to_string(), text.to_string()));
+            }
+            first_word => {
+                message_words.push(first_word.to_string());
+                message_words.extend(arguments);
+                break;
+            }
+        }
+    }
+    Ok(ChatReplyArgs {
+        message_words,
+        model_dir,
+        context,
+        turns,
+    })
+}
+
+/// Trims a generated reply: drops a leading assistant marker the model may
+/// echo, cuts any text past the first end-of-turn marker, and strips padding.
+fn sanitize_chat_reply(reply: &str) -> &str {
+    let mut reply = reply.trim();
+    if let Some(rest) = reply.strip_prefix("<|im_start|>assistant") {
+        reply = rest.trim_start();
+    }
+    if let Some(index) = reply.find("<|im_end|>") {
+        reply = &reply[..index];
+    }
+    reply.trim()
+}
+
+/// Produces a free-form assistant reply to `--chat-reply <message words...>`
+/// from the selected local model — the offline chat backend for the GUI's chat
+/// page. The message is wrapped in the model's `ChatML` instruction format so
+/// the generated continuation *is* the assistant's answer rather than a raw
+/// completion of the user's words. Tool results from an agent run can be
+/// handed in with `--context` and prior turns with repeatable `--turn`, so the
+/// assistant can ground its reply in what actually ran. Everything stays
+/// local: no network, no external API, exactly like every other command.
+fn chat_reply_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    let parsed = match parse_chat_reply_args(arguments) {
+        Ok(parsed) => parsed,
+        Err(message) => {
+            eprintln!("{message}");
+            return ExitCode::from(2);
+        }
+    };
+    let mut words = Vec::new();
+    if let Some(dir) = parsed.model_dir {
+        words.push("--model".to_string());
+        words.push(dir);
+    }
+    words.extend(parsed.message_words);
+    let selection = match select_language_model(words) {
+        Ok(selection) => selection,
+        Err(message) => {
+            eprintln!("{message}");
+            return ExitCode::from(2);
+        }
+    };
+    let message = selection.words.join(" ");
+    if message.trim().is_empty() {
+        eprintln!("missing message for --chat-reply");
+        return ExitCode::from(2);
+    }
+    let raw_reply = selection.model.generate_chat(
+        &parsed.context,
+        &parsed.turns,
+        &message,
+        // The GUI runs `--chat-reply` under a 120s timeout and the bundled
+        // transformer generates only a few tokens per second, so a full 256
+        // token budget could be cut off mid-reply. 120 tokens keeps the worst
+        // case well inside the window while the loop detector ends most
+        // replies far earlier.
+        selection.max_generation_tokens.min(120),
+    );
+    let reply = sanitize_chat_reply(&raw_reply);
+    let reply = if chat_reply_is_garbage(reply) {
+        String::new()
+    } else {
+        reply.to_owned()
+    };
+    if reply.trim().is_empty() {
+        println!(
+            "I could not form a reply to that on my own — try rephrasing, or ask about a specific tool."
+        );
+    } else {
+        println!("{reply}");
+    }
+    ExitCode::SUCCESS
+}
+
+/// True when a model reply never got off the ground: ChatML-marker residue,
+/// byte-fragment scaffolding (a `<start`/`<_` prefix, runs of `_`/`|`), or a
+/// near-uniform sprinkle of punctuation. Such output reads as broken, so the
+/// caller shows the friendly fallback line instead of printing it.
+fn chat_reply_is_garbage(reply: &str) -> bool {
+    if reply.contains("<|im_start|>") || reply.contains("<|im_end|>") {
+        return true;
+    }
+    if reply.starts_with("<start") || reply.starts_with("<_") || reply.starts_with("<|") {
+        return true;
+    }
+    let total = reply.chars().count();
+    if total == 0 {
+        return true;
+    }
+    let scaffolding = reply.chars().filter(|c| *c == '_' || *c == '|').count();
+    let punctuation = reply
+        .chars()
+        .filter(|c| !c.is_alphanumeric() && !c.is_whitespace())
+        .count();
+    scaffolding * 10 > total || punctuation * 3 > total
+}
+
 /// Runs the held-out evaluation of the built-in language model and prints
 /// the report (`--lm-eval`). Measures the model's three production jobs —
 /// perplexity-based anomaly discrimination, intent routing, and generation —
@@ -1970,6 +2153,9 @@ struct AgentArgs {
     /// An optional `--model <dir>` for the proposal model (falls back to the
     /// bundled model when absent).
     model_dir: Option<String>,
+    /// Emit the run as a single JSON document on stdout (`--json`) — the
+    /// machine-readable transcript the GUI chat page renders as run cards.
+    json: bool,
 }
 
 /// Parses `--agent <goal words...>` with optional flags interspersed:
@@ -1991,6 +2177,7 @@ fn parse_agent_args(arguments: &mut impl Iterator<Item = String>) -> Result<Agen
         model_proposals: false,
         memory_path: None,
         model_dir: None,
+        json: false,
     };
     let mut goal_words: Vec<String> = Vec::new();
     while let Some(word) = arguments.next() {
@@ -1999,6 +2186,7 @@ fn parse_agent_args(arguments: &mut impl Iterator<Item = String>) -> Result<Agen
             "--allow-network" => args.allow_network = true,
             "--follow-up" => args.follow_up = true,
             "--model-proposals" => args.model_proposals = true,
+            "--json" => args.json = true,
             "--max-steps" => {
                 let raw = arguments.next().ok_or("missing value after --max-steps")?;
                 args.max_steps = raw
@@ -2041,6 +2229,9 @@ fn parse_agent_args(arguments: &mut impl Iterator<Item = String>) -> Result<Agen
 struct CliExecutor {
     allow_network: bool,
     allocations: usize,
+    /// Suppress echoing child stdout — used by `--agent --json`, which emits a
+    /// single machine-readable document instead of interleaved tool output.
+    quiet: bool,
 }
 
 impl security_agent::ActionExecutor for CliExecutor {
@@ -2068,7 +2259,9 @@ impl security_agent::ActionExecutor for CliExecutor {
         match command.output() {
             Ok(output) => {
                 let text = String::from_utf8_lossy(&output.stdout).into_owned();
-                print!("{text}");
+                if !self.quiet {
+                    print!("{text}");
+                }
                 let code = output.status.code().unwrap_or(-1);
                 if code == 0 {
                     security_agent::ActionOutcome::ran(code, text)
@@ -2243,47 +2436,57 @@ fn execute_agent(assets: &LocalAgentAssets, args: &AgentArgs) -> ExitCode {
         );
         return ExitCode::SUCCESS;
     }
-    println!("Plan ({} step(s)):", plan.len());
-    if args.model_proposals {
-        let base_len = planner.plan(&args.goal).len();
-        if plan.len() > base_len {
+    // Human mode prints the plan preview before running anything — proposals
+    // included, so what is previewed is exactly what runs. JSON mode skips the
+    // prose and emits one machine-readable transcript document at the end.
+    if !args.json {
+        println!("Plan ({} step(s)):", plan.len());
+        if args.model_proposals {
+            let base_len = planner.plan(&args.goal).len();
+            if plan.len() > base_len {
+                println!(
+                    "  (model proposed {} additional action(s), all registry-verified)",
+                    plan.len() - base_len
+                );
+            }
+        }
+        for (index, call) in plan.iter().enumerate() {
+            let arg = if call.args.is_empty() {
+                "-".to_string()
+            } else {
+                call.args.join(" ")
+            };
+            let disposition = if policy.dry_run {
+                "preview only"
+            } else if call.network && !args.allow_network {
+                "will run (offline; add --allow-network for live steps)"
+            } else {
+                "will run"
+            };
             println!(
-                "  (model proposed {} additional action(s), all registry-verified)",
-                plan.len() - base_len
+                "  {}. {} (args: {arg}, {}, {}%) — {disposition}",
+                index + 1,
+                call.command,
+                call.class.label(),
+                call.confidence,
             );
         }
+        println!();
     }
-    for (index, call) in plan.iter().enumerate() {
-        let arg = if call.args.is_empty() {
-            "-".to_string()
-        } else {
-            call.args.join(" ")
-        };
-        let disposition = if policy.dry_run {
-            "preview only"
-        } else if call.network && !args.allow_network {
-            "will run (offline; add --allow-network for live steps)"
-        } else {
-            "will run"
-        };
-        println!(
-            "  {}. {} (args: {arg}, {}, {}%) — {disposition}",
-            index + 1,
-            call.command,
-            call.class.label(),
-            call.confidence,
-        );
-    }
-    println!();
 
     let mut executor = CliExecutor {
         allow_network: args.allow_network,
         allocations: 0,
+        quiet: args.json,
     };
     let transcript =
         security_agent::run_agent_with_plan(&args.goal, &planner, plan, &mut executor, policy);
 
-    print_agent_transcript(&transcript);
+    if args.json {
+        println!("{}", agent_transcript_json(&args.goal, &transcript));
+    } else {
+        print_agent_transcript(&transcript);
+    }
     if let Err(message) = persist_agent_audit(&transcript, args) {
         eprintln!("{message}");
         return ExitCode::from(1);
@@ -2318,6 +2521,101 @@ fn print_agent_transcript(transcript: &security_agent::AgentTranscript) {
             ""
         }
     );
+}
+
+/// Renders the goal and the step-by-step transcript as a single JSON document
+/// on stdout — the machine-readable run card the GUI chat page renders. The
+/// executed plan is read back from the transcript because every planned call
+/// becomes exactly one handled step, so the two are equivalent; this keeps the
+/// JSON mode a pure renderer over what actually ran.
+fn agent_transcript_json(goal: &str, transcript: &security_agent::AgentTranscript) -> String {
+    use security_agent::ActionStatus;
+    let mut out = String::new();
+    out.push_str("{\"goal\":");
+    push_json_string(&mut out, goal);
+    out.push_str(",\"plan\":[");
+    for (index, step) in transcript.steps.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"action\":");
+        push_json_string(&mut out, step.call.action);
+        out.push_str(",\"command\":");
+        push_json_string(&mut out, step.call.command);
+        out.push_str(",\"class\":");
+        push_json_string(&mut out, step.call.class.label());
+        out.push_str(",\"network\":");
+        out.push_str(if step.call.network { "true" } else { "false" });
+        out.push_str(",\"confidence\":");
+        out.push_str(&step.call.confidence.to_string());
+        out.push_str(",\"args\":[");
+        for (arg_index, arg) in step.call.args.iter().enumerate() {
+            if arg_index > 0 {
+                out.push(',');
+            }
+            push_json_string(&mut out, arg);
+        }
+        out.push_str("]}");
+    }
+    out.push_str("],\"steps\":[");
+    for (index, step) in transcript.steps.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"command\":");
+        push_json_string(&mut out, step.call.command);
+        out.push_str(",\"action\":");
+        push_json_string(&mut out, step.call.action);
+        let (status, detail) = match &step.outcome.status {
+            ActionStatus::Ran { exit_code } => ("ran", exit_code.to_string()),
+            ActionStatus::Refused(reason) => ("refused", reason.clone()),
+            ActionStatus::Failed(reason) => ("failed", reason.clone()),
+            ActionStatus::Skipped(reason) => ("skipped", reason.clone()),
+        };
+        out.push_str(",\"status\":");
+        push_json_string(&mut out, status);
+        out.push_str(",\"detail\":");
+        push_json_string(&mut out, detail);
+        out.push_str(",\"output\":");
+        push_json_string(&mut out, &step.outcome.output);
+        out.push('}');
+    }
+    out.push_str("],\"summary\":{\"steps\":");
+    out.push_str(&transcript.steps.len().to_string());
+    out.push_str(",\"ran\":");
+    out.push_str(&transcript.ran_count().to_string());
+    out.push_str(",\"budget_exhausted\":");
+    out.push_str(if transcript.budget_exhausted {
+        "true"
+    } else {
+        "false"
+    });
+    out.push_str("}}");
+    out
+}
+
+/// JSON-encodes `text` (quotes and escapes) into `out`. Hand-rolled like the
+/// rest of the crate's JSON (`src/json.rs`) — no external serializer, and the
+/// transcript stays parseable even when tool output contains quotes or
+/// control characters. Accepts anything string-like so callers pass owned
+/// values directly (clippy's `needless_borrow` stays silent).
+fn push_json_string(out: &mut String, text: impl AsRef<str>) {
+    use std::fmt::Write as _;
+    out.push('"');
+    for ch in text.as_ref().chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
 }
 
 /// Persists the run's audit trail when `--audit-log`/`--audit-db` was given.
@@ -2372,6 +2670,7 @@ const fn default_agent_args(goal: String) -> AgentArgs {
         model_proposals: false,
         memory_path: None,
         model_dir: None,
+        json: false,
     }
 }
 
@@ -3096,6 +3395,12 @@ const CAPABILITY_ROWS: &[(&str, &str, &str)] = &[
         "\"generate text about scanning targets\"",
     ),
     (
+        "Chat reply (LLM)",
+        "--chat-reply <message>",
+        "\"summarize my last findings report\" (offline assistant reply; the GUI chat page's backend; \
+         options: --model <dir>, --context <tool results>, --turn role\\ttext ...)",
+    ),
+    (
         "Score text for anomaly (LLM)",
         "--llm-perplexity <words>",
         "\"is this suspicious: <quoted text>\"",
@@ -3620,36 +3925,24 @@ fn password_strength_command(arguments: &mut impl Iterator<Item = String>) -> Ex
     ExitCode::SUCCESS
 }
 
-/// `--gen-wordlist <target> [--company <name>] [--year <year>]` — generate targeted wordlist.
+/// `--gen-wordlist <target-name> [company] [year] [extra words...]` —
+/// generate a targeted wordlist. Positional, matching the documented usage
+/// in COMMAND.md and `--guide` (`security-agent --gen-wordlist acme-corp
+/// Acme 2026 admin backup`).
 fn gen_wordlist_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
     let Some(target) = arguments.next() else {
-        eprintln!("usage: --gen-wordlist <target> [--company <name>] [--year <year>]");
+        eprintln!("usage: --gen-wordlist <target-name> [company] [year] [extra words...]");
         return ExitCode::from(2);
     };
-    let mut company = None;
-    let mut year = None;
-    let mut next = arguments.next();
-    while let Some(arg) = next.take() {
-        match arg.as_str() {
-            "--company" => {
-                company = arguments.next();
-                next = arguments.next();
-            }
-            "--year" => {
-                year = arguments.next();
-                next = arguments.next();
-            }
-            other => {
-                eprintln!("unexpected argument: {other}");
-                return ExitCode::from(2);
-            }
-        }
-    }
+    let company = arguments.next();
+    let year = arguments.next();
+    let extra_words: Vec<String> = arguments.collect();
+    let extra_words_refs: Vec<&str> = extra_words.iter().map(String::as_str).collect();
     let words = security_agent::offensive::credential_attack::generate_targeted_wordlist(
         &target,
         company.as_deref(),
         year.as_deref(),
-        &[],
+        &extra_words_refs,
     );
     println!("Generated {} words for target: {target}", words.len());
     for word in &words {

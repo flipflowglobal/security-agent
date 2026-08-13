@@ -17,13 +17,19 @@ It helps you:
   explicit online opt-in on top of authorization (see `--allow-network`),
 - and keep an audit record of what was done.
 
-It is designed for legal, approved security work only.
+It is designed for legal, approved security work only. Read
+[`EULA.md`](./EULA.md) before your first engagement — it covers authorized
+use, prohibited uses, and export-control obligations that apply to you as a
+user of this software.
 
 ---
 
 ## 2) Before you start (important)
 
-Only test systems that you are explicitly allowed to test.
+Only test systems that you are explicitly allowed to test — get this in
+writing (a signed rules-of-engagement, statement of work, or authorization
+letter) before you configure an engagement profile. See
+[`EULA.md`](./EULA.md) §2 for the full authorized-use requirements.
 
 You should have:
 - a computer with terminal access (Linux, macOS, or Windows),
