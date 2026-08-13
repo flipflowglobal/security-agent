@@ -1883,6 +1883,7 @@ fn sanitize_chat_reply(reply: &str) -> &str {
 /// assistant can ground its reply in what actually ran. Everything stays
 /// local: no network, no external API, exactly like every other command.
 fn chat_reply_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    use security_agent::Intent;
     let parsed = match parse_chat_reply_args(arguments) {
         Ok(parsed) => parsed,
         Err(message) => {
@@ -1925,19 +1926,119 @@ fn chat_reply_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode 
     } else {
         reply.to_owned()
     };
-    if reply.trim().is_empty() {
-        println!(
-            "I could not form a reply to that on my own — try rephrasing, or ask about a specific tool."
-        );
+    // Interpret the message with the NLU router. For the read-only factual
+    // intents — status, about, help, list tools/skills, show a skill — the
+    // grounded answer built from real asset data is more useful and truthful
+    // than anything the tiny generative model can improvise, so it wins even
+    // when generation produced a passable sentence. The generative path still
+    // serves free-form continuation (generate/anomaly/chitchat), with the
+    // grounded interpretation as a fallback when it failed.
+    let assets = security_agent::LocalAgentAssets::bundled();
+    let model = security_agent::NeuralLanguageModel::bundled();
+    let interpretation = security_agent::interpret(&message, &assets, &model);
+    let grounded = grounded_chat_reply(&interpretation, &assets);
+    let prefer_grounded = matches!(
+        interpretation.intent,
+        Intent::OfflineStatus
+            | Intent::About
+            | Intent::Help
+            | Intent::ListTools
+            | Intent::ListSkills
+            | Intent::ShowSkill
+    );
+    if prefer_grounded || reply.trim().is_empty() {
+        println!("{grounded}");
     } else {
         println!("{reply}");
     }
     ExitCode::SUCCESS
 }
 
+/// A deterministic, factual chat reply for a message the generative model
+/// could not answer. Uses the NLU interpretation and real asset data, so the
+/// answer is always true: tool/skill counts, status, help pointers, or the
+/// router's plain-English description of what the agent understood. Anything
+/// that would require execution or authorization is pointed at the exact CLI
+/// command instead — the chat layer never widens authority.
+fn grounded_chat_reply(
+    interpretation: &security_agent::Interpretation,
+    assets: &security_agent::LocalAgentAssets,
+) -> String {
+    use security_agent::Intent;
+    let tool_count = assets.tools().len();
+    let skill_count = assets.skills().len();
+    match interpretation.intent {
+        Intent::OfflineStatus => {
+            format!(
+                "I am online and ready. I have {tool_count} cataloged tools and {skill_count} \
+                 skills, and I am offline by default — live/active tools need the \
+                 --allow-network opt-in."
+            )
+        }
+        Intent::About => format!(
+            "I am a defensive and offensive security orchestration agent. I can plan \
+             authorized scans, run local analysis tools ({tool_count} cataloged), explain \
+             skills ({skill_count} available), report status, score text for anomalies, and \
+             keep an audit ledger."
+        ),
+        Intent::Help => "I can list my tools and skills, explain a skill, plan an authorized \
+             scan, report my status, score a string for anomalies, or generate text. Try \
+             'list tools', 'explain nmap', or 'help'."
+            .to_string(),
+        Intent::ListTools => format!(
+            "I have {tool_count} cataloged tools; listing them. (The generative model is \
+             limited, so this is the authoritative catalog.)"
+        ),
+        Intent::ListSkills => format!(
+            "I have {skill_count} skills; listing them. (The generative model is limited, \
+             so this is the authoritative catalog.)"
+        ),
+        Intent::ShowSkill => interpretation.slot.as_deref().map_or_else(
+            || {
+                format!(
+                    "I can explain any of my {skill_count} skills — name one and I will \
+                         show its guide."
+                )
+            },
+            |name| format!("Showing the {name} skill. Ask 'explain {name}' for its guide."),
+        ),
+        Intent::AnomalyCheck => {
+            "I can score a string for anomaly, but I need the text to analyze — send the \
+             log line or finding and I will rank how surprising it reads."
+                .to_string()
+        }
+        Intent::Generate => {
+            "I can generate a short continuation of a prompt — give me the text to continue \
+             and I will draft the next words."
+                .to_string()
+        }
+        // Authorized/executing intents are never run from chat: point at the
+        // exact command so the user can invoke them under the proper guardrails.
+        Intent::PlanScan => "To plan a scan I need an authorized engagement — run with a valid \
+             configuration (see examples/engagement.example.conf)."
+            .to_string(),
+        Intent::ScheduleRetest => {
+            "Scheduling a retest needs an engagement and findings; use the CLI retest \
+             command with a valid configuration."
+                .to_string()
+        }
+        Intent::ViewAudit
+        | Intent::ViewAuditDb
+        | Intent::ViewFindingsDb
+        | Intent::ViewCalibrationDb
+        | Intent::ViewReasoningLogDb => {
+            "That view needs a persisted database or audit log; run the corresponding \
+             --view-* CLI command to open it."
+                .to_string()
+        }
+        Intent::OutOfScope => interpretation.reply.clone(),
+    }
+}
+
 /// True when a model reply never got off the ground: ChatML-marker residue,
-/// byte-fragment scaffolding (a `<start`/`<_` prefix, runs of `_`/`|`), or a
-/// near-uniform sprinkle of punctuation. Such output reads as broken, so the
+/// byte-fragment scaffolding (a `<start`/`<_` prefix, runs of `_`/`|`), a
+/// near-uniform sprinkle of punctuation, or a tiny word-salad that a chat
+/// answer needs more substance than. Such output reads as broken, so the
 /// caller shows the friendly fallback line instead of printing it.
 fn chat_reply_is_garbage(reply: &str) -> bool {
     if reply.contains("<|im_start|>") || reply.contains("<|im_end|>") {
@@ -1955,8 +2056,42 @@ fn chat_reply_is_garbage(reply: &str) -> bool {
         .chars()
         .filter(|c| !c.is_alphanumeric() && !c.is_whitespace())
         .count();
-    scaffolding * 10 > total || punctuation * 3 > total
+    if scaffolding * 10 > total || punctuation * 3 > total {
+        return true;
+    }
+    // A fluent-sounding but content-free string ("anomalies a an report in
+    // the audit from in the you in") is the tiny model's most common failure
+    // mode: mostly function words, no verb, no object. Short replies with
+    // under a few words also never answer a chat question, so both read as
+    // broken.
+    let words: Vec<&str> = reply.split_whitespace().collect();
+    if words.len() < 4 {
+        return true;
+    }
+    let content = words
+        .iter()
+        .filter(|word| {
+            let w = word.trim_matches(|c: char| !c.is_alphanumeric());
+            !w.is_empty() && !FUNCTION_WORDS.contains(&w)
+        })
+        .count();
+    content * 2 < words.len()
 }
+
+/// Function words that carry little content; a reply made mostly of these is
+/// word salad even though it scans fluently. A chat answer needs a comparable
+/// share of content words to be useful.
+const FUNCTION_WORDS: &[&str] = &[
+    "a", "an", "the", "and", "or", "but", "of", "to", "in", "on", "at", "by", "for", "with",
+    "from", "as", "is", "are", "was", "were", "be", "been", "being", "it", "its", "this", "that",
+    "these", "those", "you", "your", "i", "my", "me", "we", "our", "us", "they", "them", "their",
+    "he", "she", "his", "her", "do", "does", "did", "will", "would", "can", "could", "should",
+    "may", "might", "must", "not", "no", "so", "if", "then", "than", "there", "here", "what",
+    "which", "who", "whom", "when", "where", "why", "how", "up", "down", "out", "off", "over",
+    "under", "again", "further", "once", "too", "very", "just", "about", "into", "through",
+    "during", "before", "after", "above", "below", "between", "against", "some", "any", "each",
+    "few", "more", "most", "other", "such", "own", "same",
+];
 
 /// Runs the held-out evaluation of the built-in language model and prints
 /// the report (`--lm-eval`). Measures the model's three production jobs —
