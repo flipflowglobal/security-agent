@@ -1,7 +1,7 @@
 ---
 name: security-agent
 description: Plan authorized defensive and offensive (penetration testing) security assessments with explicit scope, policy gates, least privilege, and auditable outputs.
-license: MIT
+license: BUSL-1.1
 compatibility: Works with text-capable models used for defensive and offensive security planning.
 metadata:
   runtime: offline

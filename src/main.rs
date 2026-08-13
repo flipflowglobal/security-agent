@@ -4285,6 +4285,15 @@ fn gen_shell_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
         return ExitCode::from(2);
     };
 
+    // The raw x86_64 shellcode embeds the endpoint as literal bytes, so it
+    // needs a numeric IPv4 rather than a hostname. Refuse early instead of
+    // emitting a payload that cannot reach the requested listener.
+    if st == ShellType::ReverseTcp && !security_agent::offensive::payload_gen::is_valid_ipv4(&lhost)
+    {
+        eprintln!("invalid lhost for tcp shellcode: {lhost} (requires a numeric IPv4 address)");
+        return ExitCode::from(2);
+    }
+
     let payload = security_agent::offensive::payload_gen::generate_reverse_shell(st, &lhost, lport);
     println!("{payload}");
     ExitCode::SUCCESS
@@ -4504,6 +4513,31 @@ fn audit_wifi_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode 
     ExitCode::SUCCESS
 }
 
+/// Loads a `--analyze-*` argument that is either a file path or inline content.
+///
+/// The post-exploitation analyzers accept both forms. A mistyped path is
+/// otherwise indistinguishable from inline content and would be silently
+/// analyzed as text, producing a misleading "no indicators" result; when the
+/// value looks like a path (contains a separator and has none of the `:`,
+/// whitespace or `=` markers that passwd/sudoers/hosts/key lines carry) but
+/// names no file, warn so the operator knows the content did not come from
+/// disk.
+fn load_path_or_inline(path_or_content: &str) -> String {
+    if std::path::Path::new(path_or_content).is_file() {
+        return fs::read_to_string(path_or_content).unwrap_or_default();
+    }
+    let looks_like_path = path_or_content.contains(std::path::MAIN_SEPARATOR)
+        && !path_or_content.contains(':')
+        && !path_or_content.contains(char::is_whitespace)
+        && !path_or_content.contains('=');
+    if looks_like_path {
+        eprintln!(
+            "note: '{path_or_content}' is not a file; treating it as inline content"
+        );
+    }
+    path_or_content.to_string()
+}
+
 /// `--analyze-passwd <content>` — analyze /etc/passwd for privilege escalation indicators.
 fn analyze_passwd_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
     let Some(path_or_content) = arguments.next() else {
@@ -4514,11 +4548,7 @@ fn analyze_passwd_command(arguments: &mut impl Iterator<Item = String>) -> ExitC
         eprintln!("unexpected argument: {extra}");
         return ExitCode::from(2);
     }
-    let content = if std::path::Path::new(&path_or_content).exists() {
-        fs::read_to_string(&path_or_content).unwrap_or_default()
-    } else {
-        path_or_content
-    };
+    let content = load_path_or_inline(&path_or_content);
     let indicators = security_agent::offensive::post_exploit::analyze_passwd_file(&content);
     if indicators.is_empty() {
         println!("No privilege escalation indicators found.");
@@ -4542,11 +4572,7 @@ fn analyze_sudoers_command(arguments: &mut impl Iterator<Item = String>) -> Exit
         eprintln!("unexpected argument: {extra}");
         return ExitCode::from(2);
     }
-    let content = if std::path::Path::new(&path_or_content).exists() {
-        fs::read_to_string(&path_or_content).unwrap_or_default()
-    } else {
-        path_or_content
-    };
+    let content = load_path_or_inline(&path_or_content);
     let indicators = security_agent::offensive::post_exploit::analyze_sudoers(&content);
     if indicators.is_empty() {
         println!("No risky sudoers configurations found.");
@@ -4570,11 +4596,7 @@ fn analyze_keys_command(arguments: &mut impl Iterator<Item = String>) -> ExitCod
         eprintln!("unexpected argument: {extra}");
         return ExitCode::from(2);
     }
-    let content = if std::path::Path::new(&path_or_content).exists() {
-        fs::read_to_string(&path_or_content).unwrap_or_default()
-    } else {
-        path_or_content
-    };
+    let content = load_path_or_inline(&path_or_content);
     let indicators = security_agent::offensive::post_exploit::analyze_authorized_keys(&content);
     if indicators.is_empty() {
         println!("No lateral movement indicators found.");
@@ -4598,11 +4620,7 @@ fn analyze_hosts_command(arguments: &mut impl Iterator<Item = String>) -> ExitCo
         eprintln!("unexpected argument: {extra}");
         return ExitCode::from(2);
     }
-    let content = if std::path::Path::new(&path_or_content).exists() {
-        fs::read_to_string(&path_or_content).unwrap_or_default()
-    } else {
-        path_or_content
-    };
+    let content = load_path_or_inline(&path_or_content);
     let indicators = security_agent::offensive::post_exploit::analyze_hosts_file(&content);
     if indicators.is_empty() {
         println!("No internal host mappings found.");
@@ -4669,14 +4687,8 @@ fn postexploit_overview_command(arguments: &mut impl Iterator<Item = String>) ->
     }
 
     let read_arg = |arg: Option<String>| -> String {
-        arg.map(|path| {
-            if std::path::Path::new(&path).exists() {
-                fs::read_to_string(&path).unwrap_or_default()
-            } else {
-                path
-            }
-        })
-        .unwrap_or_default()
+        arg.map(|path| load_path_or_inline(&path))
+            .unwrap_or_default()
     };
 
     let mut mitre_counts: BTreeMap<String, usize> = BTreeMap::new();
