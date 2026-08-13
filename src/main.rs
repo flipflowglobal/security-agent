@@ -4531,9 +4531,7 @@ fn load_path_or_inline(path_or_content: &str) -> String {
         && !path_or_content.contains(char::is_whitespace)
         && !path_or_content.contains('=');
     if looks_like_path {
-        eprintln!(
-            "note: '{path_or_content}' is not a file; treating it as inline content"
-        );
+        eprintln!("note: '{path_or_content}' is not a file; treating it as inline content");
     }
     path_or_content.to_string()
 }
