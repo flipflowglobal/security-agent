@@ -93,7 +93,9 @@ async function main() {
   const persisted = await evalJs(`(() => {
     try { return JSON.parse(localStorage.getItem('sa_chat_v1') || '[]').length; } catch (_e) { return -1; }
   })()`);
-  record('Chat > send message renders run card + reply', bubbles >= 2 && runCards >= 1, `bubbles=${bubbles} runCards=${runCards} persisted=${persisted}`, lastText.replace(/\s+/g, ' ').slice(0, 140));
+  const hasRealReply = (lastText || '').trim().length > 0 &&
+    !/(offline model returned no reply|no reply|Tool run failed|ERROR|exception)/i.test(lastText || '');
+  record('Chat > send message renders run card + reply', bubbles >= 2 && runCards >= 1 && hasRealReply, `bubbles=${bubbles} runCards=${runCards} persisted=${persisted}`, lastText.replace(/\s+/g, ' ').slice(0, 140));
 
   const failed = results.filter((r) => !r.ok);
   const passed = results.filter((r) => r.ok);

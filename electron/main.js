@@ -54,12 +54,38 @@ function bundledModelDir() {
     return null;
 }
 
+// The optional `--model <dir>` back-end is only compiled into binaries built
+// with `--features inference`; default release builds reject the flag (exit
+// 2). Probe once at startup so the GUI never injects `--model` into a binary
+// that cannot use it — otherwise every chat reply would fail. null = not yet
+// probed; true/false = cached result.
+let binarySupportsModel = null;
+
+function probeBundledModelSupport() {
+    if (binarySupportsModel !== null || !binaryPath) return;
+    const dir = bundledModelDir();
+    if (!dir) { binarySupportsModel = false; return; }
+    execFile(binaryPath, ['--chat-reply', '--model', dir, 'ping'], {
+        timeout: 20_000,
+        maxBuffer: 1024 * 1024,
+        encoding: 'utf-8',
+        windowsHide: true,
+        env: binaryEnv(),
+    }, (error, stdout, stderr) => {
+        const text = (stderr || '') + (error ? String(error) : '');
+        binarySupportsModel = !/requires a build with `--features inference`/.test(text);
+        emitLog(binarySupportsModel ? 'info' : 'warn',
+            'bundled offline model ' + (binarySupportsModel ? 'supported (inference build)' : 'NOT supported by this binary (no --features inference) — chat falls back to the toy model'));
+    });
+}
+
 // Adds `--model <dir>` right after the command for LM-backed runs (`--chat-reply`
 // and `--agent`), unless the caller already chose a model. Runs the check on the
 // original args so a user-supplied `--model` always wins.
 function injectBundledModel(args) {
     if (!Array.isArray(args) || args.length === 0) return args;
     if (args.includes('--model')) return args;
+    if (binarySupportsModel !== true) return args;
     const first = args[0];
     if (first !== '--chat-reply' && first !== '--agent') return args;
     const dir = bundledModelDir();
@@ -228,6 +254,7 @@ app.whenReady().then(() => {
     emitLog('info', 'Security-Agent main process starting (platform=' + process.platform + ', electron=' + process.versions.electron + ')');
     binaryPath = resolveBinaryPath();
     emitLog(binaryPath ? 'info' : 'warn', binaryPath ? 'Using binary: ' + binaryPath : 'NO binary available — binary-backed commands will report errors');
+    probeBundledModelSupport();
     createWindow();
     app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) createWindow();
