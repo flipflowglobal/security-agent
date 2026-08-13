@@ -14,7 +14,31 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+/// `println!`/`print!` panic on a write failure, which happens whenever
+/// stdout is a pipe that the reader closed early — piping into `head`,
+/// `less -F` (quit before EOF), or a GUI parent process that stops reading
+/// its child's stdout. That is normal, expected behavior for a CLI, not a
+/// bug, so treat it as a quiet, successful exit instead of a panic dump.
+/// Any other panic still goes through the default hook unchanged.
+fn install_broken_pipe_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let is_broken_pipe = info
+            .payload()
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| info.payload().downcast_ref::<&str>().copied())
+            .is_some_and(|message| message.contains("failed printing to stdout"));
+        if is_broken_pipe {
+            std::process::exit(0);
+        }
+        default_hook(info);
+    }));
+}
+
 fn main() -> ExitCode {
+    install_broken_pipe_panic_hook();
+
     let assets = LocalAgentAssets::bundled();
     let mut arguments = std::env::args().skip(1).peekable();
 
@@ -3901,36 +3925,24 @@ fn password_strength_command(arguments: &mut impl Iterator<Item = String>) -> Ex
     ExitCode::SUCCESS
 }
 
-/// `--gen-wordlist <target> [--company <name>] [--year <year>]` — generate targeted wordlist.
+/// `--gen-wordlist <target-name> [company] [year] [extra words...]` —
+/// generate a targeted wordlist. Positional, matching the documented usage
+/// in COMMAND.md and `--guide` (`security-agent --gen-wordlist acme-corp
+/// Acme 2026 admin backup`).
 fn gen_wordlist_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
     let Some(target) = arguments.next() else {
-        eprintln!("usage: --gen-wordlist <target> [--company <name>] [--year <year>]");
+        eprintln!("usage: --gen-wordlist <target-name> [company] [year] [extra words...]");
         return ExitCode::from(2);
     };
-    let mut company = None;
-    let mut year = None;
-    let mut next = arguments.next();
-    while let Some(arg) = next.take() {
-        match arg.as_str() {
-            "--company" => {
-                company = arguments.next();
-                next = arguments.next();
-            }
-            "--year" => {
-                year = arguments.next();
-                next = arguments.next();
-            }
-            other => {
-                eprintln!("unexpected argument: {other}");
-                return ExitCode::from(2);
-            }
-        }
-    }
+    let company = arguments.next();
+    let year = arguments.next();
+    let extra_words: Vec<String> = arguments.collect();
+    let extra_words_refs: Vec<&str> = extra_words.iter().map(String::as_str).collect();
     let words = security_agent::offensive::credential_attack::generate_targeted_wordlist(
         &target,
         company.as_deref(),
         year.as_deref(),
-        &[],
+        &extra_words_refs,
     );
     println!("Generated {} words for target: {target}", words.len());
     for word in &words {
