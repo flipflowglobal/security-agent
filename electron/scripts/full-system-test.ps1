@@ -1,9 +1,69 @@
-# Full-system test harness for Security-Agent desktop app. (v2 — corrected expectations)
+# Full-system test harness for Security-Agent desktop app. (v3 — self-seeding)
 $ErrorActionPreference = 'Continue'
 $res = "C:\Users\david\Desktop\security-agent\target\release"
 $exe = @("$res\security-agent.exe", "$res\security-agent") | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $exe) { Write-Error "security-agent binary not found under $res"; exit 1 }
 $tmp = $env:GUI_TEST_TMP; if (-not $tmp) { $tmp = "C:\Users\david\AppData\Local\Temp\opencode\gui-test" }
+if (-not (Test-Path $tmp)) { New-Item -ItemType Directory -Force -Path $tmp | Out-Null }
+
+# --- Self-seed: every fixture the harness needs, regenerated each run. -------
+# plan.config must satisfy the strict engagement-config parser (all
+# authorization fields mandatory; ApiSecurity is penetrative so
+# penetrative_testing_approved must be true).
+@"
+engagement_id=eng-system
+authorized_by=jane.doe
+authorized_by_role=SecurityAdmin
+time_window_start=0
+time_window_end=4102444800
+in_scope_targets=api-staging
+deny_list_targets=prod-ledger
+allowed_techniques=PassiveRecon,ConfigurationAudit,ApiSecurity
+max_intensity=Standard
+high_impact_approved=false
+penetrative_testing_approved=true
+
+[target]
+id=api-staging
+target_type=Api
+criticality=3
+"@ | Set-Content -Path "$tmp\plan.config" -Encoding ascii
+
+@"
+engagement_id=eng-deny
+authorized_by=jane.doe
+authorized_by_role=SecurityAdmin
+time_window_start=0
+time_window_end=4102444800
+in_scope_targets=prod-ledger
+deny_list_targets=prod-ledger
+allowed_techniques=PassiveRecon
+max_intensity=Passive
+high_impact_approved=false
+penetrative_testing_approved=false
+
+[target]
+id=prod-ledger
+target_type=Api
+criticality=2
+"@ | Set-Content -Path "$tmp\deny.config" -Encoding ascii
+
+@"
+{"version":"1","producer":"security-agent","kind":"audit_record","fields":{"timestamp_epoch_seconds":"1720000000","actor":"secops","role":"SecurityAdmin","action":"plan_authorized_scan","target":"test-target","details":"tasks=2 high_impact=0"}}
+{"version":"1","producer":"security-agent","kind":"audit_record","fields":{"timestamp_epoch_seconds":"1720000001","actor":"jane.doe","role":"SecurityEngineer","action":"run_tool","target":"test-target","details":"tool=nmap status=completed","test_run_id":"run-abc"}}
+"@ | Set-Content -Path "$tmp\audit-view.jsonl" -Encoding ascii
+
+@"
+{"version":"1","producer":"security-agent","kind":"finding_record","fields":{"confidence_percent":"92","finding_id":"TEST-001","normalized_risk_score":"8.5000","remediation_playbook":"Patch and harden","severity":"High","source_tool":"test-tool","target_id":"test-target","title":"Test finding"}}
+"@ | Set-Content -Path "$tmp\findings-src.jsonl" -Encoding ascii
+
+# schedule-retest reads a findings log as input.
+Copy-Item "$tmp\findings-src.jsonl" "$tmp\fresh-dest.jsonl" -Force
+
+@"
+sample content for the autopsy tool report
+"@ | Set-Content -Path "$tmp\tool-input.txt" -Encoding ascii
+
 $results = @()
 $script:seq = 0
 
