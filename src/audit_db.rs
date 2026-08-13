@@ -1,18 +1,28 @@
 //! On-disk persistence for the audit ledger, backed by the `.sadb` engine.
 //!
-//! Guardrails removed (see commit note "remove all guardrails"): the audit
-//! trail is disabled. [`append_audit_records`] is a no-op — nothing is ever
-//! written to disk. Reading existing databases via
-//! [`load_audit_records`] still works so previously-created databases (or
-//! files written by the application layer's own design) remain viewable.
+//! Same role as [`crate::audit_log`]'s append-only JSON Lines file, just
+//! backed by [`crate::sadb`] instead. See [`crate::findings_db`] for why
+//! opening a missing path creates an empty database rather than erroring.
 
 use crate::governance::{AuditRecord, Role};
-use crate::sadb::codec::Reader;
+use crate::sadb::codec::{Reader, write_option_string, write_string, write_u64};
 use crate::sadb::{Database, DbError};
 use std::path::Path;
 use std::str::FromStr;
 
 const TABLE: &str = "audit_records";
+
+fn encode(record: &AuditRecord) -> Vec<u8> {
+    let mut buffer = Vec::new();
+    write_u64(&mut buffer, record.timestamp_epoch_seconds);
+    write_string(&mut buffer, &record.actor);
+    write_string(&mut buffer, &record.role.to_string());
+    write_string(&mut buffer, &record.action);
+    write_string(&mut buffer, &record.target);
+    write_string(&mut buffer, &record.details);
+    write_option_string(&mut buffer, record.test_run_id.as_deref());
+    buffer
+}
 
 fn decode(bytes: &[u8]) -> Option<AuditRecord> {
     let mut reader = Reader::new(bytes);
@@ -31,15 +41,17 @@ fn decode(bytes: &[u8]) -> Option<AuditRecord> {
 /// a single transaction, creating the database if it doesn't already
 /// exist.
 ///
-/// Guardrails removed: this is a no-op. The audit trail is disabled, so
-/// no records are written and the database is never created.
-///
 /// # Errors
 ///
-/// Never errors.
-pub const fn append_audit_records(_path: &Path, _records: &[AuditRecord]) -> Result<(), DbError> {
-    // Audit trail disabled — intentionally a no-op.
-    Ok(())
+/// Returns [`DbError`] if the database can't be opened, a record can't be
+/// inserted, or the transaction can't be committed.
+pub fn append_audit_records(path: &Path, records: &[AuditRecord]) -> Result<(), DbError> {
+    let mut db = Database::open(path)?;
+    let mut txn = db.begin();
+    for record in records {
+        txn.insert(TABLE, &encode(record))?;
+    }
+    txn.commit()
 }
 
 /// Reads back every valid audit record previously written by
@@ -90,7 +102,7 @@ mod tests {
     }
 
     #[test]
-    fn append_is_a_noop_after_guardrail_removal() {
+    fn appends_and_loads_records_round_trip() {
         let path = temp_path("round-trip");
         let _ = fs::remove_file(&path);
 
@@ -98,14 +110,11 @@ mod tests {
         let loaded = load_audit_records(&path).expect("load should succeed");
 
         fs::remove_file(&path).expect("remove temp file");
-        assert!(
-            loaded.is_empty(),
-            "audit trail is disabled; nothing recorded"
-        );
+        assert_eq!(loaded, sample_records());
     }
 
     #[test]
-    fn appending_twice_writes_nothing() {
+    fn appending_twice_preserves_earlier_records() {
         let path = temp_path("append-twice");
         let _ = fs::remove_file(&path);
 
@@ -115,10 +124,7 @@ mod tests {
         let loaded = load_audit_records(&path).expect("load should succeed");
 
         fs::remove_file(&path).expect("remove temp file");
-        assert!(
-            loaded.is_empty(),
-            "audit trail is disabled; nothing recorded"
-        );
+        assert_eq!(loaded, records);
     }
 
     #[test]
@@ -131,9 +137,6 @@ mod tests {
         let loaded = load_audit_records(&path).expect("load should succeed");
 
         fs::remove_file(&path).expect("remove temp file");
-        assert!(
-            loaded.is_empty(),
-            "audit trail is disabled; nothing recorded"
-        );
+        assert_eq!(loaded[0].test_run_id, None);
     }
 }

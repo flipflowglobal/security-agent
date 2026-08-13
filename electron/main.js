@@ -672,7 +672,10 @@ ipcMain.handle('save-file', async (event, options, content) => {
     }
 });
 
-// Writes a text file — only inside the workspace.
+// Writes a text file — only inside the workspace. Rejects symlinks/junctions
+// so a pre-planted link inside the workspace cannot redirect the write to a
+// path outside the sandbox (path.resolve is lexical and does not follow
+// Windows junctions).
 ipcMain.handle('write-file', async (event, filePath, content) => {
     if (!trusted(event)) return { ok: false, error: 'untrusted sender' };
     const violation = assertWorkspacePath(filePath);
@@ -681,7 +684,18 @@ ipcMain.handle('write-file', async (event, filePath, content) => {
     if (text.length > 16 * 1024 * 1024) return { ok: false, error: 'content too large to write (>16 MiB)' };
     try {
         await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-        await fs.promises.writeFile(filePath, text, 'utf-8');
+        const parent = await fs.promises.realpath(path.dirname(filePath));
+        await fs.promises.mkdir(WORKSPACE_BASE, { recursive: true });
+        const base = await fs.promises.realpath(WORKSPACE_BASE);
+        if (parent !== base && !parent.startsWith(base + path.sep)) {
+            return { ok: false, error: 'workspace path traverses a junction/symlink outside the workspace' };
+        }
+        const target = path.join(parent, path.basename(filePath));
+        try {
+            const stats = await fs.promises.lstat(target);
+            if (stats.isSymbolicLink()) return { ok: false, error: 'symlinks are not allowed' };
+        } catch (_e) { /* target does not exist yet — fine */ }
+        await fs.promises.writeFile(target, text, 'utf-8');
         return { ok: true };
     } catch (err) {
         return { ok: false, error: String(err) };

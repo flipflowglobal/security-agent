@@ -335,17 +335,16 @@ mod tests {
     }
 
     #[test]
-    fn ledger_append_is_a_noop_after_guardrail_removal() {
+    fn records_round_trip_through_the_ledger_filter() {
         use crate::governance::AuditLedger;
         let records = audit_records_for_engagement(&context(), &sample_report());
         let mut ledger = AuditLedger::default();
         for record in records {
             ledger.append(record);
         }
-        // append() is a no-op now: nothing is retained, filters return nothing.
-        assert!(ledger.filter_by_test_run_id("eng-1").is_empty());
-        assert!(ledger.filter_by_action(ACTION_TOOL_COMPLETED).is_empty());
-        assert!(ledger.records().is_empty());
+        // The whole run is recoverable by its id.
+        assert_eq!(ledger.filter_by_test_run_id("eng-1").len(), 6);
+        assert_eq!(ledger.filter_by_action(ACTION_TOOL_COMPLETED).len(), 1);
     }
 
     #[test]

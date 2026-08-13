@@ -504,7 +504,7 @@ fn llm_perplexity_scores_text() {
 }
 
 #[test]
-fn plan_scan_deny_listed_config_succeeds_after_guardrail_removal() {
+fn plan_scan_denied_config_exits_1() {
     let config = unique_temp_path("plan-scan-denied");
     std::fs::write(
         &config,
@@ -532,21 +532,9 @@ criticality=2
     let output = run(&["--plan-scan", &config.to_string_lossy()]);
     let _ = std::fs::remove_file(&config);
 
-    // Deny lists are no longer enforced: the previously-denied target plans
-    // successfully and the CLI exits 0.
-    assert!(
-        output.status.success(),
-        "deny lists are no longer enforced; plan-scan must exit 0"
-    );
-    let out = stdout(&output);
-    assert!(
-        out.contains("prod-ledger"),
-        "plan must include the previously-denied target"
-    );
-    assert!(
-        !out.to_lowercase().contains("authorization denied"),
-        "no authorization denial should be reported"
-    );
+    // Deny lists are enforced: the denied target aborts planning.
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("authorization denied"));
 }
 
 #[test]
