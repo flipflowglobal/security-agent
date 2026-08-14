@@ -127,7 +127,7 @@ pub use help::{
 pub use inference::{CandleTextModel, InferenceError, ModelConfig};
 pub use integrity::{IntegrityManifest, IntegrityStatus, verify};
 pub use intensity_guard::{IntensityAdvisory, advise};
-pub use language_model::{LanguageModel, NeuralLanguageModel};
+pub use language_model::{GenerationOptions, LanguageModel, NeuralLanguageModel};
 pub use lm_eval::{
     CoverageEval, GenerationEval, LmEvalReport, PerplexityEval, RoutingEval, evaluate,
 };

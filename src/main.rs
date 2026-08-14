@@ -1704,6 +1704,12 @@ struct LanguageSelection {
     /// transformer is much larger than the toy model and can produce useful
     /// continuations, so it gets a bigger budget.
     max_generation_tokens: usize,
+    /// True when the selected backend is a real transformer (the local
+    /// Llama/SmolLM model or the candle byte-GPT), false for the tiny
+    /// compiled-in model. Chat trusts a real model to answer free-form
+    /// questions; the toy model only gets to improvise for its two narrow
+    /// jobs (generate/anomaly), everything else falls back to grounded data.
+    is_real_llm: bool,
 }
 
 /// Selects the language-model backend from a leading `--model <dir>` option,
@@ -1730,6 +1736,7 @@ fn select_language_model(mut words: Vec<String>) -> Result<LanguageSelection, St
                     model: Box::new(model),
                     words,
                     max_generation_tokens: 256,
+                    is_real_llm: true,
                 });
             }
             let model = load_candle_model(path)?;
@@ -1737,6 +1744,7 @@ fn select_language_model(mut words: Vec<String>) -> Result<LanguageSelection, St
                 model: Box::new(model),
                 words,
                 max_generation_tokens: 24,
+                is_real_llm: true,
             });
         }
         #[cfg(not(feature = "inference"))]
@@ -1755,12 +1763,14 @@ fn select_language_model(mut words: Vec<String>) -> Result<LanguageSelection, St
             model: Box::new(model),
             words,
             max_generation_tokens: 256,
+            is_real_llm: true,
         });
     }
     Ok(LanguageSelection {
         model: Box::new(security_agent::NeuralLanguageModel::bundled()),
         words,
         max_generation_tokens: 24,
+        is_real_llm: false,
     })
 }
 
@@ -1820,14 +1830,17 @@ struct ChatReplyArgs {
     context: String,
     /// Conversation history (`--turn <role>\t<text>`, repeatable).
     turns: Vec<(String, String)>,
+    /// Emit `{"kind": ..., "text": ...}` instead of plain text so the GUI
+    /// can distinguish grounded, chitchat, generative, and toy-model replies.
+    json: bool,
 }
 
 /// Parses `--chat-reply` options: an optional leading `--model <dir>`, optional
-/// tool-result `--context <text>`, and repeatable `--turn <role>\t<text>`
-/// conversation history. Only flags *before* the message are options — the
-/// first non-flag word starts the message and everything after it (even words
-/// that look like flags) belongs to the message, so a question like "what does
-/// `--model` do?" is never misparsed.
+/// tool-result `--context <text>`, repeatable `--turn <role>\t<text>`
+/// conversation history, and `--chat-reply-json`. Only flags *before* the
+/// message are options — the first non-flag word starts the message and
+/// everything after it (even words that look like flags) belongs to the
+/// message, so a question like "what does `--model` do?" is never misparsed.
 fn parse_chat_reply_args(
     arguments: &mut impl Iterator<Item = String>,
 ) -> Result<ChatReplyArgs, String> {
@@ -1835,6 +1848,7 @@ fn parse_chat_reply_args(
     let mut model_dir = None;
     let mut context = String::new();
     let mut turns = Vec::new();
+    let mut json = false;
     while let Some(word) = arguments.next() {
         match word.as_str() {
             "--model" => model_dir = Some(next_chat_value(arguments, "--model")?),
@@ -1846,6 +1860,7 @@ fn parse_chat_reply_args(
                 })?;
                 turns.push((role.to_string(), text.to_string()));
             }
+            "--chat-reply-json" => json = true,
             first_word => {
                 message_words.push(first_word.to_string());
                 message_words.extend(arguments);
@@ -1858,6 +1873,7 @@ fn parse_chat_reply_args(
         model_dir,
         context,
         turns,
+        json,
     })
 }
 
@@ -1872,6 +1888,31 @@ fn sanitize_chat_reply(reply: &str) -> &str {
         reply = &reply[..index];
     }
     reply.trim()
+}
+
+/// Prints the chat reply as plain text, or as a JSON envelope
+/// `{"kind": ..., "text": ...}` when `json` is set. `kind` is one of
+/// `grounded` (deterministic asset data / CLI pointer), `chitchat` (a social
+/// pleasantry), `generative` (the real local transformer's continuation), or
+/// `fallback` (the tiny bundled model's continuation). The text is escaped
+/// for JSON so multi-line catalog lists survive intact.
+fn chat_reply_print(kind: &str, text: &str, json: bool) {
+    if !json {
+        println!("{text}");
+        return;
+    }
+    let mut escaped = String::with_capacity(text.len() + 16);
+    for ch in text.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            c => escaped.push(c),
+        }
+    }
+    println!("{{\"kind\":\"{kind}\",\"text\":\"{escaped}\"}}");
 }
 
 /// Produces a free-form assistant reply to `--chat-reply <message words...>`
@@ -1937,21 +1978,119 @@ fn chat_reply_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode 
     let model = security_agent::NeuralLanguageModel::bundled();
     let interpretation = security_agent::interpret(&message, &assets, &model);
     let grounded = grounded_chat_reply(&interpretation, &assets);
-    let prefer_grounded = matches!(
+    // Pure social chitchat ("hi", "how are you", "thanks") is OutOfScope to
+    // the router, but deserves a warm reply rather than the cold "outside my
+    // scope" line. Detect it first: only messages made entirely of social
+    // markers get this treatment, so a real request never gets swallowed.
+    if let Some(chitchat) = chitchat_reply(&message, &assets) {
+        chat_reply_print("chitchat", &chitchat, parsed.json);
+        return ExitCode::SUCCESS;
+    }
+    // Intents whose grounded answer is authoritative real data or points at a
+    // real CLI command — the catalog list, live status/counts, help pointers,
+    // or an operational action that must run under engagement guardrails. The
+    // model never improvises these, because its guess could be wrong or
+    // dangerous.
+    let grounded_authoritative = matches!(
         interpretation.intent,
-        Intent::OfflineStatus
-            | Intent::About
-            | Intent::Help
-            | Intent::ListTools
+        Intent::ListTools
             | Intent::ListSkills
             | Intent::ShowSkill
+            | Intent::OfflineStatus
+            | Intent::About
+            | Intent::Help
+            | Intent::PlanScan
+            | Intent::ScheduleRetest
+            | Intent::ViewAudit
+            | Intent::ViewAuditDb
+            | Intent::ViewFindingsDb
+            | Intent::ViewCalibrationDb
+            | Intent::ViewReasoningLogDb
     );
-    if prefer_grounded || reply.trim().is_empty() {
-        println!("{grounded}");
+    // When the selected backend is a real transformer (the bundled local
+    // Llama/SmolLM model), its answer to a free-form question — explain a
+    // concept, summarize, think through a problem — is far more useful than
+    // the canned fallback, so prefer it for every non-authoritative intent
+    // (including OutOfScope). The tiny toy model only gets to improvise for
+    // its two narrow jobs; everything else falls back to grounded data.
+    let generative_ok = !reply.trim().is_empty()
+        && !grounded_authoritative
+        && (selection.is_real_llm
+            || matches!(
+                interpretation.intent,
+                Intent::Generate | Intent::AnomalyCheck
+            ));
+    if generative_ok {
+        let kind = if selection.is_real_llm {
+            "generative"
+        } else {
+            "fallback"
+        };
+        chat_reply_print(kind, reply, parsed.json);
     } else {
-        println!("{reply}");
+        chat_reply_print("grounded", &grounded, parsed.json);
     }
     ExitCode::SUCCESS
+}
+
+/// A warm, deterministic reply for pure social chitchat ("hi", "how are
+/// you", "thanks") that the NLU router flags as OutOfScope. Returns `None`
+/// unless the whole message is made of short social markers, so a real
+/// request never gets swallowed by the pleasantry path.
+fn chitchat_reply(message: &str, assets: &security_agent::LocalAgentAssets) -> Option<String> {
+    let lowered = message.to_ascii_lowercase();
+    let normalized: String = lowered
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || c.is_ascii_whitespace())
+        .collect();
+    let words: Vec<&str> = normalized.split_whitespace().collect();
+    // A message is chitchat only when it is short *and* made entirely of
+    // social markers — a real request never gets swallowed by the pleasantry
+    // path.
+    let social = [
+        "hi", "hello", "hey", "yo", "howdy", "greetings", "morning", "afternoon", "evening",
+        "good", "how", "are", "you", "doing", "there", "thanks", "thank", "ok", "okay", "bye",
+        "goodbye", "ciao", "whats", "what", "up", "sup", "nice", "to", "meet", "pleased",
+    ];
+    if words.is_empty() || words.len() > 4 || !words.iter().all(|w| social.contains(w)) {
+        return None;
+    }
+    let tool_count = assets.tools().len();
+    let skill_count = assets.skills().len();
+    if words.iter().any(|w| ["thanks", "thank"].contains(w)) {
+        return Some(
+            "You're welcome. Happy to help — ask me about my tools or skills anytime.".to_string(),
+        );
+    }
+    if words.iter().any(|w| ["bye", "goodbye", "ciao"].contains(w)) {
+        return Some("Goodbye! I'll be here, offline and ready, whenever you need me.".to_string());
+    }
+    if (words.iter().any(|w| *w == "good")
+        && words.iter().any(|w| ["morning", "afternoon", "evening"].contains(w)))
+        || (words.iter().any(|w| *w == "how") && words.iter().any(|w| *w == "you"))
+    {
+        return Some(format!(
+            "I'm online and ready — offline by default, with {tool_count} cataloged tools and \
+             {skill_count} skills. What can I help you with? Try 'list tools' or 'help'."
+        ));
+    }
+    let greeting = [
+        "hi", "hello", "hey", "yo", "howdy", "greetings", "morning", "afternoon", "evening",
+        "sup", "meet",
+    ];
+    if words.iter().any(|w| greeting.contains(w))
+        || (words.iter().any(|w| *w == "whats") && words.iter().any(|w| *w == "up"))
+    {
+        return Some(format!(
+            "Hello! I'm Security-Agent, an offline security orchestration assistant with \
+             {tool_count} cataloged tools and {skill_count} skills. Ask me to list my tools, \
+             explain a skill, or report my status."
+        ));
+    }
+    if words == ["ok"] || words == ["okay"] {
+        return Some("Got it. What next?".to_string());
+    }
+    None
 }
 
 /// A deterministic, factual chat reply for a message the generative model
@@ -1985,23 +2124,32 @@ fn grounded_chat_reply(
              scan, report my status, score a string for anomalies, or generate text. Try \
              'list tools', 'explain nmap', or 'help'."
             .to_string(),
-        Intent::ListTools => format!(
-            "I have {tool_count} cataloged tools; listing them. (The generative model is \
-             limited, so this is the authoritative catalog.)"
-        ),
-        Intent::ListSkills => format!(
-            "I have {skill_count} skills; listing them. (The generative model is limited, \
-             so this is the authoritative catalog.)"
-        ),
-        Intent::ShowSkill => interpretation.slot.as_deref().map_or_else(
-            || {
-                format!(
-                    "I can explain any of my {skill_count} skills — name one and I will \
-                         show its guide."
-                )
-            },
-            |name| format!("Showing the {name} skill. Ask 'explain {name}' for its guide."),
-        ),
+        Intent::ListTools => {
+            // Actually list the catalog: the reply is the authoritative list,
+            // not a promise to list. Every tool name on its own line keeps the
+            // output greppable in the CLI and readable in the GUI chat bubble.
+            let mut lines = Vec::with_capacity(tool_count + 2);
+            lines.push(format!(
+                "I have {tool_count} cataloged tools; here they are:"
+            ));
+            for tool in assets.tools() {
+                lines.push(format!("  - {}", tool.definition.name));
+            }
+            lines.join("\n")
+        }
+        Intent::ListSkills => {
+            let mut lines = Vec::with_capacity(skill_count + 2);
+            lines.push(format!(
+                "I have {skill_count} skills; here they are:"
+            ));
+            for skill in assets.skills() {
+                lines.push(format!("  - {}", skill.name));
+            }
+            lines.join("\n")
+        }
+        Intent::ShowSkill => {
+            show_skill_chat_reply(assets, interpretation.slot.as_deref(), skill_count)
+        }
         Intent::AnomalyCheck => {
             "I can score a string for anomaly, but I need the text to analyze — send the \
              log line or finding and I will rank how surprising it reads."
@@ -2033,6 +2181,40 @@ fn grounded_chat_reply(
         }
         Intent::OutOfScope => interpretation.reply.clone(),
     }
+}
+
+/// The authoritative answer to "explain <skill>" in chat: the skill's own
+/// guide body — the same content `--show-skill <name>` prints — capped to a
+/// chat-friendly size with a pointer to the full text. The generative model
+/// never improvises this, because its guess about a tool's usage could be
+/// wrong or dangerous.
+fn show_skill_chat_reply(
+    assets: &security_agent::LocalAgentAssets,
+    name: Option<&str>,
+    skill_count: usize,
+) -> String {
+    /// The most of a skill guide a chat bubble should carry; anything longer
+    /// is pointed at the CLI so the full text stays one command away.
+    const CHAT_SKILL_CAP: usize = 4000;
+
+    let Some(name) = name else {
+        return format!(
+            "I can explain any of my {skill_count} skills — name one and I will show its guide."
+        );
+    };
+    let Some(skill) = assets.skill(name) else {
+        return format!(
+            "I don't have a skill named '{name}'. Ask 'list skills' for the full set."
+        );
+    };
+    let mut body = skill.content.trim().to_string();
+    if body.chars().count() > CHAT_SKILL_CAP {
+        body = body.chars().take(CHAT_SKILL_CAP).collect::<String>();
+        body.push_str(&format!(
+            "\n… (guide truncated — run `--show-skill {name}` for the full text)"
+        ));
+    }
+    format!("{name} skill guide:\n{body}")
 }
 
 /// True when a model reply never got off the ground: ChatML-marker residue,
@@ -3533,7 +3715,7 @@ const CAPABILITY_ROWS: &[(&str, &str, &str)] = &[
         "Chat reply (LLM)",
         "--chat-reply <message>",
         "\"summarize my last findings report\" (offline assistant reply; the GUI chat page's backend; \
-         options: --model <dir>, --context <tool results>, --turn role\\ttext ...)",
+         options: --model <dir>, --context <tool results>, --turn role\\ttext ..., --chat-reply-json)",
     ),
     (
         "Score text for anomaly (LLM)",

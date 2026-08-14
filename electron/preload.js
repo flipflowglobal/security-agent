@@ -38,6 +38,9 @@ contextBridge.exposeInMainWorld('api', {
     onLogLine: (callback) => {
         ipcRenderer.on('log-line', (_event, entry) => callback(entry));
     },
+    onModelStatus: (callback) => {
+        ipcRenderer.on('model-status', (_event, status) => callback(status));
+    },
     removeLogListeners: () => {
         ipcRenderer.removeAllListeners('log-line');
     },

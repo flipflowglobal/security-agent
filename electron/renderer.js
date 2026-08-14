@@ -55,6 +55,8 @@
             history: [],
             modelDir: null,
             memoryPath: null,
+            binarySupportsModel: null, // null = probe in flight; true/false = result
+            bundledModelDir: null,     // the app-shipped model directory (main process)
         },
     };
 
@@ -474,6 +476,11 @@
         }
         $('#stat-binary').textContent = info.binaryFound ? 'Ready' : 'Missing';
         $('#stat-mode').textContent = state.mode === 'offline' ? 'Offline' : 'Online';
+        if (typeof info.binarySupportsModel === 'boolean') {
+            state.chat.binarySupportsModel = info.binarySupportsModel;
+            state.chat.bundledModelDir = info.bundledModelDir || null;
+            chatUpdateSession();
+        }
 
         const cat = await window.api.getToolCatalog();
         state.catalog = cat;
@@ -1861,9 +1868,29 @@
         return wrap;
     }
 
+    // The label for the chat model chip: the user-chosen model directory when
+    // set, otherwise the app-shipped LLM when the binary supports it, with an
+    // explicit "toy model" marker when the binary lacks --features inference.
+    function chatModelLabel() {
+        if (state.chat.modelDir) {
+            const name = String(state.chat.modelDir).split(/[\\/]/).pop();
+            return state.chat.binarySupportsModel === false ? name + ' · toy' : name;
+        }
+        if (state.chat.binarySupportsModel === false) return 'toy model';
+        if (state.chat.binarySupportsModel === true && state.chat.bundledModelDir) {
+            return 'LLM · ' + String(state.chat.bundledModelDir).split(/[\\/]/).pop();
+        }
+        return state.chat.binarySupportsModel === true ? 'bundled LLM' : 'bundled model';
+    }
+
     function chatUpdateSession() {
         const modelText = $('#chat-model-text');
-        if (modelText) modelText.textContent = state.chat.modelDir || 'bundled model';
+        if (modelText) modelText.textContent = chatModelLabel();
+        const chip = $('#chat-model');
+        if (chip) {
+            chip.classList.toggle('fallback', state.chat.binarySupportsModel === false);
+            chip.classList.toggle('ok', state.chat.binarySupportsModel === true);
+        }
         const sModel = $('#chat-session-model');
         if (sModel) sModel.textContent = state.chat.modelDir || 'bundled';
         const sMem = $('#chat-session-memory');
@@ -2163,7 +2190,7 @@
         // 2) Assistant textual reply from the offline model. Flags come
         // before the message so the message itself can mention flags like
         // `--model` without being misparsed.
-        const replyArgs = ['--chat-reply'];
+        const replyArgs = ['--chat-reply', '--chat-reply-json'];
         if (state.chat.modelDir) replyArgs.push('--model', state.chat.modelDir);
         const context = chatToolContext(agentRes);
         if (context) replyArgs.push('--context', context);
@@ -2174,8 +2201,26 @@
         typing.remove();
         if (modelChip) modelChip.classList.remove('busy');
 
-        const answer = replyRes.ok && replyRes.stdout.trim() ? replyRes.stdout.trim() : '';
-        const msg = chatAppend('assistant', answer || '(the offline model returned no reply.)', fmtTime(Date.now()));
+        // The binary answers `{"kind": "...", "text": "..."}` so the page can
+        // label grounded (asset data), chitchat, generative (real LLM), and
+        // fallback (toy model) replies; plain text means an older binary.
+        const outText = replyRes.ok ? (replyRes.stdout || '').trim() : '';
+        let answer = '';
+        let replyKind = 'grounded';
+        if (outText) {
+            try {
+                const envelope = JSON.parse(outText);
+                if (envelope && typeof envelope.text === 'string') {
+                    answer = envelope.text;
+                    replyKind = typeof envelope.kind === 'string' ? envelope.kind : 'grounded';
+                }
+            } catch (_e) { /* plain-text reply from an older binary */ }
+        }
+        if (!answer) answer = outText;
+        const KIND_LABELS = { grounded: 'grounded', chitchat: 'chitchat', generative: 'llm', fallback: 'toy' };
+        const kindLabel = KIND_LABELS[replyKind] || replyKind;
+        const replyMeta = fmtTime(Date.now()) + ' · ' + kindLabel;
+        const msg = chatAppend('assistant', answer || '(the offline model returned no reply.)', replyMeta);
         if (agentRes.ok) {
             msg.appendChild(chatRenderRunCard(agentRes));
         } else {
@@ -2193,7 +2238,7 @@
             stdout: String(agentRes.stdout || '').slice(0, 8000),
         } : null;
         state.chat.history.push({ type: 'user', text: text, meta: meta });
-        state.chat.history.push({ type: 'assistant', text: answer, meta: fmtTime(Date.now()), run: run });
+        state.chat.history.push({ type: 'assistant', text: answer, meta: replyMeta, run: run });
         if (state.chat.history.length > 200) state.chat.history = state.chat.history.slice(-200);
         chatPersist();
         chatUpdateSession();
@@ -2368,6 +2413,15 @@
         chatLoadSettings();
         document.body.classList.toggle('theme-light', state.chat.theme === 'light');
         bindChat();
+        if (window.api.onModelStatus) {
+            window.api.onModelStatus(function (status) {
+                if (status && typeof status.supported === 'boolean') {
+                    state.chat.binarySupportsModel = status.supported;
+                    state.chat.bundledModelDir = status.modelDir || null;
+                    chatUpdateSession();
+                }
+            });
+        }
         chatRenderHistory();
         renderQuickActions();
         renderHistory();

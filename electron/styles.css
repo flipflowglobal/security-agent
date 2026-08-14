@@ -850,6 +850,8 @@ select { cursor: pointer; }
     flex-shrink: 0;
 }
 .chat-model.busy .chat-model-dot { background: var(--amber); animation: pulse 1s ease-in-out infinite; }
+.chat-model.ok .chat-model-dot { background: var(--green); }
+.chat-model.fallback .chat-model-dot { background: var(--amber); }
 @keyframes pulse { 50% { opacity: 0.35; } }
 
 .chat-messages {

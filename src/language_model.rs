@@ -108,6 +108,20 @@ pub trait LanguageModel {
     /// produces the same continuation.
     fn generate(&self, prompt: &str, max_tokens: usize) -> String;
 
+    /// Continues `prompt` for up to `max_tokens` tokens using explicit
+    /// [`GenerationOptions`]. The default implementation ignores the options
+    /// and delegates to [`LanguageModel::generate`], so backends that do not
+    /// override it keep their current decoding; backends with configurable
+    /// sampling override it to honor every knob.
+    fn generate_with(
+        &self,
+        prompt: &str,
+        max_tokens: usize,
+        _options: GenerationOptions,
+    ) -> String {
+        self.generate(prompt, max_tokens)
+    }
+
     /// The model's perplexity on `text` — its average per-token surprise.
     /// Lower means the text looks more like what the model was trained on.
     fn perplexity(&self, text: &str) -> f32;
@@ -126,6 +140,43 @@ pub trait LanguageModel {
     ) -> String {
         let prompt = chat_prompt(context, turns, message);
         self.generate(&prompt, max_tokens)
+    }
+}
+
+/// Sampling knobs for [`LanguageModel::generate_with`]. The default
+/// reproduces the plain [`LanguageModel::generate`] behavior exactly
+/// (temperature 0.7, top-`k` 8, seed derived from the prompt, no repetition
+/// penalty, stop at the end-of-sentence token), so switching a caller to
+/// `generate_with` never changes existing output.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GenerationOptions {
+    /// Softmax sharpening applied as `probs.powf(1 / temperature)` before
+    /// top-`k` filtering. Below 1 sharpens toward the mode (closer to
+    /// greedy); above 1 flattens the distribution.
+    pub temperature: f32,
+    /// Only the `top_k` most probable next tokens are eligible at each
+    /// decoding step.
+    pub top_k: usize,
+    /// An explicit sampling seed; `None` derives it from the prompt so the
+    /// same prompt always yields the same continuation.
+    pub seed: Option<u64>,
+    /// A repetition penalty applied to tokens already emitted in the
+    /// continuation. `1.0` (the default) disables it; values above 1
+    /// suppress repeats by dividing the offending token's weight.
+    pub repeat_penalty: f32,
+    /// Whether generation stops when the end-of-sentence token is produced.
+    pub stop_at_eos: bool,
+}
+
+impl Default for GenerationOptions {
+    fn default() -> Self {
+        Self {
+            temperature: TEMPERATURE,
+            top_k: TOP_K,
+            seed: None,
+            repeat_penalty: 1.0,
+            stop_at_eos: true,
+        }
     }
 }
 
@@ -981,6 +1032,32 @@ impl NeuralLanguageModel {
         normalize(word).is_some_and(|w| self.vocab.knows_word(&w))
     }
 
+    /// The `k` most probable next tokens after `prompt`, ranked by their
+    /// temperature-shaped sampling weight (top-`k` filtered, ties broken by
+    /// token id, fully deterministic). A diagnostic window into what the
+    /// model expects next without drawing from it — useful for
+    /// [`crate::lm_eval`] and for showing callers the model's own candidates.
+    #[must_use]
+    pub fn top_k_next_tokens(&self, prompt: &str, k: usize) -> Vec<(String, f32)> {
+        let context = self.seed_context(prompt);
+        let options = GenerationOptions::default();
+        let temperature = options.temperature.clamp(0.05, 5.0);
+        let mut candidates: Vec<(usize, f32)> = self
+            .forward(context)
+            .probs
+            .iter()
+            .enumerate()
+            .filter(|&(id, _)| self.vocab.is_emittable(id))
+            .map(|(id, &p)| (id, p.max(f32::MIN_POSITIVE).powf(1.0 / temperature)))
+            .collect();
+        candidates.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        candidates.truncate(k.min(candidates.len()));
+        candidates
+            .into_iter()
+            .map(|(id, weight)| (self.vocab.token(id).to_string(), weight))
+            .collect()
+    }
+
     /// The self-calibrated anomaly threshold: perplexity at or above which a
     /// string is out-of-domain enough to flag (see [`crate::anomaly`]).
     ///
@@ -1352,34 +1429,48 @@ impl NeuralLanguageModel {
         }
     }
 
-    /// Draws the next token id for `context` by temperature/top-`k`
-    /// sampling: [`TEMPERATURE`]-sharpen the predicted distribution, keep
-    /// only its [`TOP_K`] most probable tokens, then draw one proportionally
-    /// to those (unnormalized) weights by scaling `rng`'s `[0, 1)` draw by
-    /// their sum — equivalent to renormalizing them to probabilities first.
-    /// Candidates are ranked by weight with token id as an explicit
-    /// tie-breaker (`f32::total_cmp`, not `partial_cmp`), so ties and any
-    /// stray `NaN` can't leave the ordering — and so the sampled token —
-    /// dependent on sort stability. If floating-point rounding leaves a
-    /// sliver of the draw unconsumed after the loop, or `probs` is somehow
-    /// empty, this falls back to the top-ranked candidate (or token id `0`
-    /// if there were none at all).
+    /// Samples the next token with the default decoding knobs (see
+    /// [`GenerationOptions::default`]). Kept for callers that predate
+    /// configurable generation; [`Self::sample_next_with`] is the real
+    /// implementation.
     fn sample_next(&self, context: [usize; CONTEXT], rng: &mut Rng) -> usize {
+        let options = GenerationOptions::default();
+        self.sample_next_with(context, rng, &options, &[])
+    }
+
+    /// Samples the next token honoring `options`, excluding `seen` tokens
+    /// from the repetition penalty (when enabled) and drawing from the
+    /// top-`k` filtered, temperature-shaped distribution.
+    fn sample_next_with(
+        &self,
+        context: [usize; CONTEXT],
+        rng: &mut Rng,
+        options: &GenerationOptions,
+        seen: &[usize],
+    ) -> usize {
         let pass = self.forward(context);
 
         // Restrict sampling to emittable tokens: whole words and EOS. The
         // character byte-fallback tokens exist only to encode unknown input
         // and must never be generated as raw characters, which would derail
         // the continuation.
+        let temperature = options.temperature.clamp(0.05, 5.0);
+        let top_k = options.top_k.max(1);
         let mut candidates: Vec<(usize, f32)> = pass
             .probs
             .iter()
             .enumerate()
             .filter(|&(id, _)| self.vocab.is_emittable(id))
-            .map(|(id, &p)| (id, p.max(f32::MIN_POSITIVE).powf(1.0 / TEMPERATURE)))
+            .map(|(id, &p)| {
+                let mut weight = p.max(f32::MIN_POSITIVE).powf(1.0 / temperature);
+                if options.repeat_penalty > 1.0 && seen.contains(&id) {
+                    weight /= options.repeat_penalty;
+                }
+                (id, weight)
+            })
             .collect();
         candidates.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        candidates.truncate(TOP_K.min(candidates.len()));
+        candidates.truncate(top_k.min(candidates.len()));
 
         let total: f32 = candidates.iter().map(|&(_, weight)| weight).sum();
         let mut draw = rng.unit() * total;
@@ -1665,22 +1756,39 @@ impl NeuralLanguageModel {
 
 impl LanguageModel for NeuralLanguageModel {
     fn generate(&self, prompt: &str, max_tokens: usize) -> String {
+        self.generate_with(prompt, max_tokens, GenerationOptions::default())
+    }
+
+    fn generate_with(
+        &self,
+        prompt: &str,
+        max_tokens: usize,
+        options: GenerationOptions,
+    ) -> String {
         let bos = self.vocab.id(BOS).unwrap_or(0);
         let eos = self.vocab.id(EOS).unwrap_or(1);
         let mut context = self.seed_context(prompt);
         let mut produced = Vec::new();
         // Seeded from the prompt so the same prompt always draws the same
         // sequence of samples, while different prompts land on different
-        // (still reproducible) draws.
-        let mut rng = Rng::new(SEED ^ hash_prompt(prompt));
+        // (still reproducible) draws. An explicit `options.seed` overrides
+        // that derivation for callers that want a fixed draw.
+        let seed = options
+            .seed
+            .unwrap_or_else(|| SEED ^ hash_prompt(prompt));
+        let mut rng = Rng::new(seed);
+        let mut seen: Vec<usize> = Vec::new();
 
         for _ in 0..max_tokens {
-            let next = self.sample_next(context, &mut rng);
-            if next == eos {
+            let next = self.sample_next_with(context, &mut rng, &options, &seen);
+            if options.stop_at_eos && next == eos {
                 break;
             }
             if next != bos {
                 produced.push(self.vocab.token(next).to_string());
+            }
+            if options.repeat_penalty > 1.0 {
+                seen.push(next);
             }
             // Slide the temporal window forward by one token.
             for slot in 0..CONTEXT - 1 {

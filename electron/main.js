@@ -61,22 +61,55 @@ function bundledModelDir() {
 // probed; true/false = cached result.
 let binarySupportsModel = null;
 
-function probeBundledModelSupport() {
-    if (binarySupportsModel !== null || !binaryPath) return;
+// Push the latest bundled-model support state to the renderer so the chat
+// page's model chip can label "offline LLM active" vs "toy model fallback".
+function emitModelStatus() {
+    try {
+        mainWindow.webContents.send('model-status', {
+            supported: binarySupportsModel,
+            modelDir: bundledModelDir(),
+        });
+    } catch (_e) { /* window gone */ }
+}
+
+// Promised probe: resolves with whether the current binary accepts `--model`
+// (i.e. was built with `--features inference`). The result is cached, so the
+// GUI never injects `--model` into a binary that would reject it, and the
+// chat chip can label itself accurately without blocking on a slow model
+// load. Runs in the background; the renderer is pushed the result.
+let binarySupportsModelPromise = null;
+function bundledModelSupport() {
+    if (binarySupportsModel !== null) return Promise.resolve(binarySupportsModel);
+    if (binarySupportsModelPromise) return binarySupportsModelPromise;
     const dir = bundledModelDir();
-    if (!dir) { binarySupportsModel = false; return; }
-    execFile(binaryPath, ['--chat-reply', '--model', dir, 'ping'], {
-        timeout: 20_000,
-        maxBuffer: 1024 * 1024,
-        encoding: 'utf-8',
-        windowsHide: true,
-        env: binaryEnv(),
-    }, (error, stdout, stderr) => {
-        const text = (stderr || '') + (error ? String(error) : '');
-        binarySupportsModel = !/requires a build with `--features inference`/.test(text);
-        emitLog(binarySupportsModel ? 'info' : 'warn',
-            'bundled offline model ' + (binarySupportsModel ? 'supported (inference build)' : 'NOT supported by this binary (no --features inference) — chat falls back to the toy model'));
+    if (!dir || !binaryPath) {
+        binarySupportsModel = false;
+        emitModelStatus();
+        return Promise.resolve(false);
+    }
+    binarySupportsModelPromise = new Promise((resolve) => {
+        execFile(binaryPath, ['--chat-reply', '--model', dir, 'ping'], {
+            timeout: 20_000,
+            maxBuffer: 1024 * 1024,
+            encoding: 'utf-8',
+            windowsHide: true,
+            env: binaryEnv(),
+        }, (error, stdout, stderr) => {
+            const text = (stderr || '') + (error ? String(error) : '');
+            binarySupportsModel = !/requires a build with `--features inference`/.test(text);
+            binarySupportsModelPromise = null;
+            emitLog(binarySupportsModel ? 'info' : 'warn',
+                'bundled offline model ' + (binarySupportsModel ? 'supported (inference build)' : 'NOT supported by this binary (no --features inference) — chat falls back to the toy model'));
+            emitModelStatus();
+            resolve(binarySupportsModel);
+        });
     });
+    return binarySupportsModelPromise;
+}
+
+// Startup kick-off (the probe runs in the background and pushes its result).
+function probeBundledModelSupport() {
+    bundledModelSupport();
 }
 
 // Adds `--model <dir>` right after the command for LM-backed runs (`--chat-reply`
@@ -281,6 +314,8 @@ ipcMain.handle('get-app-info', (event) => {
         chrome: process.versions.chrome,
         binaryPath,
         binaryFound: !!binaryPath,
+        binarySupportsModel, // null = probe still in flight; true/false = result
+        bundledModelDir: bundledModelDir(),
     };
 });
 
