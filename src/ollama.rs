@@ -148,11 +148,11 @@ pub struct OllamaModel {
 
 /// Blocking HTTP client for a locally-running Ollama service.
 ///
-/// Construction succeeds only when `allow_network` is `true` and a TCP
-/// connection to the Ollama port can be established (the connection itself is
-/// opened lazily per-request; construction just validates the address format
-/// and the network-policy flag).
+/// Construction succeeds only when `allow_network` is `true`.
 ///
+/// Connections are opened lazily per request; construction does not attempt to
+/// connect to the service and does not validate the address beyond storing the
+/// provided `host:port` string.
 /// The default address is `127.0.0.1:11434` matching Ollama's default.
 #[derive(Debug, Clone)]
 pub struct OllamaClient {
