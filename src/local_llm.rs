@@ -5,7 +5,11 @@
 //! candle on the CPU, compiled into the binary. The model weights, byte-level
 //! BPE tokenizer, and config ship as resources next to the executable (or in
 //! the app package) — nothing is fetched at runtime, no service is contacted,
-//! and inference never leaves the machine.
+//! and inference never leaves the machine. The desktop app bundles the
+//! SmolLM2-360M checkpoint in `assets/model` (~360M params, ~691 MB); the
+//! loader is generic over the Llama architecture, so any SmolLM-family
+//! checkpoint up to [`MAX_CPU_INFERENCE_PARAMS`] drops in with no code
+//! change.
 //!
 //! It implements [`crate::language_model::LanguageModel`], so it drops into
 //! the same call sites as the bundled tiny model (`--llm-generate`,
@@ -26,13 +30,13 @@
 //! cache so each decoded token costs a constant-size forward pass rather than
 //! re-reading the whole context.
 
-use crate::language_model::LanguageModel;
+use crate::language_model::{GenerationOptions, LanguageModel};
 use candle_core::{DType, Device, Tensor};
 use candle_nn::ops::{silu, softmax};
 use candle_nn::{
     Embedding, Linear, Module, RmsNorm, VarBuilder, embedding, linear_no_bias, rms_norm,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -176,7 +180,29 @@ impl LocalConfig {
     pub const fn head_dim(&self) -> usize {
         self.hidden_size / self.num_attention_heads
     }
+
+    /// A rough parameter count from the architecture (tied embeddings count
+    /// once). Used to gate CPU inference: a model far larger than the bundled
+    /// ~360M weights would take minutes per reply on a laptop.
+    #[must_use]
+    pub fn estimated_params(&self) -> u64 {
+        let hidden = u64::try_from(self.hidden_size).unwrap_or(u64::MAX);
+        let vocab = u64::try_from(self.vocab_size).unwrap_or(u64::MAX);
+        let layers = u64::try_from(self.num_hidden_layers).unwrap_or(u64::MAX);
+        let kv_dim = u64::try_from(self.num_key_value_heads * self.head_dim()).unwrap_or(u64::MAX);
+        let attention = 2 * hidden * hidden + 2 * hidden * kv_dim;
+        let mlp = 3 * hidden * u64::try_from(self.intermediate_size).unwrap_or(u64::MAX);
+        vocab.saturating_mul(hidden)
+            .saturating_add(layers.saturating_mul(attention.saturating_add(mlp)))
+            .saturating_add(hidden)
+    }
 }
+
+/// The largest model the CPU backend will load, in parameters. The bundled
+/// model is ~360M; anything at or above the 1B mark takes minutes per reply
+/// on a laptop, so it is refused with a clear message instead of silently
+/// hanging the CLI or the GUI's chat timeout.
+pub const MAX_CPU_INFERENCE_PARAMS: u64 = 1_000_000_000;
 
 /// One pre-tokenization unit: a literal special token id, or a text span that
 /// still needs byte-level BPE merging.
@@ -902,31 +928,48 @@ fn hash_prompt(prompt: &str) -> u64 {
     hash
 }
 
-/// Samples one token id from `logits` with temperature, top-k filtering, and
-/// an HF-style multiplicative repetition penalty for already-seen tokens.
+/// Samples one token id from `logits` with temperature and top-k filtering
+/// plus an optional repetition penalty over already-generated tokens.
+///
+/// The 4-argument form is the historical greedy interface (temperature 0.01,
+/// top-`k` 1, penalty supplied by the caller); [`sample_token_with`] is the
+/// full implementation with every knob explicit.
 #[allow(clippy::cast_possible_truncation)] // probabilities are stored as f32 by design.
 fn sample_token(
     logits: &[f32],
     rng: &mut SplitMix64,
     penalty: f32,
-    seen: &std::collections::HashSet<u32>,
+    seen: &HashSet<u32>,
 ) -> Option<u32> {
-    const TEMPERATURE: f32 = 0.7;
-    const TOP_K: usize = 40;
+    sample_token_with(logits, rng, 0.01, 1, penalty, seen)
+}
+
+/// Samples one token id from `logits` with explicit temperature, top-`k`,
+/// repetition `penalty`, and `seen`-token set. The penalty divides the weight
+/// of any token already emitted in the reply (values above 1 suppress
+/// repeats; `1.0` disables it), matching the bundled model's convention.
+#[allow(clippy::cast_possible_truncation)] // probabilities are stored as f32 by design.
+fn sample_token_with(
+    logits: &[f32],
+    rng: &mut SplitMix64,
+    temperature: f32,
+    top_k: usize,
+    penalty: f32,
+    seen: &HashSet<u32>,
+) -> Option<u32> {
+    let temperature = temperature.clamp(0.01, 5.0);
+    let top_k = top_k.max(1);
     let scaled: Vec<f32> = logits
         .iter()
         .enumerate()
         .map(|(index, &value)| {
-            let value = value / TEMPERATURE;
-            if seen.contains(&u32::try_from(index).unwrap_or(u32::MAX)) {
-                if value > 0.0 {
-                    value / penalty
-                } else {
-                    value * penalty
-                }
+            let value = if penalty > 1.0 && seen.contains(&u32::try_from(index).unwrap_or(u32::MAX))
+            {
+                value / penalty
             } else {
                 value
-            }
+            };
+            value / temperature
         })
         .collect();
     let mut order: Vec<usize> = (0..scaled.len()).collect();
@@ -935,7 +978,7 @@ fn sample_token(
             .partial_cmp(&scaled[a])
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    let k = TOP_K.min(scaled.len());
+    let k = top_k.min(scaled.len());
     let mut max = f32::NEG_INFINITY;
     for &index in order.iter().take(k) {
         max = max.max(scaled[index]);
@@ -1034,6 +1077,15 @@ impl LocalTextModel {
         let Ok(config) = LocalConfig::from_json(&config_text) else {
             return Ok(None);
         };
+        if config.estimated_params() > MAX_CPU_INFERENCE_PARAMS {
+            return Err(LocalModelError::Load(format!(
+                "model in {} has ~{} parameters; CPU inference is capped at ~{} \
+                 (use the bundled 360M weights or a smaller checkpoint)",
+                dir.display(),
+                config.estimated_params(),
+                MAX_CPU_INFERENCE_PARAMS
+            )));
+        }
         let tokenizer_path = dir.join("tokenizer.json");
         let tokenizer_text = std::fs::read_to_string(&tokenizer_path).map_err(|error| {
             LocalModelError::Load(format!(
@@ -1061,11 +1113,24 @@ impl LocalTextModel {
 
     /// Loads the bundled local model from the resolved resource directory, or
     /// `None` when it is not present (the app then falls back to the bundled
-    /// tiny model).
+    /// tiny model). A present-but-unloadable directory (corrupt file, or a
+    /// checkpoint above [`MAX_CPU_INFERENCE_PARAMS`]) logs a warning on
+    /// stderr and falls back the same way, so a broken bundle never hangs the
+    /// CLI.
     #[must_use]
     pub fn auto() -> Option<Self> {
         let dir = resolve_model_dir()?;
-        Self::from_dir(&dir).ok().flatten()
+        match Self::from_dir(&dir) {
+            Ok(Some(model)) => Some(model),
+            Ok(None) => None,
+            Err(error) => {
+                eprintln!(
+                    "warning: bundled offline model at {} unavailable: {error}",
+                    dir.display()
+                );
+                None
+            }
+        }
     }
 
     /// The model configuration (used by tests).
@@ -1079,23 +1144,37 @@ impl LocalTextModel {
     pub fn tokenize(&self, text: &str) -> Vec<u32> {
         self.tokenizer.encode(text)
     }
-}
 
-impl LanguageModel for LocalTextModel {
-    fn generate(&self, prompt: &str, max_tokens: usize) -> String {
-        const REPETITION_PENALTY: f32 = 1.1;
-        // ChatML wrap (SmolLM2 instruct format). Empirically this model
-        // follows instructions without a system message; adding one makes it
-        // echo "user"/"system" role tokens instead of answering.
-        let wrapped = format!("<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n");
-        let mut ids = self.tokenizer.encode(&wrapped);
-        // Only tokens the model has *generated* are penalized: repeating the
-        // prompt verbatim (e.g. "The capital of France is The capital...") is
-        // a legitimate continuation and must not be suppressed.
-        let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
-        let mut rng = SplitMix64::from_seed(hash_prompt(prompt));
+    /// Generates from pre-tokenized ids using the shared sampling loop (see
+    /// [`LanguageModel::generate`]) with the default decoding knobs.
+    /// `seed_text` drives the deterministic RNG so the same conversational
+    /// input always yields the same reply.
+    fn generate_from_ids(&self, ids: &[u32], max_tokens: usize, seed_text: &str) -> String {
+        self.generate_from_ids_with(ids, max_tokens, seed_text, GenerationOptions::default())
+    }
+
+    /// Generates from pre-tokenized ids honoring explicit `options`
+    /// (temperature, top-`k`, seed, repetition penalty, EOS stopping). The
+    /// repetition penalty is off by default: for a small model a penalty
+    /// pushes the distribution off the coherent path into byte-fragment
+    /// garbage, while letting it repeat keeps every phrase clean. Repetition
+    /// is instead bounded by phrase-level loop detection below, which cuts
+    /// the generation the moment a tail phrase starts repeating.
+    fn generate_from_ids_with(
+        &self,
+        ids: &[u32],
+        max_tokens: usize,
+        seed_text: &str,
+        options: GenerationOptions,
+    ) -> String {
+        let mut ids = ids.to_vec();
+        let seed = options
+            .seed
+            .unwrap_or_else(|| hash_prompt(seed_text));
+        let mut rng = SplitMix64::from_seed(seed);
         let mut cache = KvCache::new();
         let mut output_ids: Vec<u32> = Vec::with_capacity(max_tokens);
+        let mut seen = HashSet::new();
         for _ in 0..max_tokens {
             if ids.len() >= self.config.max_position_embeddings {
                 break;
@@ -1106,17 +1185,75 @@ impl LanguageModel for LocalTextModel {
             let Some(last) = rows.last() else {
                 break;
             };
-            let Some(id) = sample_token(last, &mut rng, REPETITION_PENALTY, &seen) else {
+            let Some(id) = sample_token_with(
+                last,
+                &mut rng,
+                options.temperature,
+                options.top_k,
+                options.repeat_penalty,
+                &seen,
+            ) else {
                 break;
             };
-            if id == self.config.eos_token_id {
+            if options.stop_at_eos && id == self.config.eos_token_id {
                 break;
             }
             output_ids.push(id);
-            seen.insert(id);
+            if options.repeat_penalty > 1.0 {
+                seen.insert(id);
+            }
+            // Text-level loop detection: when the decoded tail (a phrase's
+            // worth) already appears earlier in the reply, the model has
+            // started repeating — cut it there.
+            let decoded = self.tokenizer.decode(&output_ids);
+            const LOOP_TAIL: usize = 40;
+            if decoded.len() >= 2 * LOOP_TAIL {
+                let tail = &decoded[decoded.len() - LOOP_TAIL..];
+                if decoded[..decoded.len() - LOOP_TAIL].contains(tail) {
+                    break;
+                }
+            }
             ids = vec![id];
         }
         self.tokenizer.decode(&output_ids)
+    }
+}
+
+impl LanguageModel for LocalTextModel {
+    fn generate(&self, prompt: &str, max_tokens: usize) -> String {
+        self.generate_with(prompt, max_tokens, GenerationOptions::default())
+    }
+
+    fn generate_with(
+        &self,
+        prompt: &str,
+        max_tokens: usize,
+        options: GenerationOptions,
+    ) -> String {
+        // ChatML wrap (SmolLM2 instruct format). Empirically this model
+        // follows instructions without a system message; adding one makes it
+        // echo "user"/"system" role tokens instead of answering. User content
+        // is stripped of ChatML markers so it can never break the turn
+        // structure (or impersonate another role).
+        let safe = crate::language_model::strip_chat_markers(prompt);
+        let wrapped = format!("<|im_start|>user\n{safe}<|im_end|>\n<|im_start|>assistant\n");
+        let ids = self.tokenizer.encode(&wrapped);
+        self.generate_from_ids_with(&ids, max_tokens, prompt, options)
+    }
+
+    fn generate_chat(
+        &self,
+        context: &str,
+        turns: &[(String, String)],
+        message: &str,
+        max_tokens: usize,
+    ) -> String {
+        // Decode directly from the assembled conversation prompt rather than
+        // routing through `generate`, which would wrap the whole thing in a
+        // second `user` turn.
+        let prompt = crate::language_model::chat_prompt(context, turns, message);
+        let ids = self.tokenizer.encode(&prompt);
+        self.generate_from_ids(&ids, max_tokens, message)
     }
 
     fn perplexity(&self, text: &str) -> f32 {

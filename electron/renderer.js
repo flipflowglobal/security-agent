@@ -37,7 +37,7 @@
 
     // ── State ──────────────────────────────────────────────────────────────
     const state = {
-        view: 'home',
+        view: 'chat',
         libraryTab: 'findings',
         objTab: 'agent',
         mode: 'offline',
@@ -51,6 +51,13 @@
         engFindings: null,
         engConfigText: '',
         running: false,
+        chat: {
+            history: [],
+            modelDir: null,
+            memoryPath: null,
+            binarySupportsModel: null, // null = probe in flight; true/false = result
+            bundledModelDir: null,     // the app-shipped model directory (main process)
+        },
     };
 
     // ── History (localStorage) ─────────────────────────────────────────────
@@ -469,6 +476,11 @@
         }
         $('#stat-binary').textContent = info.binaryFound ? 'Ready' : 'Missing';
         $('#stat-mode').textContent = state.mode === 'offline' ? 'Offline' : 'Online';
+        if (typeof info.binarySupportsModel === 'boolean') {
+            state.chat.binarySupportsModel = info.binarySupportsModel;
+            state.chat.bundledModelDir = info.bundledModelDir || null;
+            chatUpdateSession();
+        }
 
         const cat = await window.api.getToolCatalog();
         state.catalog = cat;
@@ -1771,6 +1783,499 @@
         updateServerUi();
     }
 
+    // ── Chat (offline LLM assistant) ───────────────────────────────────────
+    const CHAT_KEY = 'sa_chat_v1';
+    const CHAT_SETTINGS_KEY = 'sa_chat_settings_v1';
+    const CHAT_SUGGESTIONS = [
+        'What can you do offline?',
+        'List the available tools',
+        'Show system status',
+        'Plan a scan of my web app',
+        'Check password strength: P@ssw0rd123!',
+    ];
+    const CHAT_VIEWS = ['home', 'chat', 'objectives', 'analyze', 'engage', 'server', 'library'];
+    // App-control directives the assistant may propose. `safe` ones run without
+    // confirmation; settings changes always ask first.
+    const CHAT_DIRECTIVES = {
+        page: { safe: true, hint: 'switch app page' },
+        theme: { safe: false, hint: 'change theme (dark/light)' },
+        model: { safe: false, hint: 'set the LLM model directory' },
+        memory: { safe: false, hint: 'set the agent memory file' },
+        clear: { safe: true, hint: 'clear this conversation' },
+    };
+
+    function chatLoadSettings() {
+        try {
+            const raw = localStorage.getItem(CHAT_SETTINGS_KEY);
+            const p = raw ? JSON.parse(raw) : {};
+            state.chat.modelDir = p.modelDir || null;
+            state.chat.memoryPath = p.memoryPath || null;
+            state.chat.theme = p.theme || 'dark';
+        } catch (_e) {
+            state.chat.theme = 'dark';
+        }
+    }
+    function chatPersistSettings() {
+        try {
+            localStorage.setItem(CHAT_SETTINGS_KEY, JSON.stringify({
+                modelDir: state.chat.modelDir,
+                memoryPath: state.chat.memoryPath,
+                theme: state.chat.theme || 'dark',
+            }));
+        } catch (_e) { /* ignore */ }
+    }
+    function chatLoadHistory() {
+        try {
+            const raw = localStorage.getItem(CHAT_KEY);
+            const p = raw ? JSON.parse(raw) : [];
+            if (Array.isArray(p)) state.chat.history = p;
+        } catch (_e) { state.chat.history = []; }
+    }
+    function chatPersist() {
+        try { localStorage.setItem(CHAT_KEY, JSON.stringify(state.chat.history)); } catch (_e) { /* ignore */ }
+    }
+
+    function chatAppend(type, text, meta) {
+        const msgs = $('#chat-messages');
+        const msg = document.createElement('div');
+        msg.className = 'chat-msg ' + type;
+        if (text) {
+            const bubble = document.createElement('div');
+            bubble.className = 'chat-bubble';
+            bubble.textContent = text;
+            msg.appendChild(bubble);
+        }
+        if (meta) {
+            const m = document.createElement('div');
+            m.className = 'chat-msg-meta';
+            m.textContent = meta;
+            msg.appendChild(m);
+        }
+        msgs.appendChild(msg);
+        msgs.scrollTop = msgs.scrollHeight;
+        return msg;
+    }
+
+    function chatTypingEl() {
+        const wrap = document.createElement('div');
+        wrap.className = 'chat-msg assistant';
+        const typing = document.createElement('div');
+        typing.className = 'chat-typing';
+        typing.appendChild(document.createElement('span'));
+        typing.appendChild(document.createElement('span'));
+        typing.appendChild(document.createElement('span'));
+        wrap.appendChild(typing);
+        return wrap;
+    }
+
+    // The label for the chat model chip: the user-chosen model directory when
+    // set, otherwise the app-shipped LLM when the binary supports it, with an
+    // explicit "toy model" marker when the binary lacks --features inference.
+    function chatModelLabel() {
+        if (state.chat.modelDir) {
+            const name = String(state.chat.modelDir).split(/[\\/]/).pop();
+            return state.chat.binarySupportsModel === false ? name + ' · toy' : name;
+        }
+        if (state.chat.binarySupportsModel === false) return 'toy model';
+        if (state.chat.binarySupportsModel === true && state.chat.bundledModelDir) {
+            return 'LLM · ' + String(state.chat.bundledModelDir).split(/[\\/]/).pop();
+        }
+        return state.chat.binarySupportsModel === true ? 'bundled LLM' : 'bundled model';
+    }
+
+    function chatUpdateSession() {
+        const modelText = $('#chat-model-text');
+        if (modelText) modelText.textContent = chatModelLabel();
+        const chip = $('#chat-model');
+        if (chip) {
+            chip.classList.toggle('fallback', state.chat.binarySupportsModel === false);
+            chip.classList.toggle('ok', state.chat.binarySupportsModel === true);
+        }
+        const sModel = $('#chat-session-model');
+        if (sModel) sModel.textContent = state.chat.modelDir || 'bundled';
+        const sMem = $('#chat-session-memory');
+        if (sMem) sMem.textContent = state.chat.memoryPath || 'none';
+        const sCount = $('#chat-session-count');
+        if (sCount) sCount.textContent = String(state.chat.history.length);
+    }
+
+    function chatRenderRunCard(res) {
+        const card = document.createElement('div');
+        card.className = 'chat-run-card';
+        const head = document.createElement('div');
+        head.className = 'chat-run-head';
+        const dot = document.createElement('span');
+        dot.className = 'rt-status ' + (res.ok ? 'ok' : 'err');
+        const title = document.createElement('span');
+        title.textContent = (res.ok ? 'Agent run' : 'Agent run failed') + (res.ms != null ? ' · ' + res.ms + ' ms' : '');
+        const cmd = document.createElement('span');
+        cmd.className = 'chat-run-cmd';
+        cmd.textContent = res.argsLabel || '';
+        head.appendChild(dot); head.appendChild(title); head.appendChild(cmd);
+        card.appendChild(head);
+
+        let json = null;
+        try { json = JSON.parse(res.stdout || ''); } catch (_e) { /* not JSON */ }
+        if (json && Array.isArray(json.steps)) {
+            const steps = document.createElement('div');
+            steps.className = 'chat-run-steps';
+            json.steps.forEach(function (s, i) {
+                const row = document.createElement('div');
+                const cls = s.status === 'ran' ? 'ok' : (s.status === 'refused' ? 'refused' : 'err');
+                row.className = 'chat-run-step ' + cls;
+                const num = document.createElement('span');
+                num.className = 'step-num';
+                num.textContent = String(i + 1);
+                const detail = document.createElement('div');
+                detail.className = 'step-detail';
+                const cmdLine = document.createElement('div');
+                cmdLine.textContent = s.command + (s.args && s.args.length ? ' ' + s.args.join(' ') : '');
+                const st = document.createElement('div');
+                st.className = 'step-status';
+                st.textContent = s.status + (s.detail && s.detail !== '0' ? ' — ' + s.detail : '');
+                detail.appendChild(cmdLine); detail.appendChild(st);
+                row.appendChild(num); row.appendChild(detail);
+                steps.appendChild(row);
+            });
+            card.appendChild(steps);
+            if (json.summary) {
+                const sum = document.createElement('div');
+                sum.className = 'chat-run-summary';
+                sum.textContent = json.summary.steps + ' step(s) handled, ' + json.summary.ran + ' ran' +
+                    (json.summary.budget_exhausted ? ' (step budget reached)' : '');
+                card.appendChild(sum);
+            }
+        } else {
+            const pre = document.createElement('pre');
+            pre.className = 'output-stdout';
+            pre.textContent = (res.stdout || res.stderr || '(no output)');
+            card.appendChild(pre);
+        }
+        return card;
+    }
+
+    function chatExecDirective(kind, arg) {
+        if (kind === 'page') {
+            const view = String(arg || '').toLowerCase();
+            if (CHAT_VIEWS.indexOf(view) === -1) return 'err';
+            switchView(view);
+            return 'done';
+        }
+        if (kind === 'clear') {
+            chatClear();
+            return 'done';
+        }
+        if (kind === 'theme') {
+            const n = String(arg || '').toLowerCase();
+            if (n !== 'light' && n !== 'dark') return 'err';
+            if (!window.confirm('Allow the assistant to switch the app theme to "' + n + '"?')) return 'err';
+            state.chat.theme = n;
+            document.body.classList.toggle('theme-light', n === 'light');
+            chatPersistSettings();
+            return 'done';
+        }
+        if (kind === 'model') {
+            if (!arg) return 'err';
+            if (!window.confirm('Allow the assistant to set the offline LLM model directory to:\n' + arg)) return 'err';
+            state.chat.modelDir = arg;
+            chatPersistSettings();
+            chatUpdateSession();
+            return 'done';
+        }
+        if (kind === 'memory') {
+            if (!arg) return 'err';
+            if (!window.confirm('Allow the assistant to set the agent memory file to:\n' + arg)) return 'err';
+            state.chat.memoryPath = arg;
+            chatPersistSettings();
+            chatUpdateSession();
+            return 'done';
+        }
+        return 'err';
+    }
+
+    function chatHandleDirectives(container, text) {
+        const found = [];
+        String(text || '').split('\n').forEach(function (line) {
+            const m = /^@app:(\w+)\s*(.*)$/.exec(line.trim());
+            if (m && CHAT_DIRECTIVES[m[1]]) found.push({ kind: m[1], arg: m[2].trim() });
+        });
+        if (!found.length) return;
+        const row = document.createElement('div');
+        row.className = 'chat-directive-row';
+        found.forEach(function (d) {
+            const chip = document.createElement('button');
+            chip.className = 'chat-directive-chip';
+            chip.textContent = '@app:' + d.kind + (d.arg ? ' ' + d.arg : '');
+            chip.title = CHAT_DIRECTIVES[d.kind].hint;
+            chip.onclick = function () {
+                chip.disabled = true;
+                const outcome = chatExecDirective(d.kind, d.arg);
+                chip.classList.add(outcome === 'done' ? 'done' : 'err');
+                chip.textContent = (outcome === 'done' ? '\u2713 ' : '\u2717 ') +
+                    chip.textContent.replace(/^[\u2713\u2717]\s*/, '');
+            };
+            row.appendChild(chip);
+        });
+        container.appendChild(row);
+    }
+
+    function chatSlash(cmd) {
+        const parts = cmd.slice(1).trim().split(/\s+/);
+        const name = (parts[0] || '').toLowerCase();
+        const arg = parts.slice(1).join(' ').trim();
+        const welcome = $('#chat-welcome');
+        if (welcome) welcome.style.display = 'none';
+        let reply = '';
+        if (name === 'help') {
+            reply = 'Slash commands:\n' +
+                '/page <view>  — switch pages (home, chat, objectives, analyze, engage, server, library)\n' +
+                '/theme <name> — switch theme (dark, light)\n' +
+                '/model <dir>  — set the offline LLM model directory\n' +
+                '/memory <path> — set the agent memory file\n' +
+                '/clear — clear this conversation\n\n' +
+                'The assistant can also propose actions with @app: lines; those are always shown as buttons and settings changes ask for your confirmation.';
+        } else if (name === 'page') {
+            const view = arg.toLowerCase();
+            if (CHAT_VIEWS.indexOf(view) === -1) {
+                reply = 'Unknown page "' + view + '". Available: ' + CHAT_VIEWS.join(', ') + '.';
+            } else {
+                switchView(view);
+                reply = 'Switched to the ' + view + ' page.';
+            }
+        } else if (name === 'theme') {
+            const n = arg.toLowerCase();
+            if (n !== 'light' && n !== 'dark') {
+                reply = 'Unknown theme "' + n + '". Use dark or light.';
+            } else {
+                state.chat.theme = n;
+                document.body.classList.toggle('theme-light', n === 'light');
+                chatPersistSettings();
+                reply = 'Theme set to ' + n + '.';
+            }
+        } else if (name === 'model') {
+            state.chat.modelDir = arg || null;
+            chatPersistSettings();
+            chatUpdateSession();
+            reply = arg ? 'Model directory set: ' + arg : 'Using the bundled model.';
+        } else if (name === 'memory') {
+            state.chat.memoryPath = arg || null;
+            chatPersistSettings();
+            chatUpdateSession();
+            reply = arg ? 'Memory file set: ' + arg : 'Memory file cleared.';
+        } else if (name === 'clear') {
+            chatClear();
+            return;
+        } else {
+            reply = 'Unknown command "/' + name + '". Try /help.';
+        }
+        chatAppend('system', reply, fmtTime(Date.now()));
+        chatPersist();
+        chatUpdateSession();
+    }
+
+    function chatClear() {
+        state.chat.history = [];
+        chatPersist();
+        const msgs = $('#chat-messages');
+        if (msgs) {
+            msgs.innerHTML = '';
+            const welcome = $('#chat-welcome');
+            if (welcome) {
+                welcome.style.display = '';
+                msgs.appendChild(welcome);
+            }
+        }
+        chatUpdateSession();
+    }
+
+    function chatRenderHistory() {
+        const welcome = $('#chat-welcome');
+        if (welcome && state.chat.history.length) welcome.style.display = 'none';
+        state.chat.history.forEach(function (item) {
+            const msg = chatAppend(item.type, item.text || '', item.meta);
+            if (item.type === 'assistant') {
+                if (item.run) {
+                    msg.appendChild(chatRenderRunCard({
+                        ok: !!item.run.ok,
+                        argsLabel: item.run.argsLabel || '',
+                        ms: item.run.ms,
+                        stdout: item.run.stdout || '',
+                        stderr: '',
+                    }));
+                }
+                if (item.text) chatHandleDirectives(msg, item.text);
+            }
+        });
+        chatUpdateSession();
+    }
+
+    function autoSizeChatInput() {
+        const ta = $('#chat-input');
+        if (!ta) return;
+        ta.style.height = 'auto';
+        ta.style.height = Math.min(ta.scrollHeight, 160) + 'px';
+    }
+
+    // Compact transcript of the agent run's steps (command → status → short
+    // detail) passed to the LLM as `--context`, so the assistant's reply is
+    // grounded in the tool results the user can see in the run card.
+    function chatToolContext(res) {
+        if (!res || !res.ok || !res.stdout) return '';
+        let json = null;
+        try { json = JSON.parse(res.stdout); } catch (_e) { /* not JSON */ }
+        if (!json || !Array.isArray(json.steps)) return '';
+        const lines = [];
+        json.steps.forEach(function (s, i) {
+            const cmd = s.command + (s.args && s.args.length ? ' ' + s.args.join(' ') : '');
+            let line = (i + 1) + '. ' + cmd + ' → ' + s.status;
+            if (s.detail && String(s.detail) !== '0') {
+                line += ': ' + String(s.detail).slice(0, 200);
+            }
+            lines.push(line);
+        });
+        return lines.join('\n').slice(0, 4000);
+    }
+
+    // Recent conversation as `role<TAB>text` turns for repeatable `--turn`.
+    // The current message is added to history only after the reply is built,
+    // so this is exactly the prior context. Tabs are replaced so the TAB
+    // separator survives, and ChatML markers are stripped so user/assistant
+    // text can never break the model's turn structure.
+    function chatHistoryTurns() {
+        const hist = state.chat.history || [];
+        const turns = [];
+        const start = Math.max(0, hist.length - 8);
+        for (let i = start; i < hist.length; i++) {
+            const item = hist[i];
+            const role = item.type === 'assistant' ? 'assistant' : 'user';
+            const text = String(item.text || '')
+                .replace(/\t/g, ' ')
+                .replace(/<\|im_(start|end)\|>/g, '')
+                .trim();
+            if (!text) continue;
+            turns.push(role + '\t' + text.slice(0, 600));
+        }
+        return turns;
+    }
+
+    async function chatSend() {
+        const input = $('#chat-input');
+        const text = input.value.trim();
+        if (!text) return;
+        input.value = '';
+        autoSizeChatInput();
+        if (text.charAt(0) === '/') {
+            chatSlash(text);
+            return;
+        }
+        const meta = fmtTime(Date.now());
+        chatAppend('user', text, meta);
+        const welcome = $('#chat-welcome');
+        if (welcome) welcome.style.display = 'none';
+        const msgs = $('#chat-messages');
+        const typing = chatTypingEl();
+        msgs.appendChild(typing);
+        msgs.scrollTop = msgs.scrollHeight;
+        const modelChip = $('#chat-model');
+        if (modelChip) modelChip.classList.add('busy');
+
+        // 1) Agent tool run — the model's plan executes as real commands and
+        // the run card renders from the --json transcript.
+        const agentArgs = ['--agent', text, '--json'];
+        if (state.chat.memoryPath) {
+            agentArgs.push('--memory', state.chat.memoryPath, '--model-proposals');
+        }
+        const agentRes = await runBinary(agentArgs, { label: 'agent: ' + text });
+
+        // 2) Assistant textual reply from the offline model. Flags come
+        // before the message so the message itself can mention flags like
+        // `--model` without being misparsed.
+        const replyArgs = ['--chat-reply', '--chat-reply-json'];
+        if (state.chat.modelDir) replyArgs.push('--model', state.chat.modelDir);
+        const context = chatToolContext(agentRes);
+        if (context) replyArgs.push('--context', context);
+        chatHistoryTurns().forEach(function (t) { replyArgs.push('--turn', t); });
+        replyArgs.push(text);
+        const replyRes = await runBinary(replyArgs, { label: 'chat reply' });
+
+        typing.remove();
+        if (modelChip) modelChip.classList.remove('busy');
+
+        // The binary answers `{"kind": "...", "text": "..."}` so the page can
+        // label grounded (asset data), chitchat, generative (real LLM), and
+        // fallback (toy model) replies; plain text means an older binary.
+        const outText = replyRes.ok ? (replyRes.stdout || '').trim() : '';
+        let answer = '';
+        let replyKind = 'grounded';
+        if (outText) {
+            try {
+                const envelope = JSON.parse(outText);
+                if (envelope && typeof envelope.text === 'string') {
+                    answer = envelope.text;
+                    replyKind = typeof envelope.kind === 'string' ? envelope.kind : 'grounded';
+                }
+            } catch (_e) { /* plain-text reply from an older binary */ }
+        }
+        if (!answer) answer = outText;
+        const KIND_LABELS = { grounded: 'grounded', chitchat: 'chitchat', generative: 'llm', fallback: 'toy' };
+        const kindLabel = KIND_LABELS[replyKind] || replyKind;
+        const replyMeta = fmtTime(Date.now()) + ' · ' + kindLabel;
+        const msg = chatAppend('assistant', answer || '(the offline model returned no reply.)', replyMeta);
+        if (agentRes.ok) {
+            msg.appendChild(chatRenderRunCard(agentRes));
+        } else {
+            const err = document.createElement('div');
+            err.className = 'chat-bubble';
+            err.textContent = 'Tool run failed: ' + (agentRes.stderr || '(no error)');
+            msg.appendChild(err);
+        }
+        if (answer) chatHandleDirectives(msg, answer);
+
+        const run = agentRes.ok ? {
+            ok: true,
+            argsLabel: agentRes.argsLabel,
+            ms: agentRes.ms,
+            stdout: String(agentRes.stdout || '').slice(0, 8000),
+        } : null;
+        state.chat.history.push({ type: 'user', text: text, meta: meta });
+        state.chat.history.push({ type: 'assistant', text: answer, meta: replyMeta, run: run });
+        if (state.chat.history.length > 200) state.chat.history = state.chat.history.slice(-200);
+        chatPersist();
+        chatUpdateSession();
+        msgs.scrollTop = msgs.scrollHeight;
+    }
+
+    function bindChat() {
+        const send = $('#chat-send');
+        if (send) send.onclick = chatSend;
+        const input = $('#chat-input');
+        if (input) {
+            input.addEventListener('keydown', function (e) {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    chatSend();
+                }
+            });
+            input.addEventListener('input', autoSizeChatInput);
+        }
+        const clear = $('#chat-clear');
+        if (clear) clear.onclick = chatClear;
+        const sugg = $('#chat-suggestions');
+        if (sugg) {
+            CHAT_SUGGESTIONS.forEach(function (s) {
+                const chip = document.createElement('button');
+                chip.className = 'chip';
+                chip.textContent = s;
+                chip.onclick = function () {
+                    const inputEl = $('#chat-input');
+                    if (inputEl) inputEl.value = s;
+                    chatSend();
+                };
+                sugg.appendChild(chip);
+            });
+        }
+    }
+
     // ── Init ───────────────────────────────────────────────────────────────
     function init() {
         // Navigation
@@ -1905,6 +2410,19 @@
 
         // Boot
         state.history = loadHistory();
+        chatLoadSettings();
+        document.body.classList.toggle('theme-light', state.chat.theme === 'light');
+        bindChat();
+        if (window.api.onModelStatus) {
+            window.api.onModelStatus(function (status) {
+                if (status && typeof status.supported === 'boolean') {
+                    state.chat.binarySupportsModel = status.supported;
+                    state.chat.bundledModelDir = status.modelDir || null;
+                    chatUpdateSession();
+                }
+            });
+        }
+        chatRenderHistory();
         renderQuickActions();
         renderHistory();
         renderCats();

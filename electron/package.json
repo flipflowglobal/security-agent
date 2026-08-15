@@ -1,11 +1,12 @@
 {
   "name": "security-agent-gui",
-  "version": "0.1.0",
+  "version": "2.0.0",
   "description": "Desktop GUI for the Security-Agent orchestration platform",
   "main": "main.js",
   "author": "FlipFlow Global",
   "homepage": "https://github.com/flipflowglobal/security-agent",
   "license": "BUSL-1.1",
+  "license": "SEE LICENSE IN ../LICENSE",
   "scripts": {
     "start": "electron .",
     "build": "electron-builder --dir",
@@ -25,9 +26,9 @@
     "typescript": "^7.0.2"
   },
   "build": {
-    "appId": "com.security-agent.gui",
+    "appId": "com.flipflowglobal.security-agent",
     "productName": "Security-Agent",
-    "copyright": "Copyright Ac 2026 Security-Agent Contributors",
+    "copyright": "Copyright © 2026 FlipFlow Global",
     "directories": {
       "output": "dist",
       "buildResources": "assets"
@@ -40,13 +41,6 @@
       "renderer.js"
     ],
     "extraResources": [
-      {
-        "from": "../target/release/security-agent.exe",
-        "to": "security-agent.exe",
-        "filter": [
-          "**/*"
-        ]
-      },
       {
         "from": "../assets/model",
         "to": "assets/model",
@@ -81,7 +75,16 @@
         }
       ],
       "icon": "assets/icon.ico",
-      "artifactName": "${productName}-Setup-${version}.${ext}"
+      "artifactName": "${productName}-Setup-${version}.${ext}",
+      "extraResources": [
+        {
+          "from": "../target/release/security-agent.exe",
+          "to": "security-agent.exe",
+          "filter": [
+            "**/*"
+          ]
+        }
+      ]
     },
     "nsis": {
       "oneClick": false,
@@ -125,7 +128,16 @@
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
-      "artifactName": "${productName}-${version}-${arch}.${ext}"
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "extraResources": [
+        {
+          "from": "../target/release/security-agent",
+          "to": "security-agent",
+          "filter": [
+            "**/*"
+          ]
+        }
+      ]
     },
     "dmg": {
       "backgroundColor": "#0d1117",
@@ -179,7 +191,16 @@
           "StartupNotify": "true"
         }
       },
-      "artifactName": "${productName}-${version}.${ext}"
+      "artifactName": "${productName}-${version}.${ext}",
+      "extraResources": [
+        {
+          "from": "../target/release/security-agent",
+          "to": "security-agent",
+          "filter": [
+            "**/*"
+          ]
+        }
+      ]
     },
     "deb": {
       "depends": [

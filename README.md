@@ -8,6 +8,22 @@ Rust-first hybrid defensive and offensive security orchestration agent for autho
 
 Defensive and offensive security orchestration agent for authorized vulnerability and penetration testing across platform applications, tools, APIs, and infrastructure.
 
+## ⚠️ Authorized Use Only
+
+Security-Agent is a dual-use security testing tool. **Only use it against
+systems, networks, or accounts you own, or for which you have prior,
+explicit, written authorization to test.** Unauthorized use may violate the
+Computer Fraud and Abuse Act, the UK Computer Misuse Act, and equivalent
+laws elsewhere, and can expose you to civil and criminal liability. Live/
+active tooling is offline by default and requires an explicit
+`--allow-network` opt-in on top of engagement authorization — this is a
+safety control, not a substitute for your own legal authorization.
+
+See [`EULA.md`](./EULA.md) for the full authorized-use terms, warranty
+disclaimer, and export-control notice, and [`LICENSE`](./LICENSE) for the
+source-code license (Business Source License 1.1 — commercial/production
+use requires a separate commercial license from FlipFlow Global).
+
 ## Operating Guide
 
 For a beginner-friendly, step-by-step operations manual, read:
@@ -16,6 +32,7 @@ For a beginner-friendly, step-by-step operations manual, read:
 - [`COMMAND.md`](./COMMAND.md) — every command with a one-line description and a copy-paste example (new users start here)
 - [`CONTRIBUTING.md`](./CONTRIBUTING.md) — developer workflow and CI gates
 - [`CHANGELOG.md`](./CHANGELOG.md) — version history
+- [`EULA.md`](./EULA.md) — end-user license agreement, authorized-use terms, export-control notice
 
 ---
 

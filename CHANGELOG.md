@@ -10,6 +10,39 @@ conventions. Releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## [Unreleased]
 
 ### Added
+- **Bundled SmolLM2-360M offline LLM.** The desktop app now ships the
+  SmolLM2-360M checkpoint (`assets/model`: config, tokenizer, ~691 MB
+  weights) as the default `--chat-reply` / `--agent` model instead of the
+  smaller provisioned set. `local_llm` gains a CPU parameter-size gate
+  (`MAX_CPU_INFERENCE_PARAMS`, 1B) so an oversized checkpoint is refused
+  with a clear message instead of silently hanging the GUI's chat timeout,
+  and `auto()` warns on stderr and falls back when the bundled bundle is
+  broken.
+- **Configurable decoding on every offline backend.** New public
+  `language_model::GenerationOptions` (temperature, top-k, seed, repetition
+  penalty, EOS stopping) plus a `LanguageModel::generate_with` trait method
+  with a default that reproduces `generate` exactly; both the bundled tiny
+  model and the local transformer honor every knob. Added a
+  `top_k_next_tokens` diagnostic.
+- **`--chat-reply-json`**: `--chat-reply` can now emit
+  `{"kind":"grounded"|"chitchat"|"generative"|"fallback","text":"..."}` so
+  the GUI can label deterministic vs model-generated replies. ChatML markers
+  in user prompts are stripped before wrapping (prompt-injection hardening).
+- **Grounded skill guides.** `ShowSkill` intents reply with the resolved
+  skill's real content (4000-char cap with a `--show-skill <name>` pointer)
+  instead of a dead-end, and standalone chitchat ("morning", "sup", "ok",
+  "nice to meet you", …) gets warm replies.
+- **GUI chat-page model status.** The model chip now shows whether the
+  offline LLM is active, which model directory is in use, or an explicit
+  "toy model" fallback (amber dot) when the binary lacks
+  `--features inference`; assistant replies are labeled
+  grounded/chitchat/llm/toy.
+
+---
+
+## [2.0.0] — 2026-08-13
+
+### Added
 - **Full catalog adapter coverage: every cataloged tool now has an
   invocation adapter and is coverage-tested.** The 14 tools with rich
   behavior keep their hand-written adapters; the remaining ~75 are driven by

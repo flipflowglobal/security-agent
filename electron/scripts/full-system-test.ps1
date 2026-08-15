@@ -1,9 +1,69 @@
-# Full-system test harness for Security-Agent desktop app. (v2 — corrected expectations)
+# Full-system test harness for Security-Agent desktop app. (v3 — self-seeding)
 $ErrorActionPreference = 'Continue'
-$res = "C:\Users\david\Desktop\agent-installer\Security-Agent\dist\win-unpacked\resources"
+$res = "C:\Users\david\Desktop\security-agent\target\release"
 $exe = @("$res\security-agent.exe", "$res\security-agent") | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $exe) { Write-Error "security-agent binary not found under $res"; exit 1 }
 $tmp = $env:GUI_TEST_TMP; if (-not $tmp) { $tmp = "C:\Users\david\AppData\Local\Temp\opencode\gui-test" }
+if (-not (Test-Path $tmp)) { New-Item -ItemType Directory -Force -Path $tmp | Out-Null }
+
+# --- Self-seed: every fixture the harness needs, regenerated each run. -------
+# plan.config must satisfy the strict engagement-config parser (all
+# authorization fields mandatory; ApiSecurity is penetrative so
+# penetrative_testing_approved must be true).
+@"
+engagement_id=eng-system
+authorized_by=jane.doe
+authorized_by_role=SecurityAdmin
+time_window_start=0
+time_window_end=4102444800
+in_scope_targets=api-staging
+deny_list_targets=prod-ledger
+allowed_techniques=PassiveRecon,ConfigurationAudit,ApiSecurity
+max_intensity=Standard
+high_impact_approved=false
+penetrative_testing_approved=true
+
+[target]
+id=api-staging
+target_type=Api
+criticality=3
+"@ | Set-Content -Path "$tmp\plan.config" -Encoding ascii
+
+@"
+engagement_id=eng-deny
+authorized_by=jane.doe
+authorized_by_role=SecurityAdmin
+time_window_start=0
+time_window_end=4102444800
+in_scope_targets=prod-ledger
+deny_list_targets=prod-ledger
+allowed_techniques=PassiveRecon
+max_intensity=Passive
+high_impact_approved=false
+penetrative_testing_approved=false
+
+[target]
+id=prod-ledger
+target_type=Api
+criticality=2
+"@ | Set-Content -Path "$tmp\deny.config" -Encoding ascii
+
+@"
+{"version":"1","producer":"security-agent","kind":"audit_record","fields":{"timestamp_epoch_seconds":"1720000000","actor":"secops","role":"SecurityAdmin","action":"plan_authorized_scan","target":"test-target","details":"tasks=2 high_impact=0"}}
+{"version":"1","producer":"security-agent","kind":"audit_record","fields":{"timestamp_epoch_seconds":"1720000001","actor":"jane.doe","role":"SecurityEngineer","action":"run_tool","target":"test-target","details":"tool=nmap status=completed","test_run_id":"run-abc"}}
+"@ | Set-Content -Path "$tmp\audit-view.jsonl" -Encoding ascii
+
+@"
+{"version":"1","producer":"security-agent","kind":"finding_record","fields":{"confidence_percent":"92","finding_id":"TEST-001","normalized_risk_score":"8.5000","remediation_playbook":"Patch and harden","severity":"High","source_tool":"test-tool","target_id":"test-target","title":"Test finding"}}
+"@ | Set-Content -Path "$tmp\findings-src.jsonl" -Encoding ascii
+
+# schedule-retest reads a findings log as input.
+Copy-Item "$tmp\findings-src.jsonl" "$tmp\fresh-dest.jsonl" -Force
+
+@"
+sample content for the autopsy tool report
+"@ | Set-Content -Path "$tmp\tool-input.txt" -Encoding ascii
+
 $results = @()
 $script:seq = 0
 
@@ -49,7 +109,7 @@ Test-Case "help/guide renders" { (Invoke-App @('--guide')).Text } "Security-Agen
 Test-Case "shell-guide renders" { (Invoke-App @('--shell-guide')).Text } "Reverse Shell"
 Test-Case "tool-help renders" { (Invoke-App @('--tool-help', '--list-tools')).Text } "list-tools"
 Test-Case "unknown flag rejected cleanly (exit 2)" { $r = Invoke-App @('--definitely-not-a-flag'); "$($r.Text) exit=$($r.Exit)" } "(?s)unknown command.*exit=2"
-Test-Case "build-info exit code zero" { ((Invoke-App @('--build-info')).Exit -eq 0).ToString() } "^True$"
+Test-Case "build-info exit code zero" { ((Invoke-App @('--build-info')).Exit -eq 0).ToString() } "^True"
 
 # -------------------- SECTION 2: TOOLS --------------------
 Write-Output "=================== SECTION 2: TOOLS ==================="
@@ -59,7 +119,7 @@ Test-Case "list-tools emits 89 lines" { $r = Invoke-App @('--list-tools'); $n = 
 Test-Case "list-skills emits 90 lines" { $r = Invoke-App @('--list-skills'); $n = ($r.Text -split "`r?`n" | Where-Object { $_.Trim() }).Count; "lines=$n" } "lines=90"
 Test-Case "show-skill security-agent renders" { (Invoke-App @('--show-skill', 'security-agent')).Text } "security-agent"
 Test-Case "run-tool autopsy writes report" { (Invoke-App @('--run-tool', 'autopsy', "$tmp\tool-input.txt", '--output', "$tmp\sys-tool-out.txt")).Text } "written to"
-Test-Case "external tool reports not installed locally" { (Invoke-App @('--run-external-tool', 'hashdeep')).Text } "not installed locally"
+Test-Case "external tool reports not installed locally" { (Invoke-App @('--run-external-tool', 'amass')).Text } "not installed locally"
 Test-Case "external tool refuses unknown tool" { (Invoke-App @('--run-external-tool', 'not-a-real-tool')).Text } "unknown|not"
 Test-Case "engagement runs and enforces gating" { (Invoke-App @('--run-engagement', "$tmp\plan.config")).Text } "Engagement Execution"
 
@@ -70,7 +130,7 @@ Test-Case "hash-id SHA256" { (Invoke-App @('--hash-id', '9f86d081884c7d659a2feaa
 Test-Case "hash-id unknown hash" { (Invoke-App @('--hash-id', 'zzz')).Text } "unknown|Unrecognized|could not"
 Test-Case "password-strength very strong" { (Invoke-App @('--password-strength', 'CorrectHorseBatteryStaple')).Text } "Very Strong"
 Test-Case "password-strength weak" { (Invoke-App @('--password-strength', 'abc')).Text } "Very Weak|Weak"
-Test-Case "gen-wordlist" { (Invoke-App @('--gen-wordlist', 'acme', '--company', 'Acme Corp', '--year', '2026')).Text } "Generated"
+Test-Case "gen-wordlist" { (Invoke-App @('--gen-wordlist', 'acme', 'Acme Corp', '2026', 'admin', 'backup')).Text } "Generated"
 Test-Case "gen-shell bash" { (Invoke-App @('--gen-shell', 'bash', '10.0.0.1', '4444')).Text } "Reverse Bash Shell"
 Test-Case "gen-shell python" { (Invoke-App @('--gen-shell', 'python', '10.0.0.1', '4444')).Text } "Reverse"
 Test-Case "gen-shell list types" { (Invoke-App @('--gen-shell', '--list')).Text } "bash"
@@ -140,7 +200,7 @@ Test-Case "online_opt_in flag documented" { (Invoke-App @('--offline-status')).T
 Test-Case "plan-scan accepts --allow-network" { (Invoke-App @('--plan-scan', "$tmp\plan.config", '--allow-network')).Text } "Execution Plan"
 Test-Case "run-engagement --allow-network parses" { (Invoke-App @('--run-engagement', "$tmp\plan.config", '--allow-network')).Text } "Engagement Execution|active-tool gate"
 Test-Case "agent allows network flag" { (Invoke-App @('--agent', 'list tools', '--allow-network')).Text } "--list-tools"
-Test-Case "external tool accepts --allow-network" { (Invoke-App @('--run-external-tool', '--allow-network', 'hashdeep')).Text } "not installed locally|refused|network"
+Test-Case "external tool accepts --allow-network" { (Invoke-App @('--run-external-tool', '--allow-network', 'amass')).Text } "not installed locally|refused|network"
 
 # -------------------- SECTION 8: CPU / PERFORMANCE --------------------
 Write-Output "=================== SECTION 8: CPU / PERFORMANCE ==================="

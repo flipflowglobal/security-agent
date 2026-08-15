@@ -1,5 +1,14 @@
 src/model_weights.bin binary
 
+# Normalize all text files to LF in the working tree, regardless of a
+# contributor's core.autocrlf setting. Without this, a Windows checkout with
+# autocrlf=true rewrites committed generated text assets (e.g.
+# src/corpus_catalog.txt) to CRLF, and the generator-drift tests that diff
+# the working-tree file byte-for-byte against freshly generated LF output
+# (see AGENTS.md "Compiled-in assets require regeneration") fail on line
+# endings alone, not real content drift.
+* text=auto eol=lf
+
 # Shell scripts must keep LF endings — a CRLF shebang (`#!/usr/bin/env bash\r`)
 # fails to execute on Linux, which breaks the release/packaging path.
 *.sh text eol=lf

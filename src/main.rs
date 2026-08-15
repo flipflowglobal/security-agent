@@ -14,7 +14,31 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+/// `println!`/`print!` panic on a write failure, which happens whenever
+/// stdout is a pipe that the reader closed early — piping into `head`,
+/// `less -F` (quit before EOF), or a GUI parent process that stops reading
+/// its child's stdout. That is normal, expected behavior for a CLI, not a
+/// bug, so treat it as a quiet, successful exit instead of a panic dump.
+/// Any other panic still goes through the default hook unchanged.
+fn install_broken_pipe_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let is_broken_pipe = info
+            .payload()
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| info.payload().downcast_ref::<&str>().copied())
+            .is_some_and(|message| message.contains("failed printing to stdout"));
+        if is_broken_pipe {
+            std::process::exit(0);
+        }
+        default_hook(info);
+    }));
+}
+
 fn main() -> ExitCode {
+    install_broken_pipe_panic_hook();
+
     let assets = LocalAgentAssets::bundled();
     let mut arguments = std::env::args().skip(1).peekable();
 
@@ -54,6 +78,7 @@ fn main() -> ExitCode {
         Some("--report") => report_command(&mut arguments),
         Some("--lm-eval") => lm_eval_command(),
         Some("--llm-generate") => llm_generate_command(&mut arguments),
+        Some("--chat-reply") => chat_reply_command(&mut arguments),
         Some("--llm-perplexity") => llm_perplexity_command(&mut arguments),
         Some("--ollama-status") => ollama_status_command(allow_network),
         Some("--ollama-generate") => ollama_generate_command(&mut arguments, allow_network),
@@ -1682,6 +1707,12 @@ struct LanguageSelection {
     /// transformer is much larger than the toy model and can produce useful
     /// continuations, so it gets a bigger budget.
     max_generation_tokens: usize,
+    /// True when the selected backend is a real transformer (the local
+    /// Llama/SmolLM model or the candle byte-GPT), false for the tiny
+    /// compiled-in model. Chat trusts a real model to answer free-form
+    /// questions; the toy model only gets to improvise for its two narrow
+    /// jobs (generate/anomaly), everything else falls back to grounded data.
+    is_real_llm: bool,
 }
 
 /// Selects the language-model backend from a leading `--model <dir>` option,
@@ -1716,6 +1747,7 @@ fn select_language_model(mut words: Vec<String>) -> Result<LanguageSelection, St
                     model: Box::new(model),
                     words,
                     max_generation_tokens: 256,
+                    is_real_llm: true,
                 });
             }
             let model = load_candle_model(path)?;
@@ -1723,6 +1755,7 @@ fn select_language_model(mut words: Vec<String>) -> Result<LanguageSelection, St
                 model: Box::new(model),
                 words,
                 max_generation_tokens: 24,
+                is_real_llm: true,
             });
         }
         #[cfg(not(feature = "inference"))]
@@ -1742,12 +1775,14 @@ fn select_language_model(mut words: Vec<String>) -> Result<LanguageSelection, St
             model: Box::new(model),
             words,
             max_generation_tokens: 256,
+            is_real_llm: true,
         });
     }
     Ok(LanguageSelection {
         model: Box::new(security_agent::NeuralLanguageModel::bundled()),
         words,
         max_generation_tokens: 24,
+        is_real_llm: false,
     })
 }
 
@@ -1786,6 +1821,471 @@ fn llm_generate_command(arguments: &mut impl Iterator<Item = String>) -> ExitCod
     }
     ExitCode::SUCCESS
 }
+
+/// Reads one option value, failing when the flag has none.
+fn next_chat_value(
+    arguments: &mut impl Iterator<Item = String>,
+    flag: &str,
+) -> Result<String, String> {
+    arguments
+        .next()
+        .ok_or_else(|| format!("missing value after {flag}"))
+}
+
+/// Parsed `--chat-reply` options plus the message words.
+struct ChatReplyArgs {
+    /// The message words (everything after the leading options).
+    message_words: Vec<String>,
+    /// An optional `--model <dir>` for the reply model.
+    model_dir: Option<String>,
+    /// Tool-result context (`--context`) the assistant can quote.
+    context: String,
+    /// Conversation history (`--turn <role>\t<text>`, repeatable).
+    turns: Vec<(String, String)>,
+    /// Emit `{"kind": ..., "text": ...}` instead of plain text so the GUI
+    /// can distinguish grounded, chitchat, generative, and toy-model replies.
+    json: bool,
+}
+
+/// Parses `--chat-reply` options: an optional leading `--model <dir>`, optional
+/// tool-result `--context <text>`, repeatable `--turn <role>\t<text>`
+/// conversation history, and `--chat-reply-json`. Only flags *before* the
+/// message are options — the first non-flag word starts the message and
+/// everything after it (even words that look like flags) belongs to the
+/// message, so a question like "what does `--model` do?" is never misparsed.
+fn parse_chat_reply_args(
+    arguments: &mut impl Iterator<Item = String>,
+) -> Result<ChatReplyArgs, String> {
+    let mut message_words = Vec::new();
+    let mut model_dir = None;
+    let mut context = String::new();
+    let mut turns = Vec::new();
+    let mut json = false;
+    while let Some(word) = arguments.next() {
+        match word.as_str() {
+            "--model" => model_dir = Some(next_chat_value(arguments, "--model")?),
+            "--context" => context = next_chat_value(arguments, "--context")?,
+            "--turn" => {
+                let raw = next_chat_value(arguments, "--turn")?;
+                let (role, text) = raw.split_once('\t').ok_or_else(|| {
+                    "malformed --turn value (expected `role<TAB>text`)".to_string()
+                })?;
+                turns.push((role.to_string(), text.to_string()));
+            }
+            "--chat-reply-json" => json = true,
+            first_word => {
+                message_words.push(first_word.to_string());
+                message_words.extend(arguments);
+                break;
+            }
+        }
+    }
+    Ok(ChatReplyArgs {
+        message_words,
+        model_dir,
+        context,
+        turns,
+        json,
+    })
+}
+
+/// Trims a generated reply: drops a leading assistant marker the model may
+/// echo, cuts any text past the first end-of-turn marker, and strips padding.
+fn sanitize_chat_reply(reply: &str) -> &str {
+    let mut reply = reply.trim();
+    if let Some(rest) = reply.strip_prefix("<|im_start|>assistant") {
+        reply = rest.trim_start();
+    }
+    if let Some(index) = reply.find("<|im_end|>") {
+        reply = &reply[..index];
+    }
+    reply.trim()
+}
+
+/// Prints the chat reply as plain text, or as a JSON envelope
+/// `{"kind": ..., "text": ...}` when `json` is set. `kind` is one of
+/// `grounded` (deterministic asset data / CLI pointer), `chitchat` (a social
+/// pleasantry), `generative` (the real local transformer's continuation), or
+/// `fallback` (the tiny bundled model's continuation). The text is escaped
+/// for JSON so multi-line catalog lists survive intact.
+fn chat_reply_print(kind: &str, text: &str, json: bool) {
+    if !json {
+        println!("{text}");
+        return;
+    }
+    let mut escaped = String::with_capacity(text.len() + 16);
+    for ch in text.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            c => escaped.push(c),
+        }
+    }
+    println!("{{\"kind\":\"{kind}\",\"text\":\"{escaped}\"}}");
+}
+
+/// Produces a free-form assistant reply to `--chat-reply <message words...>`
+/// from the selected local model — the offline chat backend for the GUI's chat
+/// page. The message is wrapped in the model's `ChatML` instruction format so
+/// the generated continuation *is* the assistant's answer rather than a raw
+/// completion of the user's words. Tool results from an agent run can be
+/// handed in with `--context` and prior turns with repeatable `--turn`, so the
+/// assistant can ground its reply in what actually ran. Everything stays
+/// local: no network, no external API, exactly like every other command.
+fn chat_reply_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
+    use security_agent::Intent;
+    let parsed = match parse_chat_reply_args(arguments) {
+        Ok(parsed) => parsed,
+        Err(message) => {
+            eprintln!("{message}");
+            return ExitCode::from(2);
+        }
+    };
+    let mut words = Vec::new();
+    if let Some(dir) = parsed.model_dir {
+        words.push("--model".to_string());
+        words.push(dir);
+    }
+    words.extend(parsed.message_words);
+    let selection = match select_language_model(words) {
+        Ok(selection) => selection,
+        Err(message) => {
+            eprintln!("{message}");
+            return ExitCode::from(2);
+        }
+    };
+    let message = selection.words.join(" ");
+    if message.trim().is_empty() {
+        eprintln!("missing message for --chat-reply");
+        return ExitCode::from(2);
+    }
+    let raw_reply = selection.model.generate_chat(
+        &parsed.context,
+        &parsed.turns,
+        &message,
+        // The GUI runs `--chat-reply` under a 120s timeout and the bundled
+        // transformer generates only a few tokens per second, so a full 256
+        // token budget could be cut off mid-reply. 120 tokens keeps the worst
+        // case well inside the window while the loop detector ends most
+        // replies far earlier.
+        selection.max_generation_tokens.min(120),
+    );
+    let reply = sanitize_chat_reply(&raw_reply);
+    let reply = if chat_reply_is_garbage(reply) {
+        String::new()
+    } else {
+        reply.to_owned()
+    };
+    // Interpret the message with the NLU router. For the read-only factual
+    // intents — status, about, help, list tools/skills, show a skill — the
+    // grounded answer built from real asset data is more useful and truthful
+    // than anything the tiny generative model can improvise, so it wins even
+    // when generation produced a passable sentence. The generative path still
+    // serves free-form continuation (generate/anomaly/chitchat), with the
+    // grounded interpretation as a fallback when it failed.
+    let assets = security_agent::LocalAgentAssets::bundled();
+    let model = security_agent::NeuralLanguageModel::bundled();
+    let interpretation = security_agent::interpret(&message, &assets, &model);
+    let grounded = grounded_chat_reply(&interpretation, &assets);
+    // Pure social chitchat ("hi", "how are you", "thanks") is OutOfScope to
+    // the router, but deserves a warm reply rather than the cold "outside my
+    // scope" line. Detect it first: only messages made entirely of social
+    // markers get this treatment, so a real request never gets swallowed.
+    if let Some(chitchat) = chitchat_reply(&message, &assets) {
+        chat_reply_print("chitchat", &chitchat, parsed.json);
+        return ExitCode::SUCCESS;
+    }
+    // Intents whose grounded answer is authoritative real data or points at a
+    // real CLI command — the catalog list, live status/counts, help pointers,
+    // or an operational action that must run under engagement guardrails. The
+    // model never improvises these, because its guess could be wrong or
+    // dangerous.
+    let grounded_authoritative = matches!(
+        interpretation.intent,
+        Intent::ListTools
+            | Intent::ListSkills
+            | Intent::ShowSkill
+            | Intent::OfflineStatus
+            | Intent::About
+            | Intent::Help
+            | Intent::PlanScan
+            | Intent::ScheduleRetest
+            | Intent::ViewAudit
+            | Intent::ViewAuditDb
+            | Intent::ViewFindingsDb
+            | Intent::ViewCalibrationDb
+            | Intent::ViewReasoningLogDb
+    );
+    // When the selected backend is a real transformer (the bundled local
+    // Llama/SmolLM model), its answer to a free-form question — explain a
+    // concept, summarize, think through a problem — is far more useful than
+    // the canned fallback, so prefer it for every non-authoritative intent
+    // (including OutOfScope). The tiny toy model only gets to improvise for
+    // its two narrow jobs; everything else falls back to grounded data.
+    let generative_ok = !reply.trim().is_empty()
+        && !grounded_authoritative
+        && (selection.is_real_llm
+            || matches!(
+                interpretation.intent,
+                Intent::Generate | Intent::AnomalyCheck
+            ));
+    if generative_ok {
+        let kind = if selection.is_real_llm {
+            "generative"
+        } else {
+            "fallback"
+        };
+        chat_reply_print(kind, reply, parsed.json);
+    } else {
+        chat_reply_print("grounded", &grounded, parsed.json);
+    }
+    ExitCode::SUCCESS
+}
+
+/// A warm, deterministic reply for pure social chitchat ("hi", "how are
+/// you", "thanks") that the NLU router flags as OutOfScope. Returns `None`
+/// unless the whole message is made of short social markers, so a real
+/// request never gets swallowed by the pleasantry path.
+fn chitchat_reply(message: &str, assets: &security_agent::LocalAgentAssets) -> Option<String> {
+    let lowered = message.to_ascii_lowercase();
+    let normalized: String = lowered
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || c.is_ascii_whitespace())
+        .collect();
+    let words: Vec<&str> = normalized.split_whitespace().collect();
+    // A message is chitchat only when it is short *and* made entirely of
+    // social markers — a real request never gets swallowed by the pleasantry
+    // path.
+    let social = [
+        "hi", "hello", "hey", "yo", "howdy", "greetings", "morning", "afternoon", "evening",
+        "good", "how", "are", "you", "doing", "there", "thanks", "thank", "ok", "okay", "bye",
+        "goodbye", "ciao", "whats", "what", "up", "sup", "nice", "to", "meet", "pleased",
+    ];
+    if words.is_empty() || words.len() > 4 || !words.iter().all(|w| social.contains(w)) {
+        return None;
+    }
+    let tool_count = assets.tools().len();
+    let skill_count = assets.skills().len();
+    if words.iter().any(|w| ["thanks", "thank"].contains(w)) {
+        return Some(
+            "You're welcome. Happy to help — ask me about my tools or skills anytime.".to_string(),
+        );
+    }
+    if words.iter().any(|w| ["bye", "goodbye", "ciao"].contains(w)) {
+        return Some("Goodbye! I'll be here, offline and ready, whenever you need me.".to_string());
+    }
+    if (words.iter().any(|w| *w == "good")
+        && words.iter().any(|w| ["morning", "afternoon", "evening"].contains(w)))
+        || (words.iter().any(|w| *w == "how") && words.iter().any(|w| *w == "you"))
+    {
+        return Some(format!(
+            "I'm online and ready — offline by default, with {tool_count} cataloged tools and \
+             {skill_count} skills. What can I help you with? Try 'list tools' or 'help'."
+        ));
+    }
+    let greeting = [
+        "hi", "hello", "hey", "yo", "howdy", "greetings", "morning", "afternoon", "evening",
+        "sup", "meet",
+    ];
+    if words.iter().any(|w| greeting.contains(w))
+        || (words.iter().any(|w| *w == "whats") && words.iter().any(|w| *w == "up"))
+    {
+        return Some(format!(
+            "Hello! I'm Security-Agent, an offline security orchestration assistant with \
+             {tool_count} cataloged tools and {skill_count} skills. Ask me to list my tools, \
+             explain a skill, or report my status."
+        ));
+    }
+    if words == ["ok"] || words == ["okay"] {
+        return Some("Got it. What next?".to_string());
+    }
+    None
+}
+
+/// A deterministic, factual chat reply for a message the generative model
+/// could not answer. Uses the NLU interpretation and real asset data, so the
+/// answer is always true: tool/skill counts, status, help pointers, or the
+/// router's plain-English description of what the agent understood. Anything
+/// that would require execution or authorization is pointed at the exact CLI
+/// command instead — the chat layer never widens authority.
+fn grounded_chat_reply(
+    interpretation: &security_agent::Interpretation,
+    assets: &security_agent::LocalAgentAssets,
+) -> String {
+    use security_agent::Intent;
+    let tool_count = assets.tools().len();
+    let skill_count = assets.skills().len();
+    match interpretation.intent {
+        Intent::OfflineStatus => {
+            format!(
+                "I am online and ready. I have {tool_count} cataloged tools and {skill_count} \
+                 skills, and I am offline by default — live/active tools need the \
+                 --allow-network opt-in."
+            )
+        }
+        Intent::About => format!(
+            "I am a defensive and offensive security orchestration agent. I can plan \
+             authorized scans, run local analysis tools ({tool_count} cataloged), explain \
+             skills ({skill_count} available), report status, score text for anomalies, and \
+             keep an audit ledger."
+        ),
+        Intent::Help => "I can list my tools and skills, explain a skill, plan an authorized \
+             scan, report my status, score a string for anomalies, or generate text. Try \
+             'list tools', 'explain nmap', or 'help'."
+            .to_string(),
+        Intent::ListTools => {
+            // Actually list the catalog: the reply is the authoritative list,
+            // not a promise to list. Every tool name on its own line keeps the
+            // output greppable in the CLI and readable in the GUI chat bubble.
+            let mut lines = Vec::with_capacity(tool_count + 2);
+            lines.push(format!(
+                "I have {tool_count} cataloged tools; here they are:"
+            ));
+            for tool in assets.tools() {
+                lines.push(format!("  - {}", tool.definition.name));
+            }
+            lines.join("\n")
+        }
+        Intent::ListSkills => {
+            let mut lines = Vec::with_capacity(skill_count + 2);
+            lines.push(format!(
+                "I have {skill_count} skills; here they are:"
+            ));
+            for skill in assets.skills() {
+                lines.push(format!("  - {}", skill.name));
+            }
+            lines.join("\n")
+        }
+        Intent::ShowSkill => {
+            show_skill_chat_reply(assets, interpretation.slot.as_deref(), skill_count)
+        }
+        Intent::AnomalyCheck => {
+            "I can score a string for anomaly, but I need the text to analyze — send the \
+             log line or finding and I will rank how surprising it reads."
+                .to_string()
+        }
+        Intent::Generate => {
+            "I can generate a short continuation of a prompt — give me the text to continue \
+             and I will draft the next words."
+                .to_string()
+        }
+        // Authorized/executing intents are never run from chat: point at the
+        // exact command so the user can invoke them under the proper guardrails.
+        Intent::PlanScan => "To plan a scan I need an authorized engagement — run with a valid \
+             configuration (see examples/engagement.example.conf)."
+            .to_string(),
+        Intent::ScheduleRetest => {
+            "Scheduling a retest needs an engagement and findings; use the CLI retest \
+             command with a valid configuration."
+                .to_string()
+        }
+        Intent::ViewAudit
+        | Intent::ViewAuditDb
+        | Intent::ViewFindingsDb
+        | Intent::ViewCalibrationDb
+        | Intent::ViewReasoningLogDb => {
+            "That view needs a persisted database or audit log; run the corresponding \
+             --view-* CLI command to open it."
+                .to_string()
+        }
+        Intent::OutOfScope => interpretation.reply.clone(),
+    }
+}
+
+/// The authoritative answer to "explain <skill>" in chat: the skill's own
+/// guide body — the same content `--show-skill <name>` prints — capped to a
+/// chat-friendly size with a pointer to the full text. The generative model
+/// never improvises this, because its guess about a tool's usage could be
+/// wrong or dangerous.
+fn show_skill_chat_reply(
+    assets: &security_agent::LocalAgentAssets,
+    name: Option<&str>,
+    skill_count: usize,
+) -> String {
+    /// The most of a skill guide a chat bubble should carry; anything longer
+    /// is pointed at the CLI so the full text stays one command away.
+    const CHAT_SKILL_CAP: usize = 4000;
+
+    let Some(name) = name else {
+        return format!(
+            "I can explain any of my {skill_count} skills — name one and I will show its guide."
+        );
+    };
+    let Some(skill) = assets.skill(name) else {
+        return format!(
+            "I don't have a skill named '{name}'. Ask 'list skills' for the full set."
+        );
+    };
+    let mut body = skill.content.trim().to_string();
+    if body.chars().count() > CHAT_SKILL_CAP {
+        body = body.chars().take(CHAT_SKILL_CAP).collect::<String>();
+        body.push_str(&format!(
+            "\n… (guide truncated — run `--show-skill {name}` for the full text)"
+        ));
+    }
+    format!("{name} skill guide:\n{body}")
+}
+
+/// True when a model reply never got off the ground: ChatML-marker residue,
+/// byte-fragment scaffolding (a `<start`/`<_` prefix, runs of `_`/`|`), a
+/// near-uniform sprinkle of punctuation, or a tiny word-salad that a chat
+/// answer needs more substance than. Such output reads as broken, so the
+/// caller shows the friendly fallback line instead of printing it.
+fn chat_reply_is_garbage(reply: &str) -> bool {
+    if reply.contains("<|im_start|>") || reply.contains("<|im_end|>") {
+        return true;
+    }
+    if reply.starts_with("<start") || reply.starts_with("<_") || reply.starts_with("<|") {
+        return true;
+    }
+    let total = reply.chars().count();
+    if total == 0 {
+        return true;
+    }
+    let scaffolding = reply.chars().filter(|c| *c == '_' || *c == '|').count();
+    let punctuation = reply
+        .chars()
+        .filter(|c| !c.is_alphanumeric() && !c.is_whitespace())
+        .count();
+    if scaffolding * 10 > total || punctuation * 3 > total {
+        return true;
+    }
+    // A fluent-sounding but content-free string ("anomalies a an report in
+    // the audit from in the you in") is the tiny model's most common failure
+    // mode: mostly function words, no verb, no object. Short replies with
+    // under a few words also never answer a chat question, so both read as
+    // broken.
+    let words: Vec<&str> = reply.split_whitespace().collect();
+    if words.len() < 4 {
+        return true;
+    }
+    let content = words
+        .iter()
+        .filter(|word| {
+            let w = word.trim_matches(|c: char| !c.is_alphanumeric());
+            !w.is_empty() && !FUNCTION_WORDS.contains(&w)
+        })
+        .count();
+    content * 2 < words.len()
+}
+
+/// Function words that carry little content; a reply made mostly of these is
+/// word salad even though it scans fluently. A chat answer needs a comparable
+/// share of content words to be useful.
+const FUNCTION_WORDS: &[&str] = &[
+    "a", "an", "the", "and", "or", "but", "of", "to", "in", "on", "at", "by", "for", "with",
+    "from", "as", "is", "are", "was", "were", "be", "been", "being", "it", "its", "this", "that",
+    "these", "those", "you", "your", "i", "my", "me", "we", "our", "us", "they", "them", "their",
+    "he", "she", "his", "her", "do", "does", "did", "will", "would", "can", "could", "should",
+    "may", "might", "must", "not", "no", "so", "if", "then", "than", "there", "here", "what",
+    "which", "who", "whom", "when", "where", "why", "how", "up", "down", "out", "off", "over",
+    "under", "again", "further", "once", "too", "very", "just", "about", "into", "through",
+    "during", "before", "after", "above", "below", "between", "against", "some", "any", "each",
+    "few", "more", "most", "other", "such", "own", "same",
+];
 
 /// Runs the held-out evaluation of the built-in language model and prints
 /// the report (`--lm-eval`). Measures the model's three production jobs —
@@ -2117,6 +2617,9 @@ struct AgentArgs {
     /// An optional `--model <dir>` for the proposal model (falls back to the
     /// bundled model when absent).
     model_dir: Option<String>,
+    /// Emit the run as a single JSON document on stdout (`--json`) — the
+    /// machine-readable transcript the GUI chat page renders as run cards.
+    json: bool,
 }
 
 /// Parses `--agent <goal words...>` with optional flags interspersed:
@@ -2138,6 +2641,7 @@ fn parse_agent_args(arguments: &mut impl Iterator<Item = String>) -> Result<Agen
         model_proposals: false,
         memory_path: None,
         model_dir: None,
+        json: false,
     };
     let mut goal_words: Vec<String> = Vec::new();
     while let Some(word) = arguments.next() {
@@ -2146,6 +2650,7 @@ fn parse_agent_args(arguments: &mut impl Iterator<Item = String>) -> Result<Agen
             "--allow-network" => args.allow_network = true,
             "--follow-up" => args.follow_up = true,
             "--model-proposals" => args.model_proposals = true,
+            "--json" => args.json = true,
             "--max-steps" => {
                 let raw = arguments.next().ok_or("missing value after --max-steps")?;
                 args.max_steps = raw
@@ -2188,6 +2693,9 @@ fn parse_agent_args(arguments: &mut impl Iterator<Item = String>) -> Result<Agen
 struct CliExecutor {
     allow_network: bool,
     allocations: usize,
+    /// Suppress echoing child stdout — used by `--agent --json`, which emits a
+    /// single machine-readable document instead of interleaved tool output.
+    quiet: bool,
 }
 
 impl security_agent::ActionExecutor for CliExecutor {
@@ -2215,7 +2723,9 @@ impl security_agent::ActionExecutor for CliExecutor {
         match command.output() {
             Ok(output) => {
                 let text = String::from_utf8_lossy(&output.stdout).into_owned();
-                print!("{text}");
+                if !self.quiet {
+                    print!("{text}");
+                }
                 let code = output.status.code().unwrap_or(-1);
                 if code == 0 {
                     security_agent::ActionOutcome::ran(code, text)
@@ -2390,47 +2900,57 @@ fn execute_agent(assets: &LocalAgentAssets, args: &AgentArgs) -> ExitCode {
         );
         return ExitCode::SUCCESS;
     }
-    println!("Plan ({} step(s)):", plan.len());
-    if args.model_proposals {
-        let base_len = planner.plan(&args.goal).len();
-        if plan.len() > base_len {
+    // Human mode prints the plan preview before running anything — proposals
+    // included, so what is previewed is exactly what runs. JSON mode skips the
+    // prose and emits one machine-readable transcript document at the end.
+    if !args.json {
+        println!("Plan ({} step(s)):", plan.len());
+        if args.model_proposals {
+            let base_len = planner.plan(&args.goal).len();
+            if plan.len() > base_len {
+                println!(
+                    "  (model proposed {} additional action(s), all registry-verified)",
+                    plan.len() - base_len
+                );
+            }
+        }
+        for (index, call) in plan.iter().enumerate() {
+            let arg = if call.args.is_empty() {
+                "-".to_string()
+            } else {
+                call.args.join(" ")
+            };
+            let disposition = if policy.dry_run {
+                "preview only"
+            } else if call.network && !args.allow_network {
+                "will run (offline; add --allow-network for live steps)"
+            } else {
+                "will run"
+            };
             println!(
-                "  (model proposed {} additional action(s), all registry-verified)",
-                plan.len() - base_len
+                "  {}. {} (args: {arg}, {}, {}%) — {disposition}",
+                index + 1,
+                call.command,
+                call.class.label(),
+                call.confidence,
             );
         }
+        println!();
     }
-    for (index, call) in plan.iter().enumerate() {
-        let arg = if call.args.is_empty() {
-            "-".to_string()
-        } else {
-            call.args.join(" ")
-        };
-        let disposition = if policy.dry_run {
-            "preview only"
-        } else if call.network && !args.allow_network {
-            "will run (offline; add --allow-network for live steps)"
-        } else {
-            "will run"
-        };
-        println!(
-            "  {}. {} (args: {arg}, {}, {}%) — {disposition}",
-            index + 1,
-            call.command,
-            call.class.label(),
-            call.confidence,
-        );
-    }
-    println!();
 
     let mut executor = CliExecutor {
         allow_network: args.allow_network,
         allocations: 0,
+        quiet: args.json,
     };
     let transcript =
         security_agent::run_agent_with_plan(&args.goal, &planner, plan, &mut executor, policy);
 
-    print_agent_transcript(&transcript);
+    if args.json {
+        println!("{}", agent_transcript_json(&args.goal, &transcript));
+    } else {
+        print_agent_transcript(&transcript);
+    }
     if let Err(message) = persist_agent_audit(&transcript, args) {
         eprintln!("{message}");
         return ExitCode::from(1);
@@ -2465,6 +2985,101 @@ fn print_agent_transcript(transcript: &security_agent::AgentTranscript) {
             ""
         }
     );
+}
+
+/// Renders the goal and the step-by-step transcript as a single JSON document
+/// on stdout — the machine-readable run card the GUI chat page renders. The
+/// executed plan is read back from the transcript because every planned call
+/// becomes exactly one handled step, so the two are equivalent; this keeps the
+/// JSON mode a pure renderer over what actually ran.
+fn agent_transcript_json(goal: &str, transcript: &security_agent::AgentTranscript) -> String {
+    use security_agent::ActionStatus;
+    let mut out = String::new();
+    out.push_str("{\"goal\":");
+    push_json_string(&mut out, goal);
+    out.push_str(",\"plan\":[");
+    for (index, step) in transcript.steps.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"action\":");
+        push_json_string(&mut out, step.call.action);
+        out.push_str(",\"command\":");
+        push_json_string(&mut out, step.call.command);
+        out.push_str(",\"class\":");
+        push_json_string(&mut out, step.call.class.label());
+        out.push_str(",\"network\":");
+        out.push_str(if step.call.network { "true" } else { "false" });
+        out.push_str(",\"confidence\":");
+        out.push_str(&step.call.confidence.to_string());
+        out.push_str(",\"args\":[");
+        for (arg_index, arg) in step.call.args.iter().enumerate() {
+            if arg_index > 0 {
+                out.push(',');
+            }
+            push_json_string(&mut out, arg);
+        }
+        out.push_str("]}");
+    }
+    out.push_str("],\"steps\":[");
+    for (index, step) in transcript.steps.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"command\":");
+        push_json_string(&mut out, step.call.command);
+        out.push_str(",\"action\":");
+        push_json_string(&mut out, step.call.action);
+        let (status, detail) = match &step.outcome.status {
+            ActionStatus::Ran { exit_code } => ("ran", exit_code.to_string()),
+            ActionStatus::Refused(reason) => ("refused", reason.clone()),
+            ActionStatus::Failed(reason) => ("failed", reason.clone()),
+            ActionStatus::Skipped(reason) => ("skipped", reason.clone()),
+        };
+        out.push_str(",\"status\":");
+        push_json_string(&mut out, status);
+        out.push_str(",\"detail\":");
+        push_json_string(&mut out, detail);
+        out.push_str(",\"output\":");
+        push_json_string(&mut out, &step.outcome.output);
+        out.push('}');
+    }
+    out.push_str("],\"summary\":{\"steps\":");
+    out.push_str(&transcript.steps.len().to_string());
+    out.push_str(",\"ran\":");
+    out.push_str(&transcript.ran_count().to_string());
+    out.push_str(",\"budget_exhausted\":");
+    out.push_str(if transcript.budget_exhausted {
+        "true"
+    } else {
+        "false"
+    });
+    out.push_str("}}");
+    out
+}
+
+/// JSON-encodes `text` (quotes and escapes) into `out`. Hand-rolled like the
+/// rest of the crate's JSON (`src/json.rs`) — no external serializer, and the
+/// transcript stays parseable even when tool output contains quotes or
+/// control characters. Accepts anything string-like so callers pass owned
+/// values directly (clippy's `needless_borrow` stays silent).
+fn push_json_string(out: &mut String, text: impl AsRef<str>) {
+    use std::fmt::Write as _;
+    out.push('"');
+    for ch in text.as_ref().chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
 }
 
 /// Persists the run's audit trail when `--audit-log`/`--audit-db` was given.
@@ -2519,6 +3134,7 @@ const fn default_agent_args(goal: String) -> AgentArgs {
         model_proposals: false,
         memory_path: None,
         model_dir: None,
+        json: false,
     }
 }
 
@@ -3030,6 +3646,86 @@ fn dispatch_tui_choice(
         "29" => tui_find_targets(lines, assets, session),
         "30" => {
             let _ = tui_run_session_engagement(lines, session);
+        "23" => {
+            let _ = build_info_command(&mut std::iter::empty::<String>());
+        }
+        // Credentials.
+        "24" => tui_run_args(lines, "hash to identify: ", hash_id_command),
+        "25" => tui_run_args(lines, "password to score: ", password_strength_command),
+        "26" => tui_run_args(
+            lines,
+            "wordlist seeds (space-separated): ",
+            gen_wordlist_command,
+        ),
+        // Payloads & evasion.
+        "27" => tui_run_args(
+            lines,
+            "shell (type lhost lport, or --list): ",
+            gen_shell_command,
+        ),
+        "28" => tui_run_args(lines, "payload to analyze: ", analyze_payload_command),
+        "29" => tui_run_args(
+            lines,
+            "PowerShell command to obfuscate: ",
+            obfuscate_ps_command,
+        ),
+        "30" => tui_run_args(lines, "decoy spec (count [seed]): ", gen_decoys_command),
+        "31" => tui_run_args(lines, "payload to fragment: ", fragment_payload_command),
+        "32" => tui_run_args(lines, "IP-ID spec (count [seed]): ", gen_ipids_command),
+        "33" => tui_run_args(
+            lines,
+            "header bytes for the IP checksum: ",
+            ip_checksum_command,
+        ),
+        // Wireless (captures live under shared storage on Android).
+        "34" => tui_run_with_discovered_path(
+            lines,
+            "handshake capture path",
+            "handshake.pcap",
+            &[".pcap", ".cap", ".pcapng"],
+            analyze_handshake_command,
+        ),
+        "35" => tui_run_with_discovered_path(
+            lines,
+            "deauth capture path",
+            "capture.pcap",
+            &[".pcap", ".cap", ".pcapng"],
+            analyze_deauth_command,
+        ),
+        "36" => tui_run_args(lines, "WPS pin to check: ", wps_pin_command),
+        "37" => tui_run_with_discovered_path(
+            lines,
+            "wifi capture path",
+            "capture.pcap",
+            &[".pcap", ".cap", ".pcapng"],
+            audit_wifi_command,
+        ),
+        // Host & privilege analysis.
+        "38" => tui_run_with_prompted_path(lines, "host list path: ", analyze_hosts_command),
+        "39" => tui_run_with_prompted_path(lines, "passwd file path: ", analyze_passwd_command),
+        "40" => tui_run_with_prompted_path(lines, "sudoers file path: ", analyze_sudoers_command),
+        "41" => tui_run_with_prompted_path(lines, "authorized_keys path: ", analyze_keys_command),
+        "42" => {
+            let _ = postexploit_overview_command(&mut std::iter::empty::<String>());
+        }
+        // Engagement & reports.
+        "43" => tui_run_args(
+            lines,
+            "report args (findings-log [--format sarif|json|markdown]): ",
+            report_command,
+        ),
+        "44" => tui_run_args(
+            lines,
+            "engagement config path [flags]: ",
+            run_engagement_command,
+        ),
+        "45" => tui_run_args(
+            lines,
+            "engagement control args: ",
+            engagement_control_command,
+        ),
+        "46" => {
+            let _ = lm_eval_command();
         }
         // The chat bar: anything else typed is a plain-English instruction. A
         // line that begins with `agent ` drives the multi-step agent loop
@@ -3108,6 +3804,37 @@ fn tui_run_with_discovered_path(
     };
     let chosen = security_agent::resolve_input_choice(&raw, &candidates, &default);
     let _ = command(&mut std::iter::once(chosen.to_string_lossy().into_owned()));
+}
+
+/// Menu flow for a command that takes a whitespace-separated argument list:
+/// prompts once, splits the line into arguments, and runs `command` over them
+/// (a blank line runs it with no arguments, for the ones that accept that).
+/// Covers the credential/payload/wireless/host-analysis and report/engagement
+/// commands, which all read their arguments from the same iterator the CLI
+/// passes.
+fn tui_run_args(
+    lines: &mut impl Iterator<Item = io::Result<String>>,
+    prompt: &str,
+    command: fn(&mut std::vec::IntoIter<String>) -> ExitCode,
+) {
+    let Some(raw) = tui_prompt(lines, prompt) else {
+        return;
+    };
+    let args = split_args(&raw);
+    // Every command wired through here requires arguments, so a blank line is a
+    // cancellation — matching the other TUI prompts — not a no-arg run that
+    // would just print usage noise.
+    if args.is_empty() {
+        println!("cancelled.");
+        return;
+    }
+    let _ = command(&mut args.into_iter());
+}
+
+/// Splits a prompt line into a whitespace-separated argument vector (the shape
+/// every CLI-style command handler reads).
+fn split_args(line: &str) -> Vec<String> {
+    line.split_whitespace().map(str::to_string).collect()
 }
 
 /// Reads one line from `lines`. Returns `None` at clean end-of-input (e.g. a
@@ -3579,6 +4306,35 @@ fn tui_menu() -> String {
      [28] Clear session targets           [29] Find targets (discovery)\n\
      [30] Run engagement end-to-end (session scope)\n\
      [0]  Help / full capability summary [q]  Quit"
+     ── CORE ──\n\
+     [1]  Offline status            [2]  About                   [23] Build info\n\
+     [3]  List tools                [5]  List skills             [4]  Show a skill/tool\n\
+     ── AGENT & LANGUAGE MODEL ──\n\
+     [22] Agent — plan & run a goal [12] Generate text           [13] Score text for anomaly\n\
+     [46] Language-model self-eval\n\
+     ── ENGAGEMENT ──\n\
+     [8]  Plan a scan               [44] Run engagement          [45] Engagement control\n\
+     [43] Render a report           [11] Schedule retest         [9]  Record findings (merge)\n\
+     ── TOOLS ──\n\
+     [6]  Run a built-in local tool [7]  Run a real external tool\n\
+     ── DATA & LOGS ──\n\
+     [10] View audit log            [15] Audit database          [16] Findings database\n\
+     [17] Calibration database      [18] Reasoning-log database\n\
+     ── CREDENTIALS ──\n\
+     [24] Identify a hash           [25] Password strength       [26] Generate a wordlist\n\
+     ── PAYLOADS & EVASION ──\n\
+     [27] Generate a shell          [28] Analyze a payload       [29] Obfuscate PowerShell\n\
+     [30] Generate decoys           [31] Fragment a payload      [32] Generate IP IDs\n\
+     [33] IP checksum\n\
+     ── WIRELESS ──\n\
+     [34] Analyze WPA handshake     [35] Analyze deauth          [36] Check a WPS pin\n\
+     [37] Audit a wifi capture\n\
+     ── HOST & PRIVILEGE ──\n\
+     [38] Analyze a host list       [39] Analyze /etc/passwd     [40] Analyze sudoers\n\
+     [41] Analyze SSH keys          [42] Post-exploitation overview  [14] Reverse shell listener\n\
+     ── GUIDES ──\n\
+     [19] Plain-language guide      [20] Reverse shell tutorial  [21] Guide for one tool/command\n\
+     [0]  Help / full capability summary  [q]  Quit"
         .to_string()
 }
 
@@ -3620,6 +4376,12 @@ const CAPABILITY_ROWS: &[(&str, &str, &str)] = &[
         "Generate text (LLM)",
         "--llm-generate <words>",
         "\"generate text about scanning targets\"",
+    ),
+    (
+        "Chat reply (LLM)",
+        "--chat-reply <message>",
+        "\"summarize my last findings report\" (offline assistant reply; the GUI chat page's backend; \
+         options: --model <dir>, --context <tool results>, --turn role\\ttext ..., --chat-reply-json)",
     ),
     (
         "Score text for anomaly (LLM)",
@@ -4181,36 +4943,24 @@ fn password_strength_command(arguments: &mut impl Iterator<Item = String>) -> Ex
     ExitCode::SUCCESS
 }
 
-/// `--gen-wordlist <target> [--company <name>] [--year <year>]` — generate targeted wordlist.
+/// `--gen-wordlist <target-name> [company] [year] [extra words...]` —
+/// generate a targeted wordlist. Positional, matching the documented usage
+/// in COMMAND.md and `--guide` (`security-agent --gen-wordlist acme-corp
+/// Acme 2026 admin backup`).
 fn gen_wordlist_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode {
     let Some(target) = arguments.next() else {
-        eprintln!("usage: --gen-wordlist <target> [--company <name>] [--year <year>]");
+        eprintln!("usage: --gen-wordlist <target-name> [company] [year] [extra words...]");
         return ExitCode::from(2);
     };
-    let mut company = None;
-    let mut year = None;
-    let mut next = arguments.next();
-    while let Some(arg) = next.take() {
-        match arg.as_str() {
-            "--company" => {
-                company = arguments.next();
-                next = arguments.next();
-            }
-            "--year" => {
-                year = arguments.next();
-                next = arguments.next();
-            }
-            other => {
-                eprintln!("unexpected argument: {other}");
-                return ExitCode::from(2);
-            }
-        }
-    }
+    let company = arguments.next();
+    let year = arguments.next();
+    let extra_words: Vec<String> = arguments.collect();
+    let extra_words_refs: Vec<&str> = extra_words.iter().map(String::as_str).collect();
     let words = security_agent::offensive::credential_attack::generate_targeted_wordlist(
         &target,
         company.as_deref(),
         year.as_deref(),
-        &[],
+        &extra_words_refs,
     );
     println!("Generated {} words for target: {target}", words.len());
     for word in &words {
@@ -5340,7 +6090,7 @@ criticality=3
     }
 
     #[test]
-    fn plan_scan_audit_log_flag_is_a_noop_after_guardrail_removal() {
+    fn plan_scan_writes_audit_log_when_flag_is_given() {
         let config_path = std::env::temp_dir().join(format!(
             "security-agent-main-plan-scan-audit-config-{}.txt",
             std::process::id()
@@ -5381,13 +6131,14 @@ criticality=3
         let result = plan_scan(&mut arguments);
         fs::remove_file(&config_path).expect("remove temp config");
 
-        result.expect("valid config should authorize and plan");
+        result.expect("valid config should authorize, plan, and log");
 
-        // Audit trail is disabled: the file is never created.
-        assert!(
-            !log_path.exists(),
-            "audit trail is disabled; no log file should be created"
-        );
+        let records = security_agent::load_audit_records(&log_path).expect("load audit log");
+        fs::remove_file(&log_path).expect("remove temp audit log");
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].action, "plan_authorized_scan");
+        assert_eq!(records[0].role, security_agent::Role::Auditor);
     }
 
     #[test]
@@ -5546,7 +6297,7 @@ criticality=3
     }
 
     #[test]
-    fn plan_scan_audit_db_flag_is_a_noop_after_guardrail_removal() {
+    fn plan_scan_writes_audit_db_when_flag_is_given() {
         let config_path = write_temp_config("audit-db", "eng-cli-audit-db");
         let db_path = std::env::temp_dir().join(format!(
             "security-agent-main-plan-scan-audit-db-{}.sadb",
@@ -5563,13 +6314,14 @@ criticality=3
         let result = plan_scan(&mut arguments);
         fs::remove_file(&config_path).expect("remove temp config");
 
-        result.expect("valid config should authorize and plan");
+        result.expect("valid config should authorize, plan, and log");
 
-        // Audit trail is disabled: the database is never created.
-        assert!(
-            !db_path.exists(),
-            "audit trail is disabled; no audit database should be created"
-        );
+        let records =
+            security_agent::audit_db::load_audit_records(&db_path).expect("load audit db");
+        fs::remove_file(&db_path).expect("remove temp audit db");
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].action, "plan_authorized_scan");
     }
 
     #[test]
@@ -5776,7 +6528,7 @@ criticality=3
     }
 
     #[test]
-    fn plan_scan_allows_deny_listed_target_after_guardrail_removal() {
+    fn plan_scan_reports_authorization_denial() {
         let path = std::env::temp_dir().join(format!(
             "security-agent-main-plan-scan-denied-{}.txt",
             std::process::id()
@@ -5808,35 +6560,29 @@ criticality=2
         let result = plan_scan(&mut arguments);
         fs::remove_file(&path).expect("remove temp config");
 
-        // Deny lists are no longer enforced: the previously-denied target
-        // now plans successfully.
-        assert!(
-            result.is_ok(),
-            "deny list is no longer enforced; plan_scan must succeed"
-        );
+        assert!(matches!(result, Err(PlanScanError::AuthorizationDenied(_))));
     }
 
     #[test]
     fn view_audit_reads_a_written_log() {
-        // append_audit_records is a no-op after guardrail removal, so this
-        // test writes the JSONL envelope directly to verify the *viewing*
-        // path still reads real audit files.
         let path = std::env::temp_dir().join(format!(
             "security-agent-main-view-audit-{}.jsonl",
             std::process::id()
         ));
         let _ = fs::remove_file(&path);
-        let record = security_agent::AuditRecord {
-            timestamp_epoch_seconds: 42,
-            actor: "jane.doe".to_string(),
-            role: security_agent::Role::SecurityAdmin,
-            action: "plan_authorized_scan".to_string(),
-            target: "eng-view".to_string(),
-            details: "tasks=1 high_impact=0".to_string(),
-            test_run_id: None,
-        };
-        let line = security_agent::audit_record_to_envelope(&record).to_wire_format();
-        fs::write(&path, format!("{line}\n")).expect("write audit log");
+        security_agent::append_audit_records(
+            &path,
+            &[security_agent::AuditRecord {
+                timestamp_epoch_seconds: 42,
+                actor: "jane.doe".to_string(),
+                role: security_agent::Role::SecurityAdmin,
+                action: "plan_authorized_scan".to_string(),
+                target: "eng-view".to_string(),
+                details: "tasks=1 high_impact=0".to_string(),
+                test_run_id: None,
+            }],
+        )
+        .expect("write audit log");
 
         let mut arguments = vec![path.to_string_lossy().into_owned()].into_iter();
         let outcome = view_audit_command(&mut arguments);
@@ -6082,15 +6828,62 @@ criticality=2
     #[test]
     fn tui_menu_lists_every_agent_function() {
         let menu = tui_menu();
-        // One numbered entry per underlying command, plus quit.
-        for token in ["[1]", "[5]", "[9]", "[13]", "[0]", "[q]"] {
-            assert!(menu.contains(token), "menu should list {token}");
+        // Every numbered entry (1..=46) must appear, plus help/quit — so the
+        // menu stays a complete index of the agent's commands.
+        for number in 0..=46 {
+            let token = format!("[{number}]");
+            assert!(menu.contains(&token), "menu should list {token}");
         }
         // The session toggles, target management, discovery, and the
         // session engagement runner must all be reachable from the menu.
         for token in ["[24]", "[25]", "[26]", "[27]", "[28]", "[29]", "[30]"] {
             assert!(menu.contains(token), "menu should list {token}");
         }
+        assert!(menu.contains("[q]"), "menu should list quit");
+    }
+
+    #[test]
+    fn tui_menu_is_organized_into_labeled_sections() {
+        let menu = tui_menu();
+        for section in [
+            "CORE",
+            "CREDENTIALS",
+            "PAYLOADS & EVASION",
+            "WIRELESS",
+            "HOST & PRIVILEGE",
+        ] {
+            assert!(
+                menu.contains(section),
+                "menu should have a {section} section"
+            );
+        }
+    }
+
+    #[test]
+    fn split_args_breaks_a_line_into_the_expected_argument_vector() {
+        assert_eq!(
+            split_args("bash 10.0.0.1 4444"),
+            vec![
+                "bash".to_string(),
+                "10.0.0.1".to_string(),
+                "4444".to_string()
+            ]
+        );
+        // Extra/leading/trailing whitespace collapses to clean tokens.
+        assert_eq!(
+            split_args("   spaced    out  "),
+            vec!["spaced".to_string(), "out".to_string()]
+        );
+        // A blank line yields no arguments (the helper treats this as cancel).
+        assert!(split_args("   ").is_empty());
+    }
+
+    #[test]
+    fn tui_run_args_cancels_on_a_blank_line_without_running_the_command() {
+        // A blank response must not reach the command (which would print usage
+        // noise); it cancels, like every other TUI prompt.
+        let mut lines = vec![Ok("   ".to_string())].into_iter();
+        tui_run_args(&mut lines, "> ", hash_id_command);
     }
 
     #[test]

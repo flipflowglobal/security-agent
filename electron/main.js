@@ -31,6 +31,102 @@ function binaryEnv() {
     return env;
 }
 
+// ── Bundled offline LLM ─────────────────────────────────────────────────────
+// The real local transformer ships with the app (dev: `assets/model` at the
+// repo root, packaged: `<app>/resources/assets/model`). The renderer must not
+// guess paths, so the main process resolves the directory and injects
+// `--model <dir>` into LM-backed runs — guaranteeing the chat page uses the
+// real model rather than the tiny bundled fallback.
+function bundledModelDir() {
+    const roots = [];
+    if (process.resourcesPath) roots.push(process.resourcesPath);
+    roots.push(path.join(__dirname, '..'));
+    for (const root of roots) {
+        const dir = path.join(root, 'assets', 'model');
+        try {
+            if (fs.existsSync(path.join(dir, 'config.json')) &&
+                fs.existsSync(path.join(dir, 'tokenizer.json')) &&
+                fs.existsSync(path.join(dir, 'model.safetensors'))) {
+                return dir;
+            }
+        } catch (_e) { /* keep scanning */ }
+    }
+    return null;
+}
+
+// The optional `--model <dir>` back-end is only compiled into binaries built
+// with `--features inference`; default release builds reject the flag (exit
+// 2). Probe once at startup so the GUI never injects `--model` into a binary
+// that cannot use it — otherwise every chat reply would fail. null = not yet
+// probed; true/false = cached result.
+let binarySupportsModel = null;
+
+// Push the latest bundled-model support state to the renderer so the chat
+// page's model chip can label "offline LLM active" vs "toy model fallback".
+function emitModelStatus() {
+    try {
+        mainWindow.webContents.send('model-status', {
+            supported: binarySupportsModel,
+            modelDir: bundledModelDir(),
+        });
+    } catch (_e) { /* window gone */ }
+}
+
+// Promised probe: resolves with whether the current binary accepts `--model`
+// (i.e. was built with `--features inference`). The result is cached, so the
+// GUI never injects `--model` into a binary that would reject it, and the
+// chat chip can label itself accurately without blocking on a slow model
+// load. Runs in the background; the renderer is pushed the result.
+let binarySupportsModelPromise = null;
+function bundledModelSupport() {
+    if (binarySupportsModel !== null) return Promise.resolve(binarySupportsModel);
+    if (binarySupportsModelPromise) return binarySupportsModelPromise;
+    const dir = bundledModelDir();
+    if (!dir || !binaryPath) {
+        binarySupportsModel = false;
+        emitModelStatus();
+        return Promise.resolve(false);
+    }
+    binarySupportsModelPromise = new Promise((resolve) => {
+        execFile(binaryPath, ['--chat-reply', '--model', dir, 'ping'], {
+            timeout: 20_000,
+            maxBuffer: 1024 * 1024,
+            encoding: 'utf-8',
+            windowsHide: true,
+            env: binaryEnv(),
+        }, (error, stdout, stderr) => {
+            const text = (stderr || '') + (error ? String(error) : '');
+            binarySupportsModel = !/requires a build with `--features inference`/.test(text);
+            binarySupportsModelPromise = null;
+            emitLog(binarySupportsModel ? 'info' : 'warn',
+                'bundled offline model ' + (binarySupportsModel ? 'supported (inference build)' : 'NOT supported by this binary (no --features inference) — chat falls back to the toy model'));
+            emitModelStatus();
+            resolve(binarySupportsModel);
+        });
+    });
+    return binarySupportsModelPromise;
+}
+
+// Startup kick-off (the probe runs in the background and pushes its result).
+function probeBundledModelSupport() {
+    bundledModelSupport();
+}
+
+// Adds `--model <dir>` right after the command for LM-backed runs (`--chat-reply`
+// and `--agent`), unless the caller already chose a model. Runs the check on the
+// original args so a user-supplied `--model` always wins.
+function injectBundledModel(args) {
+    if (!Array.isArray(args) || args.length === 0) return args;
+    if (args.includes('--model')) return args;
+    if (binarySupportsModel !== true) return args;
+    const first = args[0];
+    if (first !== '--chat-reply' && first !== '--agent') return args;
+    const dir = bundledModelDir();
+    if (!dir) return args;
+    emitLog('info', 'injecting bundled offline model: ' + dir);
+    return [first, '--model', dir].concat(args.slice(1));
+}
+
 // ── Run tracking (for Cancel) ─────────────────────────────────────────────
 // Every live child is tracked in a Set so cancel-run can terminate the whole
 // group, and a second run never silently orphans the first.
@@ -191,6 +287,7 @@ app.whenReady().then(() => {
     emitLog('info', 'Security-Agent main process starting (platform=' + process.platform + ', electron=' + process.versions.electron + ')');
     binaryPath = resolveBinaryPath();
     emitLog(binaryPath ? 'info' : 'warn', binaryPath ? 'Using binary: ' + binaryPath : 'NO binary available — binary-backed commands will report errors');
+    probeBundledModelSupport();
     createWindow();
     app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -217,6 +314,8 @@ ipcMain.handle('get-app-info', (event) => {
         chrome: process.versions.chrome,
         binaryPath,
         binaryFound: !!binaryPath,
+        binarySupportsModel, // null = probe still in flight; true/false = result
+        bundledModelDir: bundledModelDir(),
     };
 });
 
@@ -257,7 +356,7 @@ ipcMain.handle('run-command', (event, args) => {
             resolve({ ok: false, stdout: '', stderr: refused, exitCode: 1 });
             return;
         }
-        const proc = execFile(binaryPath, args, {
+        const proc = execFile(binaryPath, injectBundledModel(args), {
             timeout: 120_000,
             maxBuffer: 1024 * 1024,
             encoding: 'utf-8',
@@ -294,7 +393,7 @@ ipcMain.handle('run-streaming', (event, args) => {
             resolve({ ok: false, stdout: '', stderr: refused, exitCode: 1 });
             return;
         }
-        const proc = spawn(binaryPath, args, {
+        const proc = spawn(binaryPath, injectBundledModel(args), {
             env: binaryEnv(),
             windowsHide: true,
         });
@@ -608,7 +707,10 @@ ipcMain.handle('save-file', async (event, options, content) => {
     }
 });
 
-// Writes a text file — only inside the workspace.
+// Writes a text file — only inside the workspace. Rejects symlinks/junctions
+// so a pre-planted link inside the workspace cannot redirect the write to a
+// path outside the sandbox (path.resolve is lexical and does not follow
+// Windows junctions).
 ipcMain.handle('write-file', async (event, filePath, content) => {
     if (!trusted(event)) return { ok: false, error: 'untrusted sender' };
     const violation = assertWorkspacePath(filePath);
@@ -617,7 +719,18 @@ ipcMain.handle('write-file', async (event, filePath, content) => {
     if (text.length > 16 * 1024 * 1024) return { ok: false, error: 'content too large to write (>16 MiB)' };
     try {
         await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-        await fs.promises.writeFile(filePath, text, 'utf-8');
+        const parent = await fs.promises.realpath(path.dirname(filePath));
+        await fs.promises.mkdir(WORKSPACE_BASE, { recursive: true });
+        const base = await fs.promises.realpath(WORKSPACE_BASE);
+        if (parent !== base && !parent.startsWith(base + path.sep)) {
+            return { ok: false, error: 'workspace path traverses a junction/symlink outside the workspace' };
+        }
+        const target = path.join(parent, path.basename(filePath));
+        try {
+            const stats = await fs.promises.lstat(target);
+            if (stats.isSymbolicLink()) return { ok: false, error: 'symlinks are not allowed' };
+        } catch (_e) { /* target does not exist yet — fine */ }
+        await fs.promises.writeFile(target, text, 'utf-8');
         return { ok: true };
     } catch (err) {
         return { ok: false, error: String(err) };

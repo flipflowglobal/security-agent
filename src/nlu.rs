@@ -343,7 +343,15 @@ fn lexical_score(lowered: &str, triggers: &[&str]) -> f32 {
             if lowered
                 .split(|c: char| !c.is_ascii_alphanumeric())
                 .filter(|word| !word.is_empty())
-                .any(|word| stem(word) == trigger_stem)
+                .any(|word| {
+                    // Exact stem equality first (the reliable signal), then a
+                    // fuzzy edit-distance match so misspellings of a trigger
+                    // word still anchor the intent. The fuzzy fallback compares
+                    // the raw token against the raw trigger — before stemming —
+                    // because the stemmer is conservative by design and a typo
+                    // like `toolz` would otherwise evade it.
+                    stem(word) == trigger_stem || fuzzy_words_match(word, trigger)
+                })
             {
                 score += 1.0;
             }
@@ -374,6 +382,78 @@ fn stem(word: &str) -> &str {
         }
     }
     word
+}
+
+/// True when `word` matches `target` under a length-scaled edit-distance
+/// tolerance: very short words need an exact (or stemmed) match, longer
+/// words tolerate one or two edits.
+///
+/// A misspelled instruction (`lisst` for `list`, `toolz` for `tools`, `nmpa`
+/// for `nmap`) still anchors to the right capability without letting short,
+/// high-frequency words collapse into each other (`to` never fuzzy-matches
+/// `do`). The distance is Damerau-Levenshtein optimal string alignment:
+/// adjacent transpositions count as one edit, which covers the most common
+/// typing slip (a swapped pair of letters) at the same cost as a
+/// substitution.
+#[must_use]
+pub fn fuzzy_words_match(word: &str, target: &str) -> bool {
+    if word == target {
+        return true;
+    }
+    // Short words on either side disable fuzzy matching entirely: `can` must
+    // never fuzzy-match `scan`, `to` never `do`, and `run` never `ran`. The
+    // stemmer already handles productive inflections; fuzzy is for typos in
+    // real words, which are at least four letters long.
+    if word.len() < 4 || target.len() < 4 {
+        return false;
+    }
+    let longer = word.len().max(target.len());
+    let max_distance = match longer {
+        4..=5 => 1, // one edit covers `veiw`->`view`, `nmpa`->`nmap`, `lisst`->`list`
+        _ => 2,     // longer words tolerate a dropped vowel too: `explane`->`explain`
+    };
+    let distance = damerau_levenshtein_osa(word, target);
+    distance <= max_distance
+}
+
+/// Damerau-Levenshtein optimal string alignment distance between two ASCII
+/// words. Returns the minimum number of single-character insertions,
+/// deletions, substitutions, or adjacent transpositions that turn `a` into
+/// `b`. All inputs here are ASCII (the `normalize` token alphabet), so byte
+/// length equals character length.
+fn damerau_levenshtein_osa(a: &str, b: &str) -> usize {
+    let a = a.as_bytes();
+    let b = b.as_bytes();
+    if a.is_empty() {
+        return b.len();
+    }
+    if b.is_empty() {
+        return a.len();
+    }
+    // Two rolling rows plus the previous row for transposition lookback.
+    let width = b.len() + 1;
+    let mut prev2 = vec![0_usize; width];
+    let mut prev = vec![0_usize; width];
+    let mut curr = vec![0_usize; width];
+    for (j, slot) in prev.iter_mut().enumerate() {
+        *slot = j;
+    }
+    for i in 1..=a.len() {
+        curr[0] = i;
+        for j in 1..=b.len() {
+            let substitution = prev[j - 1] + usize::from(a[i - 1] != b[j - 1]);
+            let insertion = prev[j] + 1;
+            let deletion = curr[j - 1] + 1;
+            let mut best = substitution.min(insertion).min(deletion);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                best = best.min(prev2[j - 2] + 1);
+            }
+            curr[j] = best;
+        }
+        prev2.copy_from_slice(&prev);
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[b.len()]
 }
 
 /// Cosine similarity (mapped to `[0, 1]`) between the instruction vector and
@@ -416,13 +496,45 @@ fn softmax_confidence(scores: &[(Intent, f32)]) -> u8 {
 }
 
 /// The first token that names one of the agent's tools or skills, if any.
+/// A misspelled asset name (`nmpa` for `nmap`) still resolves through the
+/// same edit-distance matcher used for trigger words, so "explain nmpa"
+/// reaches the nmap skill instead of falling out of scope. When a fuzzy match
+/// wins, the canonical name is returned (not the typo), so downstream slots
+/// and commands receive the real tool/skill name.
 fn known_asset_name(lowered: &str, assets: &LocalAgentAssets) -> Option<String> {
     lowered
         .split(|c: char| !c.is_ascii_alphanumeric())
-        .find(|word| {
-            !word.is_empty() && (assets.tool(word).is_some() || assets.skill(word).is_some())
+        .filter(|word| !word.is_empty())
+        .find_map(|word| canonical_asset_name(word, assets))
+}
+
+/// The canonical tool/skill name matching `word` — exact match first, then a
+/// close fuzzy match — or `None`. Fuzzy matches require a word of at least
+/// four characters and a name length within one edit, so a short word is never
+/// mistaken for a different asset.
+fn canonical_asset_name(word: &str, assets: &LocalAgentAssets) -> Option<String> {
+    if let Some(tool) = assets.tool(word) {
+        return Some(tool.definition.name.clone());
+    }
+    if let Some(skill) = assets.skill(word) {
+        return Some(skill.name.to_string());
+    }
+    if let Some(tool) = assets.tools().iter().find(|tool| {
+        fuzzy_words_match(word, &tool.definition.name)
+            && word.len() >= 4
+            && word.len().abs_diff(tool.definition.name.len()) <= 1
+    }) {
+        return Some(tool.definition.name.clone());
+    }
+    assets
+        .skills()
+        .iter()
+        .find(|skill| {
+            fuzzy_words_match(word, skill.name)
+                && word.len() >= 4
+                && word.len().abs_diff(skill.name.len()) <= 1
         })
-        .map(ToString::to_string)
+        .map(|skill| skill.name.to_string())
 }
 
 /// Extracts the intent's argument: a tool/skill name, or free text after the
@@ -702,5 +814,61 @@ mod tests {
         for instruction in ["list tools", "who are you", "book a flight"] {
             assert!(route(instruction).confidence <= 100);
         }
+    }
+
+    #[test]
+    fn fuzzy_words_match_tolerates_common_typos() {
+        // Transposition.
+        assert!(fuzzy_words_match("veiw", "view"));
+        assert!(fuzzy_words_match("nmpa", "nmap"));
+        // Insertion (stutter) and deletion (dropped letter).
+        assert!(fuzzy_words_match("lisst", "list"));
+        assert!(fuzzy_words_match("toolz", "tools"));
+        // Dropped vowel on a longer word.
+        assert!(fuzzy_words_match("explane", "explain"));
+        // One-edit differences that genuinely read as typos.
+        assert!(fuzzy_words_match("securty", "security"));
+        assert!(fuzzy_words_match("plant", "plan"));
+        // Short words never fuzzy-match unrelated words.
+        assert!(!fuzzy_words_match("to", "do"));
+    }
+
+    #[test]
+    fn fuzzy_words_match_rejects_distant_words() {
+        // Too many edits for the length.
+        assert!(!fuzzy_words_match("please", "plz"));
+        assert!(!fuzzy_words_match("report", "remediation"));
+        assert!(!fuzzy_words_match("tool", "turtle"));
+        assert!(!fuzzy_words_match("scan", "scanner"));
+        assert!(!fuzzy_words_match("plan", "prance"));
+    }
+
+    #[test]
+    fn fuzzy_words_match_never_collapses_short_function_words() {
+        // A three-letter word on either side disables fuzzy matching, so the
+        // common word "can" can never anchor the PlanScan trigger "scan", "to"
+        // never matches "do", and "run" never matches "ran". Without this the
+        // routing regressed: "list every tool you can run" planned a scan.
+        assert!(!fuzzy_words_match("can", "scan"));
+        assert!(!fuzzy_words_match("to", "do"));
+        assert!(!fuzzy_words_match("run", "ran"));
+        assert!(!fuzzy_words_match("the", "then"));
+        // Real typos on both sides are still caught.
+        assert!(fuzzy_words_match("veiw", "view"));
+        assert!(fuzzy_words_match("lisst", "list"));
+    }
+
+    #[test]
+    fn routes_misspelled_instructions() {
+        assert_eq!(route("lisst ur toolz plz").intent, Intent::ListTools);
+        assert_eq!(route("what is youir status").intent, Intent::OfflineStatus);
+        assert_eq!(route("plan a scan of teh target").intent, Intent::PlanScan);
+    }
+
+    #[test]
+    fn misspelled_asset_name_resolves_to_canonical_slot() {
+        let interp = route("explane nmpa");
+        assert_eq!(interp.intent, Intent::ShowSkill);
+        assert_eq!(interp.slot.as_deref(), Some("nmap"));
     }
 }

@@ -1,4 +1,4 @@
-// Online/Offline toggle behavior test via CDP.
+// Online/Offline toggle behavior test via CDP (v2 UI).
 const base = process.env.CDP_BASE || 'http://127.0.0.1:9222';
 async function main() {
   const list = await (await fetch(`${base}/json`)).json();
@@ -17,43 +17,43 @@ async function main() {
     return r.result && r.result.result ? r.result.result.value : undefined;
   };
   const click = (id) => evalJs(`(() => { const el = document.getElementById('${id}'); if (!el) return 'NO_EL'; el.click(); return 'ok'; })()`);
-  const activeMode = () => evalJs(`(() => [...document.querySelectorAll('.mode-btn')].find(b => b.classList.contains('active')) ? [...document.querySelectorAll('.mode-btn')].find(b => b.classList.contains('active')).textContent.trim() : 'NONE')()`);
-  const statusText = () => evalJs(`(() => document.getElementById('output-status') ? (document.getElementById('output-status').textContent || '') : 'NO_EL')()`);
+  const activeMode = () => evalJs(`(() => { const b = [...document.querySelectorAll('.mode-btn')].find(x => x.classList.contains('active')); return b ? b.textContent.trim() : 'NONE'; })()`);
+  const clickSystemStatus = () => evalJs(`(() => { const b = [...document.querySelectorAll('.action-btn')].find(x => x.textContent.includes('System status')); if (!b) return 'NO_EL'; b.click(); return 'ok'; })()`);
+  const homeOutput = () => evalJs(`(() => document.getElementById('home-output') ? (document.getElementById('home-output').textContent || '') : 'NO_EL')()`);
+  const statMode = () => evalJs(`(() => document.getElementById('stat-mode') ? document.getElementById('stat-mode').textContent : 'NO_EL')()`);
 
   // Default state: offline active
-  console.log('initial active mode:', await activeMode());
+  const initial = await activeMode();
+  console.log('initial active mode:', initial);
 
   // Click Online
   console.log('click Online:', await click('mode-online'));
   await new Promise((r) => setTimeout(r, 400));
-  console.log('active mode after Online:', await activeMode());
-
-  // Refresh status in online mode
-  await evalJs(`(() => { const el = document.getElementById('output-status'); if (el) el.textContent = ''; })()`);
-  console.log('click Refresh Status:', await click('btn-refresh-status'));
-  await new Promise((r) => setTimeout(r, 2500));
-  const onlineStatus = await statusText();
-  console.log('online-mode status:  ', onlineStatus.replace(/\s+/g, ' ').trim().slice(0, 140));
+  const afterOnline = await activeMode();
+  console.log('active mode after Online:', afterOnline);
 
   // Back to Offline
   console.log('click Offline:', await click('mode-offline'));
   await new Promise((r) => setTimeout(r, 400));
-  console.log('active mode after Offline:', await activeMode());
+  const afterOffline = await activeMode();
+  console.log('active mode after Offline:', afterOffline);
 
-  // Refresh status in offline mode
-  await evalJs(`(() => { const el = document.getElementById('output-status'); if (el) el.textContent = ''; })()`);
-  console.log('click Refresh Status:', await click('btn-refresh-status'));
-  await new Promise((r) => setTimeout(r, 2500));
-  const offlineStatus = await statusText();
-  console.log('offline-mode status: ', offlineStatus.replace(/\s+/g, ' ').trim().slice(0, 140));
+  // Status refresh in offline mode (Home "System status" quick action)
+  await evalJs(`(() => { const el = document.getElementById('home-output'); if (el) el.textContent = ''; })()`);
+  console.log('click System status:', await clickSystemStatus());
+  await new Promise((r) => setTimeout(r, 4000));
+  const output = await homeOutput();
+  const modeStat = await statMode();
+  console.log('home-output:  ', output.replace(/\s+/g, ' ').trim().slice(0, 120));
+  console.log('stat-mode:    ', modeStat);
 
-  // Verify toggles switch active mode and status refreshes in both modes.
-const ok =
-  (await activeMode()) === 'Offline' &&
-  onlineStatus.trim() !== '' && onlineStatus !== 'NO_EL' &&
-  offlineStatus.trim() !== '' && offlineStatus !== 'NO_EL';
-console.log(ok ? 'TOGGLE TEST PASS' : 'TOGGLE TEST FAIL');
-if (!ok) process.exitCode = 1;
-ws.close();
+  const ok =
+    initial === 'Offline' &&
+    afterOnline === 'Online' &&
+    afterOffline === 'Offline' &&
+    output.trim() !== '' && output !== 'NO_EL' && modeStat === 'Offline';
+  console.log(ok ? 'TOGGLE TEST PASS' : 'TOGGLE TEST FAIL');
+  if (!ok) process.exitCode = 1;
+  ws.close();
 }
 main().catch((e) => { console.error('FAIL:', e.message); process.exit(1); });

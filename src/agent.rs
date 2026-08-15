@@ -22,6 +22,7 @@ use crate::governance::{AuditRecord, Role};
 use crate::json::{JsonValue, parse as parse_json};
 use crate::language_model::{LanguageModel, NeuralLanguageModel};
 use crate::local_assets::LocalAgentAssets;
+use crate::nlu::fuzzy_words_match;
 use std::collections::{BTreeSet, VecDeque};
 use std::fmt::Write as _;
 
@@ -1001,7 +1002,9 @@ const fn is_token_boundary(c: char) -> bool {
 }
 
 /// The byte position where `trigger` matches in `lowered` — `contains` for a
-/// phrase (has a space), whole-token stem match for a single word — or `None`.
+/// phrase (has a space), whole-token stem match for a single word, falling
+/// back to a fuzzy edit-distance match so a misspelled trigger word still
+/// anchors the action — or `None`.
 fn trigger_position(lowered: &str, trigger: &str) -> Option<usize> {
     if trigger.contains(' ') {
         return lowered.find(trigger);
@@ -1009,7 +1012,7 @@ fn trigger_position(lowered: &str, trigger: &str) -> Option<usize> {
     let trigger_stem = stem(trigger);
     let mut index = 0usize;
     for token in lowered.split(is_token_boundary) {
-        if !token.is_empty() && stem(token) == trigger_stem {
+        if !token.is_empty() && (stem(token) == trigger_stem || fuzzy_words_match(token, trigger)) {
             return Some(index);
         }
         // Advance past this token and the single delimiter that followed it.
@@ -1019,12 +1022,14 @@ fn trigger_position(lowered: &str, trigger: &str) -> Option<usize> {
 }
 
 /// The first token in `lowered` that names one of the agent's tools/skills,
-/// with its byte position.
+/// with its byte position. Misspellings resolve through the same fuzzy
+/// edit-distance matcher used for trigger words, so "identfy the nmap
+/// skill" still names nmap; the canonical name is returned (not the typo).
 fn first_asset(lowered: &str, assets: &LocalAgentAssets) -> Option<(usize, String)> {
     let mut index = 0usize;
     for token in lowered.split(is_token_boundary) {
-        if !token.is_empty() && (assets.tool(token).is_some() || assets.skill(token).is_some()) {
-            return Some((index, token.to_string()));
+        if let Some(name) = canonical_asset_name(token, assets) {
+            return Some((index, name));
         }
         index += token.len() + 1;
     }
@@ -1035,12 +1040,17 @@ fn first_asset(lowered: &str, assets: &LocalAgentAssets) -> Option<(usize, Strin
 /// `run-external-tool` runs real tools, so it anchors only on these — a
 /// skill-only name (e.g. the bundled `security-agent` skill) must never route
 /// to a tool run, which would deterministically fail as "unknown cataloged
-/// tool".
+/// tool". Fuzzy misses resolve to the canonical tool name so a typo still
+/// runs the intended tool.
 fn first_cataloged_tool(lowered: &str, assets: &LocalAgentAssets) -> Option<(usize, String)> {
     let mut index = 0usize;
     for token in lowered.split(is_token_boundary) {
-        if !token.is_empty() && assets.tool(token).is_some() {
-            return Some((index, token.to_string()));
+        if let Some(name) = assets
+            .tool(token)
+            .map(|tool| tool.definition.name.clone())
+            .or_else(|| fuzzy_tool_name(token, assets))
+        {
+            return Some((index, name));
         }
         index += token.len() + 1;
     }
@@ -1066,15 +1076,79 @@ fn is_forensic(name: &str) -> bool {
 }
 
 /// The first token in `lowered` naming a forensic analyzer, with its position.
+/// Misspellings resolve to the canonical analyzer name.
 fn first_forensic(lowered: &str) -> Option<(usize, String)> {
     let mut index = 0usize;
     for token in lowered.split(is_token_boundary) {
-        if is_forensic(token) {
-            return Some((index, token.to_string()));
+        if let Some(name) = canonical_forensic_name(token) {
+            return Some((index, name));
         }
         index += token.len() + 1;
     }
     None
+}
+
+/// The canonical cataloged tool or skill name matching `token` — exact match
+/// first, then a close fuzzy match — or `None`. A fuzzy match requires at
+/// least four characters and a name length within one edit, so `nmpa` reaches
+/// nmap while a short word is never mistaken for a different asset.
+fn canonical_asset_name(token: &str, assets: &LocalAgentAssets) -> Option<String> {
+    if let Some(tool) = assets.tool(token) {
+        return Some(tool.definition.name.clone());
+    }
+    if let Some(skill) = assets.skill(token) {
+        return Some(skill.name.to_string());
+    }
+    assets
+        .tools()
+        .iter()
+        .find(|tool| {
+            fuzzy_words_match(token, &tool.definition.name)
+                && token.len() >= 4
+                && token.len().abs_diff(tool.definition.name.len()) <= 1
+        })
+        .map(|tool| tool.definition.name.clone())
+        .or_else(|| {
+            assets
+                .skills()
+                .iter()
+                .find(|skill| {
+                    fuzzy_words_match(token, skill.name)
+                        && token.len() >= 4
+                        && token.len().abs_diff(skill.name.len()) <= 1
+                })
+                .map(|skill| skill.name.to_string())
+        })
+}
+
+/// The canonical cataloged *tool* name matching `token` — exact match first,
+/// then a close fuzzy match — or `None`. Used where a skill-only name must not
+/// route to a tool run.
+fn fuzzy_tool_name(token: &str, assets: &LocalAgentAssets) -> Option<String> {
+    assets
+        .tools()
+        .iter()
+        .find(|tool| {
+            fuzzy_words_match(token, &tool.definition.name)
+                && token.len() >= 4
+                && token.len().abs_diff(tool.definition.name.len()) <= 1
+        })
+        .map(|tool| tool.definition.name.clone())
+}
+
+/// The canonical forensic analyzer name matching `token`, or `None`.
+fn canonical_forensic_name(token: &str) -> Option<String> {
+    if is_forensic(token) {
+        return Some(token.to_string());
+    }
+    FORENSIC_ANALYZERS
+        .iter()
+        .find(|name| {
+            fuzzy_words_match(token, name)
+                && token.len() >= 4
+                && token.len().abs_diff(name.len()) <= 1
+        })
+        .map(|name| (*name).to_string())
 }
 
 /// Whether the goal contains an execution verb — the signal that a named tool
@@ -2090,5 +2164,49 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let loaded = load_agent_memory(path.to_str().expect("path")).expect("load");
         assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn misspelled_trigger_words_still_plan() {
+        let assets = LocalAgentAssets::bundled();
+        let model = model();
+        let plan = planner_over(&assets, &model).plan("lisst toolz plz");
+        assert!(
+            plan.iter().any(|call| call.action == "list-tools"),
+            "a misspelled 'list tools' should still plan list-tools"
+        );
+        let plan = planner_over(&assets, &model).plan("what is youir status?");
+        assert!(
+            plan.iter().any(|call| call.action == "offline-status"),
+            "a misspelled status question should still plan offline-status"
+        );
+    }
+
+    #[test]
+    fn misspelled_asset_names_resolve_to_the_canonical_tool() {
+        let assets = LocalAgentAssets::bundled();
+        let model = model();
+        let plan = planner_over(&assets, &model).plan("explane nmpa");
+        let show = plan
+            .iter()
+            .find(|call| call.action == "show-skill")
+            .expect("naming a misspelled skill should plan show-skill");
+        assert_eq!(
+            show.primary_arg(),
+            Some("nmap"),
+            "the typo must resolve to the canonical skill name"
+        );
+    }
+
+    #[test]
+    fn misspelled_forensic_analyzer_routes_to_run_tool() {
+        let assets = LocalAgentAssets::bundled();
+        let model = model();
+        let plan = planner_over(&assets, &model).plan("run volitility on /cases/mem.raw");
+        let call = plan
+            .iter()
+            .find(|call| call.action == "run-tool")
+            .expect("a misspelled forensic analyzer should still plan run-tool");
+        assert_eq!(call.args.first().map(String::as_str), Some("volatility"));
     }
 }
