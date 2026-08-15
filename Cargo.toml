@@ -1,31 +1,5 @@
 [package]
 name = "security-agent"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.85"
-description = "Defensive and offensive security orchestration agent for authorized vulnerability and penetration testing."
-license = "BUSL-1.1"
-repository = "https://github.com/flipflowglobal/security-agent"
-
-# Core orchestration logic uses no external runtime crates — JSON, SHA-256,
-# and PCAP parsing are all implemented in-house (see `src/json.rs`,
-# `src/builtin_tools.rs`, `src/pcap.rs`).
-[dependencies]
-
-# Optional candle-backed inference back-end (`--features inference`). The
-# default build stays zero-dependency; this only pulls candle when explicitly
-# enabled. We build the (small, byte-level GPT) model ourselves from candle-nn
-# primitives, so no pre-built architectures (candle-transformers) or external
-# tokenizer files (tokenizers) are needed — tokenization is byte-level and
-# built in. CPU only: default-features are off so no CUDA/MKL is required.
-candle-core = { version = "0.9.2", default-features = false, optional = true }
-candle-nn = { version = "0.9.2", default-features = false, optional = true }
-
-[features]
-# Enable the candle-based LLM inference back-end (see `src/inference.rs`).
-inference = ["dep:candle-core", "dep:candle-nn"]
-[package]
-name = "security-agent"
 version = "2.0.0"
 edition = "2024"
 rust-version = "1.85"

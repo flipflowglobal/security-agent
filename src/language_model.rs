@@ -143,11 +143,12 @@ pub trait LanguageModel {
     }
 }
 
-/// Sampling knobs for [`LanguageModel::generate_with`]. The default
-/// reproduces the plain [`LanguageModel::generate`] behavior exactly
-/// (temperature 0.7, top-`k` 8, seed derived from the prompt, no repetition
-/// penalty, stop at the end-of-sentence token), so switching a caller to
-/// `generate_with` never changes existing output.
+/// Sampling knobs for [`LanguageModel::generate_with`].
+///
+/// The default reproduces the plain [`LanguageModel::generate`] behavior
+/// exactly (temperature 0.7, top-`k` 8, seed derived from the prompt, no
+/// repetition penalty, stop at the end-of-sentence token), so switching a
+/// caller to `generate_with` never changes existing output.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GenerationOptions {
     /// Softmax sharpening applied as `probs.powf(1 / temperature)` before
@@ -1433,6 +1434,7 @@ impl NeuralLanguageModel {
     /// [`GenerationOptions::default`]). Kept for callers that predate
     /// configurable generation; [`Self::sample_next_with`] is the real
     /// implementation.
+    #[allow(dead_code)] // public surface kept for external callers
     fn sample_next(&self, context: [usize; CONTEXT], rng: &mut Rng) -> usize {
         let options = GenerationOptions::default();
         self.sample_next_with(context, rng, &options, &[])
@@ -1759,12 +1761,7 @@ impl LanguageModel for NeuralLanguageModel {
         self.generate_with(prompt, max_tokens, GenerationOptions::default())
     }
 
-    fn generate_with(
-        &self,
-        prompt: &str,
-        max_tokens: usize,
-        options: GenerationOptions,
-    ) -> String {
+    fn generate_with(&self, prompt: &str, max_tokens: usize, options: GenerationOptions) -> String {
         let bos = self.vocab.id(BOS).unwrap_or(0);
         let eos = self.vocab.id(EOS).unwrap_or(1);
         let mut context = self.seed_context(prompt);
@@ -1773,14 +1770,12 @@ impl LanguageModel for NeuralLanguageModel {
         // sequence of samples, while different prompts land on different
         // (still reproducible) draws. An explicit `options.seed` overrides
         // that derivation for callers that want a fixed draw.
-        let seed = options
-            .seed
-            .unwrap_or_else(|| SEED ^ hash_prompt(prompt));
+        let seed = options.seed.unwrap_or_else(|| SEED ^ hash_prompt(prompt));
         let mut rng = Rng::new(seed);
-        let mut seen: Vec<usize> = Vec::new();
+        let mut emitted: Vec<usize> = Vec::new();
 
         for _ in 0..max_tokens {
-            let next = self.sample_next_with(context, &mut rng, &options, &seen);
+            let next = self.sample_next_with(context, &mut rng, &options, &emitted);
             if options.stop_at_eos && next == eos {
                 break;
             }
@@ -1788,7 +1783,7 @@ impl LanguageModel for NeuralLanguageModel {
                 produced.push(self.vocab.token(next).to_string());
             }
             if options.repeat_penalty > 1.0 {
-                seen.push(next);
+                emitted.push(next);
             }
             // Slide the temporal window forward by one token.
             for slot in 0..CONTEXT - 1 {

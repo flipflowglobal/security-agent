@@ -192,7 +192,8 @@ impl LocalConfig {
         let kv_dim = u64::try_from(self.num_key_value_heads * self.head_dim()).unwrap_or(u64::MAX);
         let attention = 2 * hidden * hidden + 2 * hidden * kv_dim;
         let mlp = 3 * hidden * u64::try_from(self.intermediate_size).unwrap_or(u64::MAX);
-        vocab.saturating_mul(hidden)
+        vocab
+            .saturating_mul(hidden)
             .saturating_add(layers.saturating_mul(attention.saturating_add(mlp)))
             .saturating_add(hidden)
     }
@@ -1168,9 +1169,7 @@ impl LocalTextModel {
         options: GenerationOptions,
     ) -> String {
         let mut ids = ids.to_vec();
-        let seed = options
-            .seed
-            .unwrap_or_else(|| hash_prompt(seed_text));
+        let seed = options.seed.unwrap_or_else(|| hash_prompt(seed_text));
         let mut rng = SplitMix64::from_seed(seed);
         let mut cache = KvCache::new();
         let mut output_ids: Vec<u32> = Vec::with_capacity(max_tokens);
@@ -1224,12 +1223,7 @@ impl LanguageModel for LocalTextModel {
         self.generate_with(prompt, max_tokens, GenerationOptions::default())
     }
 
-    fn generate_with(
-        &self,
-        prompt: &str,
-        max_tokens: usize,
-        options: GenerationOptions,
-    ) -> String {
+    fn generate_with(&self, prompt: &str, max_tokens: usize, options: GenerationOptions) -> String {
         // ChatML wrap (SmolLM2 instruct format). Empirically this model
         // follows instructions without a system message; adding one makes it
         // echo "user"/"system" role tokens instead of answering. User content

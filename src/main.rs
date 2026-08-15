@@ -7,6 +7,7 @@ use security_agent::{
     run_external_tool_with_default_timeout,
 };
 use std::fmt;
+use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
@@ -2038,7 +2039,7 @@ fn chat_reply_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode 
         } else {
             "fallback"
         };
-        chat_reply_print(kind, reply, parsed.json);
+        chat_reply_print(kind, &reply, parsed.json);
     } else {
         chat_reply_print("grounded", &grounded, parsed.json);
     }
@@ -2046,7 +2047,7 @@ fn chat_reply_command(arguments: &mut impl Iterator<Item = String>) -> ExitCode 
 }
 
 /// A warm, deterministic reply for pure social chitchat ("hi", "how are
-/// you", "thanks") that the NLU router flags as OutOfScope. Returns `None`
+/// you", "thanks") that the NLU router flags as `OutOfScope`. Returns `None`
 /// unless the whole message is made of short social markers, so a real
 /// request never gets swallowed by the pleasantry path.
 fn chitchat_reply(message: &str, assets: &security_agent::LocalAgentAssets) -> Option<String> {
@@ -2060,9 +2061,36 @@ fn chitchat_reply(message: &str, assets: &security_agent::LocalAgentAssets) -> O
     // social markers — a real request never gets swallowed by the pleasantry
     // path.
     let social = [
-        "hi", "hello", "hey", "yo", "howdy", "greetings", "morning", "afternoon", "evening",
-        "good", "how", "are", "you", "doing", "there", "thanks", "thank", "ok", "okay", "bye",
-        "goodbye", "ciao", "whats", "what", "up", "sup", "nice", "to", "meet", "pleased",
+        "hi",
+        "hello",
+        "hey",
+        "yo",
+        "howdy",
+        "greetings",
+        "morning",
+        "afternoon",
+        "evening",
+        "good",
+        "how",
+        "are",
+        "you",
+        "doing",
+        "there",
+        "thanks",
+        "thank",
+        "ok",
+        "okay",
+        "bye",
+        "goodbye",
+        "ciao",
+        "whats",
+        "what",
+        "up",
+        "sup",
+        "nice",
+        "to",
+        "meet",
+        "pleased",
     ];
     if words.is_empty() || words.len() > 4 || !words.iter().all(|w| social.contains(w)) {
         return None;
@@ -2077,9 +2105,11 @@ fn chitchat_reply(message: &str, assets: &security_agent::LocalAgentAssets) -> O
     if words.iter().any(|w| ["bye", "goodbye", "ciao"].contains(w)) {
         return Some("Goodbye! I'll be here, offline and ready, whenever you need me.".to_string());
     }
-    if (words.iter().any(|w| *w == "good")
-        && words.iter().any(|w| ["morning", "afternoon", "evening"].contains(w)))
-        || (words.iter().any(|w| *w == "how") && words.iter().any(|w| *w == "you"))
+    if (words.contains(&"good")
+        && words
+            .iter()
+            .any(|w| ["morning", "afternoon", "evening"].contains(w)))
+        || (words.contains(&"how") && words.contains(&"you"))
     {
         return Some(format!(
             "I'm online and ready — offline by default, with {tool_count} cataloged tools and \
@@ -2087,11 +2117,20 @@ fn chitchat_reply(message: &str, assets: &security_agent::LocalAgentAssets) -> O
         ));
     }
     let greeting = [
-        "hi", "hello", "hey", "yo", "howdy", "greetings", "morning", "afternoon", "evening",
-        "sup", "meet",
+        "hi",
+        "hello",
+        "hey",
+        "yo",
+        "howdy",
+        "greetings",
+        "morning",
+        "afternoon",
+        "evening",
+        "sup",
+        "meet",
     ];
     if words.iter().any(|w| greeting.contains(w))
-        || (words.iter().any(|w| *w == "whats") && words.iter().any(|w| *w == "up"))
+        || (words.contains(&"whats") && words.contains(&"up"))
     {
         return Some(format!(
             "Hello! I'm Security-Agent, an offline security orchestration assistant with \
@@ -2151,9 +2190,7 @@ fn grounded_chat_reply(
         }
         Intent::ListSkills => {
             let mut lines = Vec::with_capacity(skill_count + 2);
-            lines.push(format!(
-                "I have {skill_count} skills; here they are:"
-            ));
+            lines.push(format!("I have {skill_count} skills; here they are:"));
             for skill in assets.skills() {
                 lines.push(format!("  - {}", skill.name));
             }
@@ -2215,16 +2252,15 @@ fn show_skill_chat_reply(
         );
     };
     let Some(skill) = assets.skill(name) else {
-        return format!(
-            "I don't have a skill named '{name}'. Ask 'list skills' for the full set."
-        );
+        return format!("I don't have a skill named '{name}'. Ask 'list skills' for the full set.");
     };
     let mut body = skill.content.trim().to_string();
     if body.chars().count() > CHAT_SKILL_CAP {
         body = body.chars().take(CHAT_SKILL_CAP).collect::<String>();
-        body.push_str(&format!(
+        let _ = write!(
+            body,
             "\n… (guide truncated — run `--show-skill {name}` for the full text)"
-        ));
+        );
     }
     format!("{name} skill guide:\n{body}")
 }
@@ -3192,11 +3228,13 @@ struct TuiSession {
 }
 
 impl TuiSession {
+    #[allow(dead_code)] // available for future TUI re-integration
     const fn toggle_allow_network(&mut self) -> bool {
         self.allow_network = !self.allow_network;
         self.allow_network
     }
 
+    #[allow(dead_code)] // available for future TUI re-integration
     const fn toggle_master_full_scope(&mut self) -> bool {
         self.master_full_scope = !self.master_full_scope;
         self.master_full_scope
@@ -3224,6 +3262,7 @@ impl TuiSession {
         Ok(())
     }
 
+    #[allow(dead_code)] // available for future TUI re-integration
     fn clear_targets(&mut self) -> usize {
         let count = self.targets.len();
         self.targets.clear();
@@ -3454,7 +3493,7 @@ fn run_tui_command(assets: &LocalAgentAssets) -> ExitCode {
     // Session-scoped toggles ([24]/[25]) and the session target list start
     // fresh on every `--tui` process: offline-by-default is an invariant, so
     // nothing here persists to disk or across sessions.
-    let mut session = TuiSession::default();
+    let session = TuiSession::default();
     println!("{}", session.summary());
     loop {
         print!("\n> ");
@@ -3482,7 +3521,7 @@ fn run_tui_command(assets: &LocalAgentAssets) -> ExitCode {
             println!("goodbye.");
             break;
         }
-        dispatch_tui_choice(input, assets, &mut session, &mut lines);
+        dispatch_tui_choice(input, assets, &session, &mut lines);
     }
     ExitCode::SUCCESS
 }
@@ -3496,7 +3535,7 @@ fn run_tui_command(assets: &LocalAgentAssets) -> ExitCode {
 fn dispatch_tui_choice(
     input: &str,
     assets: &LocalAgentAssets,
-    session: &mut TuiSession,
+    session: &TuiSession,
     lines: &mut impl Iterator<Item = io::Result<String>>,
 ) {
     match input {
@@ -3602,50 +3641,6 @@ fn dispatch_tui_choice(
             let _ = tool_help_command(&mut std::iter::once(name));
         }
         "22" => tui_agent(assets, lines),
-        "23" => tui_ollama_status(lines, session),
-        "24" => {
-            let state = session.toggle_allow_network();
-            println!(
-                "allow-network (session): {}",
-                if state { "ON" } else { "OFF" }
-            );
-            println!("{}", session.summary());
-        }
-        "25" => {
-            let state = session.toggle_master_full_scope();
-            println!(
-                "master full-scope (session): {}",
-                if state { "ON" } else { "OFF" }
-            );
-            println!("{}", session.summary());
-        }
-        "26" => {
-            let Some(raw) = tui_prompt(lines, "target (IP / CIDR / URL / hostname): ") else {
-                return;
-            };
-            match session.add_target(&raw) {
-                Ok(()) => println!("added — {}", session.summary()),
-                Err(message) => println!("not added: {message}"),
-            }
-        }
-        "27" => {
-            if session.targets.is_empty() {
-                println!("no session targets yet — add with [26] or find with [29].");
-            } else {
-                println!("session targets:");
-                for (index, target) in session.targets.iter().enumerate() {
-                    println!("  {}) {target}", index + 1);
-                }
-            }
-            println!("{}", session.summary());
-        }
-        "28" => {
-            let cleared = session.clear_targets();
-            println!("cleared {cleared} target(s) — {}", session.summary());
-        }
-        "29" => tui_find_targets(lines, assets, session),
-        "30" => {
-            let _ = tui_run_session_engagement(lines, session);
         "23" => {
             let _ = build_info_command(&mut std::iter::empty::<String>());
         }
@@ -4076,6 +4071,7 @@ fn tui_plan_scan(
 /// offline-by-default gate the CLI applies. Discovered hosts and web-app
 /// URLs are added to the session target list, which then feeds planning and
 /// the session engagement runner ([8]/[30] under master full-scope).
+#[allow(dead_code)] // available for future TUI re-integration
 fn tui_find_targets(
     lines: &mut impl Iterator<Item = io::Result<String>>,
     assets: &LocalAgentAssets,
@@ -4161,6 +4157,7 @@ fn tui_find_targets(
 /// allow-network opt-in. The policy engine still authorizes the generated
 /// config and the audit trail still records the run — "full scope" here
 /// means the config declares the scope, not that enforcement is disabled.
+#[allow(dead_code)] // available for future TUI re-integration
 fn tui_run_session_engagement(
     lines: &mut impl Iterator<Item = io::Result<String>>,
     session: &TuiSession,
@@ -4252,6 +4249,7 @@ fn tui_listen(lines: &mut impl Iterator<Item = io::Result<String>>, session: &Tu
     let _ = listen_command(&mut args.into_iter(), true);
 }
 
+#[allow(dead_code)] // available for future TUI re-integration
 fn tui_ollama_status(lines: &mut impl Iterator<Item = io::Result<String>>, session: &TuiSession) {
     // Same session opt-in as the listener: [24] on means no per-run prompt.
     let mut online = session.allow_network;
@@ -4289,23 +4287,6 @@ fn tui_banner() -> String {
 
 fn tui_menu() -> String {
     "\n\
-     [1]  Offline status              [2]  About\n\
-     [3]  List tools                  [4]  Show a skill or tool\n\
-     [5]  List skills                 [6]  Run a built-in local tool\n\
-     [7]  Run a real external tool    [8]  Plan a scan (engagement config)\n\
-     [9]  Record findings (merge)     [10] View audit log\n\
-     [11] Schedule retest             [12] Generate text (LLM)\n\
-     [13] Score text for anomaly (LLM) [14] Reverse shell listener\n\
-     [15] View audit database          [16] View findings database\n\
-     [17] View calibration database    [18] View reasoning log database\n\
-     [19] Plain-language guide          [20] Reverse shell tutorial\n\
-     [21] Guide for one tool/command   [22] Agent — plan & run a goal\n\
-     [23] Ollama status (requires --allow-network)\n\
-     [24] Toggle allow-network (session)  [25] Toggle master full-scope (session)\n\
-     [26] Add a target (manual)           [27] List session targets\n\
-     [28] Clear session targets           [29] Find targets (discovery)\n\
-     [30] Run engagement end-to-end (session scope)\n\
-     [0]  Help / full capability summary [q]  Quit"
      ── CORE ──\n\
      [1]  Offline status            [2]  About                   [23] Build info\n\
      [3]  List tools                [5]  List skills             [4]  Show a skill/tool\n\
@@ -6927,9 +6908,9 @@ criticality=2
         // and must be handled entirely by the chat-bar (--ask) path; this
         // just asserts it runs to completion without needing further input.
         let assets = LocalAgentAssets::bundled();
-        let mut session = TuiSession::default();
+        let session = TuiSession::default();
         let mut lines = std::iter::empty::<io::Result<String>>();
-        dispatch_tui_choice("what tools do you have", &assets, &mut session, &mut lines);
+        dispatch_tui_choice("what tools do you have", &assets, &session, &mut lines);
     }
 
     #[test]

