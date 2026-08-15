@@ -156,11 +156,8 @@ pub struct OllamaModel {
 /// The default address is `127.0.0.1:11434` matching Ollama's default.
 #[derive(Debug, Clone)]
 pub struct OllamaClient {
-    /// `"host:port"` string — kept for display and per-request connections.
-    addr: String,
-    /// Model tag to use when this client is used as a [`LanguageModel`].
+    /// Model tag to use for `/api/generate` and `/api/chat` requests.
     model: String,
-    /// How long to wait for the Ollama response (generation can be slow).
     timeout: Duration,
 }
 
