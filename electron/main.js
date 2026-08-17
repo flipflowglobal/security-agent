@@ -261,7 +261,12 @@ function createWindow() {
         minHeight: 600,
         backgroundColor: '#0d1117',
         title: 'Security-Agent',
-        icon: undefined,
+        // In dev the icon asset sits next to main.js; in a packaged build the
+        // icon is embedded in the exe and electron uses it automatically, so we
+        // only set an explicit icon when the asset is actually present.
+        icon: fs.existsSync(path.join(__dirname, 'assets', isWindows ? 'icon.ico' : 'icon.png'))
+            ? path.join(__dirname, 'assets', isWindows ? 'icon.ico' : 'icon.png')
+            : undefined,
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
             contextIsolation: true,
