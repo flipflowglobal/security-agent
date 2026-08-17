@@ -407,6 +407,27 @@
             if (!rest) return { type: 'err', message: 'Please include the log text to score for anomalies.' };
             return { type: 'run', args: ['--llm-perplexity', rest], label: 'anomaly score' };
         }
+        // Ollama status / generate / chat
+        if (/^ollama\b/.test(low)) {
+            const rest = afterKeyword(t, 'ollama').trim();
+            if (!rest || /^status/.test(rest)) {
+                return { type: 'confirm-run', args: ['--allow-network', '--ollama-status'], label: 'ollama status', warn: 'Ollama status opens a local socket. Continue?' };
+            }
+            if (/^gen(erate)?/.test(rest)) {
+                const prompt = rest.replace(/^gen(erate)?\s*/, '').trim();
+                if (!prompt) return { type: 'err', message: 'Usage: ollama generate <model> <prompt>' };
+                const parts = prompt.split(/\s+/);
+                const model = parts.shift() || 'llama3.2';
+                return { type: 'confirm-run', args: ['--allow-network', '--ollama-generate', model, ...parts], label: 'ollama generate', warn: 'Ollama generate opens a local socket. Continue?' };
+            }
+            if (/^chat/.test(rest)) {
+                const msg = rest.replace(/^chat\s*/, '').trim();
+                if (!msg) return { type: 'err', message: 'Usage: ollama chat <model> <message>' };
+                const parts = msg.split(/\s+/);
+                const model = parts.shift() || 'llama3.2';
+                return { type: 'confirm-run', args: ['--allow-network', '--ollama-chat', model, ...parts], label: 'ollama chat', warn: 'Ollama chat opens a local socket. Continue?' };
+            }
+        }
         // Server view (listener + payloads). Bare "server"/"listener"/
         // "payload" open the dedicated Server view; "listen on 4444" still
         // falls through to the one-shot --listen confirm-run below.
@@ -2379,6 +2400,44 @@
             setLoading(out, 'Scoring…');
             runBinary(['--llm-perplexity', text], { stream: true, label: 'anomaly score' }).then(function (res) {
                 renderRunResult(out, res, 'Anomaly score');
+            });
+        };
+        // Ollama
+        $('#btn-ollama-status').onclick = function () {
+            const out = $('#output-ollama');
+            setLoading(out, 'Probing Ollama…');
+            runBinary(['--allow-network', '--ollama-status'], { label: 'ollama status' }).then(function (res) {
+                renderRunResult(out, res, 'Ollama status');
+            });
+        };
+        $('#btn-ollama-gen').onclick = function () {
+            const model = ($('#ollama-model-gen').value.trim() || 'llama3.2');
+            const prompt = $('#ollama-prompt').value.trim();
+            const out = $('#output-ollama');
+            if (!prompt) {
+                renderRunResult(out, { ok: false, stdout: '', stderr: 'Provide a prompt before generating.', argsLabel: 'ollama generate' }, 'Ollama generate');
+                return;
+            }
+            setLoading(out, 'Generating with Ollama…');
+            runBinary(['--allow-network', '--ollama-generate', model, prompt], { stream: true, label: 'ollama generate' }).then(function (res) {
+                renderRunResult(out, res, 'Ollama generate');
+            });
+        };
+        $('#btn-ollama-chat').onclick = function () {
+            const model = ($('#ollama-model-chat').value.trim() || 'llama3.2');
+            const system = $('#ollama-system').value.trim();
+            const message = $('#ollama-message').value.trim();
+            const out = $('#output-ollama');
+            if (!message) {
+                renderRunResult(out, { ok: false, stdout: '', stderr: 'Provide a message before chatting.', argsLabel: 'ollama chat' }, 'Ollama chat');
+                return;
+            }
+            const args = ['--allow-network', '--ollama-chat', model];
+            if (system) args.push('--system', system);
+            args.push(message);
+            setLoading(out, 'Chatting with Ollama…');
+            runBinary(args, { stream: true, label: 'ollama chat' }).then(function (res) {
+                renderRunResult(out, res, 'Ollama chat');
             });
         };
         // Guides

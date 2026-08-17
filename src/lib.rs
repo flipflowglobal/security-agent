@@ -14,6 +14,7 @@ pub mod capability_graph;
 pub mod cognition;
 pub mod cognitive_engine;
 pub mod compat;
+pub mod context_compaction;
 pub mod coordinator;
 pub mod corpus_gen;
 pub mod correlation;
@@ -63,6 +64,7 @@ pub mod sadb;
 pub mod scope;
 pub mod secrets;
 pub mod tagged_run;
+pub mod token_budget;
 pub mod tool_adapter;
 pub mod tool_gate;
 pub mod workflow;
@@ -104,6 +106,7 @@ pub use compat::{
     CompatibilityEnvelope, IntegrationAdapter, JsonLineAdapter, audit_record_to_envelope,
     envelope_to_audit_record, envelope_to_finding, finding_to_envelope,
 };
+pub use context_compaction::{ContextWindow, Turn, TurnRole, estimate_tokens};
 pub use coordinator::{Coordinator, ExecutionPlan, ScanTask};
 pub use correlation::correlate;
 pub use engagement_audit::{EngagementAuditContext, audit_records_for_engagement};
@@ -114,7 +117,7 @@ pub use engagement_context::{Endpoint, EngagementContext, Host, Service};
 pub use evidence::{EvidenceError, EvidenceRecord, append_evidence, capture, load_evidence};
 pub use execution::{
     DEFAULT_TIMEOUT, TaskExecutionOutcome, ToolExecutionError, ToolExecutionReport, execute_plan,
-    run_external_tool, run_external_tool_with_default_timeout,
+    execute_plan_concurrent, run_external_tool, run_external_tool_with_default_timeout,
 };
 pub use expansion::FollowUpPlanner;
 pub use findings::{Finding, RiskScoreCalculator, Severity};
@@ -176,6 +179,7 @@ pub use runtime::{ExecutionRuntime, RunInputs, RuntimeConfig};
 pub use scope::{ScopePolicy, ScopeViolation};
 pub use secrets::{Secret, SecretError, SecretStore};
 pub use tagged_run::{TaggedTestRun, TestEnvironment, TestRunReport};
+pub use token_budget::{TokenBudget, TokenBudgetExceeded};
 pub use tool_adapter::{
     AdapterRegistry, InvocationContext, OutputChannel, OutputFormat, ToolAdapter, ToolInvocation,
 };

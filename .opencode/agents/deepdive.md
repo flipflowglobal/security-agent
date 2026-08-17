@@ -1,6 +1,6 @@
 ---
 description: Deep analysis agent — root-cause investigation, attack-path modeling, cognitive reasoning, belief propagation, and neural language model diagnostics.
-mode: subagent
+mode: primary
 permission:
   edit: allow
   bash:

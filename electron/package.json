@@ -54,6 +54,13 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "configs",
+        "to": "configs",
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "compression": "maximum",

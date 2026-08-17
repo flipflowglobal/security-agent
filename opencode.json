@@ -3,7 +3,7 @@
   "default_agent": "aureon",
   "instructions": ["ARCHITECTURE.md", "CONTRIBUTING.md", "OPERATING_GUIDE.md"],
   "skills": {
-    "paths": [".github/skills"]
+    "paths": [".github/skills", ".opencode/skills"]
   },
   "agent": {
     "build": {

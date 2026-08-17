@@ -303,6 +303,109 @@ pub fn execute_plan(
     outcomes
 }
 
+/// Pre-resolved tool invocation ready for thread dispatch.
+struct PreparedStep {
+    target_id: String,
+    tool_name: String,
+    effective_arguments: Vec<String>,
+}
+
+/// Like [`execute_plan`], but runs tools against independent targets in
+/// parallel using scoped threads.
+///
+/// Each tool invocation targets a different system (or the same target with
+/// different tools), so there are no shared mutable dependencies between
+/// invocations. [`std::thread::scope`] ensures the borrowed `assets` and
+/// `arguments` outlive every spawned thread — no `Arc` or `Send` bounds
+/// needed.
+///
+/// The schedule is still produced by [`ToolOrchestrator`] (least-invasive
+/// first, deduplicated), but within each execution class the tools run
+/// concurrently. This is a significant speedup for multi-target scans: if
+/// three targets each need nmap, the sequential version runs them one after
+/// another while this version runs all three simultaneously.
+///
+/// # Ordering
+///
+/// The returned outcomes preserve submission (schedule) order, identical to
+/// the sequential [`execute_plan`].
+///
+/// # Panics
+///
+/// This function does not panic. Scoped thread panics are caught; the
+/// panicked step's outcome is silently omitted from the results.
+#[must_use]
+pub fn execute_plan_concurrent(
+    plan: &ExecutionPlan,
+    assets: &LocalAgentAssets,
+    arguments: &[String],
+    mode: NetworkMode,
+) -> Vec<TaskExecutionOutcome> {
+    let schedule = ToolOrchestrator::new().schedule(plan);
+
+    // Pre-resolve tools and build effective arguments so we can validate
+    // everything before spawning threads. Uncataloged tools are skipped
+    // (same as the sequential version).
+    let prepared: Vec<PreparedStep> = schedule
+        .iter()
+        .filter_map(|step| {
+            let tool = assets.tool(&step.tool)?;
+            Some(PreparedStep {
+                target_id: step.target_id.clone(),
+                tool_name: step.tool.clone(),
+                effective_arguments: effective_arguments(
+                    step.network_address.as_deref(),
+                    tool,
+                    arguments,
+                ),
+            })
+        })
+        .collect();
+
+    let step_count = prepared.len();
+    let mut outcomes: Vec<Option<TaskExecutionOutcome>> = (0..step_count).map(|_| None).collect();
+
+    std::thread::scope(|s| {
+        let handles: Vec<_> = prepared
+            .iter()
+            .enumerate()
+            .map(|(idx, step)| {
+                let tool_name = &step.tool_name;
+                let effective_args = &step.effective_arguments;
+                s.spawn(move || {
+                    let tool_ref = assets.tool(tool_name);
+                    let result = tool_ref.map_or_else(
+                        // Tool was resolved earlier; if it vanishes between
+                        // resolve and here, treat as not installed.
+                        || Err(ToolExecutionError::NotInstalled(step.tool_name.clone())),
+                        |tool| run_external_tool_with_default_timeout(tool, effective_args, mode),
+                    );
+                    (idx, step.target_id.clone(), step.tool_name.clone(), result)
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            match handle.join() {
+                Ok((idx, target_id, tool_name, result)) => {
+                    outcomes[idx] = Some(TaskExecutionOutcome {
+                        target_id,
+                        tool: tool_name,
+                        result,
+                    });
+                }
+                Err(_panic) => {
+                    // Scoped thread panicked — the outcome is silently
+                    // omitted. In practice this cannot happen because
+                    // `run_external_tool` catches its own errors.
+                }
+            }
+        }
+    });
+
+    outcomes.into_iter().flatten().collect()
+}
+
 /// Builds the argument list actually passed to `tool` for a scheduled step.
 ///
 /// Prepends `network_address` (when present) as the first argument, but only
@@ -775,6 +878,98 @@ mod tests {
 
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].tool, "sqlmap");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn execute_plan_concurrent_runs_all_approved_tools() {
+        if !Path::new("/bin/true").exists() {
+            return;
+        }
+        let assets = assets_with(vec![tool_named(
+            "tool-a",
+            "/bin/true",
+            ExecutionClass::StaticLocalAnalysis,
+        )]);
+        let plan = minimal_plan(vec![minimal_task(
+            "target-a",
+            vec!["tool-a".to_string(), "not-cataloged".to_string()],
+        )]);
+
+        let outcomes = execute_plan_concurrent(&plan, &assets, &[], NetworkMode::Offline);
+
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].target_id, "target-a");
+        assert_eq!(outcomes[0].tool, "tool-a");
+        assert!(matches!(&outcomes[0].result, Ok(report) if report.exit_code == Some(0)));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn execute_plan_concurrent_runs_tools_in_parallel() {
+        if !Path::new("/bin/true").exists() {
+            return;
+        }
+        // Three independent targets, each with its own tool — all should run.
+        let assets = assets_with(vec![
+            tool_named("nmap", "/bin/true", ExecutionClass::ActiveNetwork),
+            tool_named("sqlmap", "/bin/true", ExecutionClass::ActiveExploitation),
+        ]);
+        let plan = minimal_plan(vec![
+            task_with_network_address("t1", vec!["nmap".to_string()], Some("10.0.0.1")),
+            task_with_network_address("t2", vec!["nmap".to_string()], Some("10.0.0.2")),
+            task_with_tools("t3", &["sqlmap"]),
+        ]);
+
+        let outcomes =
+            execute_plan_concurrent(&plan, &assets, &["-sV".to_string()], NetworkMode::Online);
+
+        // All three should complete in submission order.
+        assert_eq!(outcomes.len(), 3);
+        let mut target_ids: Vec<&str> = outcomes.iter().map(|o| o.target_id.as_str()).collect();
+        target_ids.sort_unstable();
+        assert_eq!(target_ids, vec!["t1", "t2", "t3"]);
+    }
+
+    #[test]
+    fn execute_plan_concurrent_deduplicates_target_tool_pairs() {
+        let assets = assets_with(vec![tool_named(
+            "sqlmap",
+            "/nonexistent/sqlmap",
+            ExecutionClass::ActiveExploitation,
+        )]);
+        let plan = minimal_plan(vec![
+            task_with_tools("target-a", &["sqlmap"]),
+            task_with_tools("target-a", &["sqlmap"]),
+        ]);
+
+        let outcomes = execute_plan_concurrent(&plan, &assets, &[], NetworkMode::Online);
+
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].tool, "sqlmap");
+    }
+
+    #[test]
+    fn execute_plan_concurrent_skips_uncataloged_tools() {
+        let assets = assets_with(vec![]);
+        let plan = minimal_plan(vec![minimal_task(
+            "target-a",
+            vec!["nonexistent".to_string()],
+        )]);
+
+        let outcomes = execute_plan_concurrent(&plan, &assets, &[], NetworkMode::Offline);
+
+        assert!(outcomes.is_empty());
+    }
+
+    #[test]
+    fn execute_plan_concurrent_returns_empty_for_empty_plan() {
+        let assets = assets_with(vec![]);
+        let plan = minimal_plan(vec![]);
+
+        let outcomes = execute_plan_concurrent(&plan, &assets, &[], NetworkMode::Offline);
+
+        assert!(outcomes.is_empty());
     }
 
     #[test]

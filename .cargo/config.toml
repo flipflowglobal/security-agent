@@ -36,7 +36,7 @@ linker = "aarch64-linux-android35-clang"
 
 # ── armeabi-v7a (32-bit ARM, Android 5.0+) ──────────────────────────────────
 [target.armv7-linux-androideabi]
-linker = "armv7a-linux-androideabi35-clang"
+linker = "armv7a-linux-android35-clang"
 
 # ── x86_64 (Android emulator / Intel Chromebooks) ───────────────────────────
 [target.x86_64-linux-android]
@@ -45,3 +45,8 @@ linker = "x86_64-linux-android35-clang"
 # ── x86 (older 32-bit emulators) ────────────────────────────────────────────
 [target.i686-linux-android]
 linker = "i686-linux-android35-clang"
+
+# ── Windows x86_64 (MinGW-w64 cross-compilation from Linux) ──────────────────
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+runner = "wine64"
