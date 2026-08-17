@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('api', {
     selectFile: (options) => ipcRenderer.invoke('select-file', options),
     getWorkspace: () => ipcRenderer.invoke('get-workspace'),
     getToolCatalog: () => ipcRenderer.invoke('get-tool-catalog'),
+    getAgentConfig: () => ipcRenderer.invoke('get-agent-config'),
     startListener: (options) => ipcRenderer.invoke('start-listener', options),
     listenerStdin: (line) => ipcRenderer.invoke('listener-stdin', line),
     stopListener: () => ipcRenderer.invoke('stop-listener'),

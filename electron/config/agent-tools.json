@@ -1,0 +1,1629 @@
+{
+  "version": 1,
+  "generatedFrom": "security-agent --list-tools",
+  "toolCount": 89,
+  "categories": {
+    "recon": "Reconnaissance & mapping — discover hosts, services, web apps, subdomains.",
+    "exploit": "Vulnerability exploitation & post-access — targeted, authorized only.",
+    "creds": "Credential testing & cracking — hashes, wordlists, brute force.",
+    "wireless": "Wireless auditing — Wi-Fi capture, WPA/WEP, RF.",
+    "forensic": "Forensics & artifact recovery — firmware, memory, packets, files.",
+    "mobile": "Mobile application auditing — Android/iOS static & dynamic.",
+    "iot": "IoT / industrial protocol auditing.",
+    "general": "General-purpose utility."
+  },
+  "workspace": {
+    "subdirs": [
+      "engagements",
+      "findings",
+      "reports",
+      "exports",
+      "runs"
+    ],
+    "note": "All tool input/output paths are resolved relative to these workspace subdirs; the user never types absolute paths."
+  },
+  "tools": [
+    {
+      "id": "aircrack-ng",
+      "name": "aircrack-ng",
+      "category": "wireless",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "aircrack-ng",
+        "wireless"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "Wireless auditing — Wi-Fi capture, WPA/WEP, RF.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "amass",
+      "name": "amass",
+      "category": "recon",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "amass",
+        "recon"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Reconnaissance & mapping — discover hosts, services, web apps, subdomains.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "androguard",
+      "name": "androguard",
+      "category": "mobile",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "androguard",
+        "mobile"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "Mobile application auditing — Android/iOS static & dynamic.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "apkleaks",
+      "name": "apkleaks",
+      "category": "mobile",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "apkleaks",
+        "mobile"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "Mobile application auditing — Android/iOS static & dynamic.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "apksigner",
+      "name": "apksigner",
+      "category": "mobile",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "apksigner",
+        "mobile"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "Mobile application auditing — Android/iOS static & dynamic.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "apktool",
+      "name": "apktool",
+      "category": "mobile",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "apktool",
+        "mobile"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "Mobile application auditing — Android/iOS static & dynamic.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "autopsy",
+      "name": "autopsy",
+      "category": "forensic",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "autopsy",
+        "forensic"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "Forensics & artifact recovery — firmware, memory, packets, files.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "beef-xss",
+      "name": "beef-xss",
+      "category": "exploit",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "beef-xss",
+        "exploit"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Vulnerability exploitation & post-access — targeted, authorized only.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "bettercap",
+      "name": "bettercap",
+      "category": "exploit",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "bettercap",
+        "exploit"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Vulnerability exploitation & post-access — targeted, authorized only.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "binwalk",
+      "name": "binwalk",
+      "category": "forensic",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "binwalk",
+        "forensic"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "Forensics & artifact recovery — firmware, memory, packets, files.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "bulk_extractor",
+      "name": "bulk_extractor",
+      "category": "forensic",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "bulk_extractor",
+        "forensic"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "Forensics & artifact recovery — firmware, memory, packets, files.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "burpsuite",
+      "name": "burpsuite",
+      "category": "exploit",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "burpsuite",
+        "exploit"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Vulnerability exploitation & post-access — targeted, authorized only.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "cewl",
+      "name": "cewl",
+      "category": "creds",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "cewl",
+        "creds"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "findings"
+      },
+      "description": "Credential testing & cracking — hashes, wordlists, brute force.",
+      "hint": "Default I/O: in=engagements/, out=findings/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "chirpw",
+      "name": "chirpw",
+      "category": "wireless",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "chirpw",
+        "wireless"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "Wireless auditing — Wi-Fi capture, WPA/WEP, RF.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "chkrootkit",
+      "name": "chkrootkit",
+      "category": "forensic",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "chkrootkit",
+        "forensic"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "Forensics & artifact recovery — firmware, memory, packets, files.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "crackmapexec",
+      "name": "crackmapexec",
+      "category": "exploit",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "crackmapexec",
+        "exploit"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Vulnerability exploitation & post-access — targeted, authorized only.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "crunch",
+      "name": "crunch",
+      "category": "creds",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "crunch",
+        "creds"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "findings"
+      },
+      "description": "Credential testing & cracking — hashes, wordlists, brute force.",
+      "hint": "Default I/O: in=engagements/, out=findings/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "cutycapt",
+      "name": "cutycapt",
+      "category": "forensic",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "cutycapt",
+        "forensic"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "Forensics & artifact recovery — firmware, memory, packets, files.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "dex2jar",
+      "name": "dex2jar",
+      "category": "mobile",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "dex2jar",
+        "mobile"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "Mobile application auditing — Android/iOS static & dynamic.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "dirb",
+      "name": "dirb",
+      "category": "recon",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "dirb",
+        "recon"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Reconnaissance & mapping — discover hosts, services, web apps, subdomains.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "dmitry",
+      "name": "dmitry",
+      "category": "recon",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "dmitry",
+        "recon"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Reconnaissance & mapping — discover hosts, services, web apps, subdomains.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "driftnet",
+      "name": "driftnet",
+      "category": "wireless",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "driftnet",
+        "wireless"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "Wireless auditing — Wi-Fi capture, WPA/WEP, RF.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "drozer",
+      "name": "drozer",
+      "category": "mobile",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "drozer",
+        "mobile"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "Mobile application auditing — Android/iOS static & dynamic.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "enum4linux",
+      "name": "enum4linux",
+      "category": "recon",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "enum4linux",
+        "recon"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Reconnaissance & mapping — discover hosts, services, web apps, subdomains.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "ettercap",
+      "name": "ettercap",
+      "category": "exploit",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "ettercap",
+        "exploit"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Vulnerability exploitation & post-access — targeted, authorized only.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "evil-winrm",
+      "name": "evil-winrm",
+      "category": "general",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "evil-winrm",
+        "general"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "runs"
+      },
+      "description": "General-purpose utility.",
+      "hint": "Default I/O: in=engagements/, out=runs/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "feroxbuster",
+      "name": "feroxbuster",
+      "category": "recon",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "feroxbuster",
+        "recon"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Reconnaissance & mapping — discover hosts, services, web apps, subdomains.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "ffuf",
+      "name": "ffuf",
+      "category": "recon",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "ffuf",
+        "recon"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Reconnaissance & mapping — discover hosts, services, web apps, subdomains.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "foremost",
+      "name": "foremost",
+      "category": "forensic",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "foremost",
+        "forensic"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "Forensics & artifact recovery — firmware, memory, packets, files.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "frida",
+      "name": "frida",
+      "category": "general",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "frida",
+        "general"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "runs"
+      },
+      "description": "General-purpose utility.",
+      "hint": "Default I/O: in=engagements/, out=runs/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "galleta",
+      "name": "galleta",
+      "category": "creds",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "galleta",
+        "creds"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "findings"
+      },
+      "description": "Credential testing & cracking — hashes, wordlists, brute force.",
+      "hint": "Default I/O: in=engagements/, out=findings/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "giskismet",
+      "name": "giskismet",
+      "category": "wireless",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "giskismet",
+        "wireless"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "Wireless auditing — Wi-Fi capture, WPA/WEP, RF.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "gobuster",
+      "name": "gobuster",
+      "category": "recon",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "gobuster",
+        "recon"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Reconnaissance & mapping — discover hosts, services, web apps, subdomains.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "hashcat",
+      "name": "hashcat",
+      "category": "creds",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "hashcat",
+        "creds"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "findings"
+      },
+      "description": "Credential testing & cracking — hashes, wordlists, brute force.",
+      "hint": "Default I/O: in=engagements/, out=findings/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "hashdeep",
+      "name": "hashdeep",
+      "category": "general",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "hashdeep",
+        "general"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "runs"
+      },
+      "description": "General-purpose utility.",
+      "hint": "Default I/O: in=engagements/, out=runs/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "httrack",
+      "name": "httrack",
+      "category": "forensic",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "httrack",
+        "forensic"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "Forensics & artifact recovery — firmware, memory, packets, files.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "hydra",
+      "name": "hydra",
+      "category": "exploit",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "hydra",
+        "exploit"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Vulnerability exploitation & post-access — targeted, authorized only.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "ike-scan",
+      "name": "ike-scan",
+      "category": "general",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "ike-scan",
+        "general"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "runs"
+      },
+      "description": "General-purpose utility.",
+      "hint": "Default I/O: in=engagements/, out=runs/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "jadx",
+      "name": "jadx",
+      "category": "mobile",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "jadx",
+        "mobile"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "Mobile application auditing — Android/iOS static & dynamic.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "john",
+      "name": "john",
+      "category": "creds",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "john",
+        "creds"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "findings"
+      },
+      "description": "Credential testing & cracking — hashes, wordlists, brute force.",
+      "hint": "Default I/O: in=engagements/, out=findings/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "keepnote",
+      "name": "keepnote",
+      "category": "forensic",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "keepnote",
+        "forensic"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "Forensics & artifact recovery — firmware, memory, packets, files.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "kismet",
+      "name": "kismet",
+      "category": "wireless",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "kismet",
+        "wireless"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "Wireless auditing — Wi-Fi capture, WPA/WEP, RF.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "lynis",
+      "name": "lynis",
+      "category": "recon",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "lynis",
+        "recon"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Reconnaissance & mapping — discover hosts, services, web apps, subdomains.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "macchanger",
+      "name": "macchanger",
+      "category": "wireless",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "macchanger",
+        "wireless"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "Wireless auditing — Wi-Fi capture, WPA/WEP, RF.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "mariana-trench",
+      "name": "mariana-trench",
+      "category": "general",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "mariana-trench",
+        "general"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "runs"
+      },
+      "description": "General-purpose utility.",
+      "hint": "Default I/O: in=engagements/, out=runs/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "masscan",
+      "name": "masscan",
+      "category": "recon",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "masscan",
+        "recon"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Reconnaissance & mapping — discover hosts, services, web apps, subdomains.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "mdb-sql",
+      "name": "mdb-sql",
+      "category": "forensic",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "mdb-sql",
+        "forensic"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "Forensics & artifact recovery — firmware, memory, packets, files.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "medusa",
+      "name": "medusa",
+      "category": "exploit",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "medusa",
+        "exploit"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Vulnerability exploitation & post-access — targeted, authorized only.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "mfoc",
+      "name": "mfoc",
+      "category": "creds",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "mfoc",
+        "creds"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "findings"
+      },
+      "description": "Credential testing & cracking — hashes, wordlists, brute force.",
+      "hint": "Default I/O: in=engagements/, out=findings/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "mfterm",
+      "name": "mfterm",
+      "category": "creds",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "mfterm",
+        "creds"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "findings"
+      },
+      "description": "Credential testing & cracking — hashes, wordlists, brute force.",
+      "hint": "Default I/O: in=engagements/, out=findings/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "mitmproxy",
+      "name": "mitmproxy",
+      "category": "exploit",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "mitmproxy",
+        "exploit"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Vulnerability exploitation & post-access — targeted, authorized only.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "mobsf",
+      "name": "mobsf",
+      "category": "mobile",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "mobsf",
+        "mobile"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "Mobile application auditing — Android/iOS static & dynamic.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "msfconsole",
+      "name": "msfconsole",
+      "category": "exploit",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "msfconsole",
+        "exploit"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Vulnerability exploitation & post-access — targeted, authorized only.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "msfpc",
+      "name": "msfpc",
+      "category": "exploit",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "msfpc",
+        "exploit"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Vulnerability exploitation & post-access — targeted, authorized only.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "ncrack",
+      "name": "ncrack",
+      "category": "exploit",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "ncrack",
+        "exploit"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Vulnerability exploitation & post-access — targeted, authorized only.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "netdiscover",
+      "name": "netdiscover",
+      "category": "recon",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "netdiscover",
+        "recon"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Reconnaissance & mapping — discover hosts, services, web apps, subdomains.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "netexec",
+      "name": "netexec",
+      "category": "exploit",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "netexec",
+        "exploit"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Vulnerability exploitation & post-access — targeted, authorized only.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "netsniff-ng",
+      "name": "netsniff-ng",
+      "category": "forensic",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "netsniff-ng",
+        "forensic"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "Forensics & artifact recovery — firmware, memory, packets, files.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "nikto",
+      "name": "nikto",
+      "category": "recon",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "nikto",
+        "recon"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Reconnaissance & mapping — discover hosts, services, web apps, subdomains.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "nmap",
+      "name": "nmap",
+      "category": "recon",
+      "needsNetwork": true,
+      "installed": true,
+      "executable": "/usr/bin/nmap",
+      "keywords": [
+        "nmap",
+        "recon"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Reconnaissance & mapping — discover hosts, services, web apps, subdomains.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "nuclei",
+      "name": "nuclei",
+      "category": "recon",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "nuclei",
+        "recon"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Reconnaissance & mapping — discover hosts, services, web apps, subdomains.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "objection",
+      "name": "objection",
+      "category": "mobile",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "objection",
+        "mobile"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "Mobile application auditing — Android/iOS static & dynamic.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "ophcrack",
+      "name": "ophcrack",
+      "category": "creds",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "ophcrack",
+        "creds"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "findings"
+      },
+      "description": "Credential testing & cracking — hashes, wordlists, brute force.",
+      "hint": "Default I/O: in=engagements/, out=findings/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "pyrit",
+      "name": "pyrit",
+      "category": "creds",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "pyrit",
+        "creds"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "findings"
+      },
+      "description": "Credential testing & cracking — hashes, wordlists, brute force.",
+      "hint": "Default I/O: in=engagements/, out=findings/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "qark",
+      "name": "qark",
+      "category": "mobile",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "qark",
+        "mobile"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "Mobile application auditing — Android/iOS static & dynamic.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "rcrack",
+      "name": "rcrack",
+      "category": "creds",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "rcrack",
+        "creds"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "findings"
+      },
+      "description": "Credential testing & cracking — hashes, wordlists, brute force.",
+      "hint": "Default I/O: in=engagements/, out=findings/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "reaver",
+      "name": "reaver",
+      "category": "wireless",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "reaver",
+        "wireless"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "Wireless auditing — Wi-Fi capture, WPA/WEP, RF.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "recordmydesktop",
+      "name": "recordmydesktop",
+      "category": "forensic",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "recordmydesktop",
+        "forensic"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "Forensics & artifact recovery — firmware, memory, packets, files.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "searchsploit",
+      "name": "searchsploit",
+      "category": "recon",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "searchsploit",
+        "recon"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Reconnaissance & mapping — discover hosts, services, web apps, subdomains.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "semgrep",
+      "name": "semgrep",
+      "category": "general",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "semgrep",
+        "general"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "runs"
+      },
+      "description": "General-purpose utility.",
+      "hint": "Default I/O: in=engagements/, out=runs/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "setoolkit",
+      "name": "setoolkit",
+      "category": "exploit",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "setoolkit",
+        "exploit"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Vulnerability exploitation & post-access — targeted, authorized only.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "skipfish",
+      "name": "skipfish",
+      "category": "exploit",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "skipfish",
+        "exploit"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Vulnerability exploitation & post-access — targeted, authorized only.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "smbmap",
+      "name": "smbmap",
+      "category": "general",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "smbmap",
+        "general"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "runs"
+      },
+      "description": "General-purpose utility.",
+      "hint": "Default I/O: in=engagements/, out=runs/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "sqlitebrowser",
+      "name": "sqlitebrowser",
+      "category": "forensic",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "sqlitebrowser",
+        "forensic"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "Forensics & artifact recovery — firmware, memory, packets, files.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "sqlmap",
+      "name": "sqlmap",
+      "category": "exploit",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "sqlmap",
+        "exploit"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Vulnerability exploitation & post-access — targeted, authorized only.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "subfinder",
+      "name": "subfinder",
+      "category": "recon",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "subfinder",
+        "recon"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Reconnaissance & mapping — discover hosts, services, web apps, subdomains.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "tcpdump",
+      "name": "tcpdump",
+      "category": "forensic",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "tcpdump",
+        "forensic"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "Forensics & artifact recovery — firmware, memory, packets, files.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "termineter",
+      "name": "termineter",
+      "category": "iot",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "termineter",
+        "iot"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "IoT / industrial protocol auditing.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "thc-ipv6",
+      "name": "thc-ipv6",
+      "category": "exploit",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "thc-ipv6",
+        "exploit"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Vulnerability exploitation & post-access — targeted, authorized only.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "trueseeing",
+      "name": "trueseeing",
+      "category": "mobile",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "trueseeing",
+        "mobile"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "Mobile application auditing — Android/iOS static & dynamic.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "volatility",
+      "name": "volatility",
+      "category": "forensic",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "volatility",
+        "forensic"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "Forensics & artifact recovery — firmware, memory, packets, files.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "wafw00f",
+      "name": "wafw00f",
+      "category": "recon",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "wafw00f",
+        "recon"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Reconnaissance & mapping — discover hosts, services, web apps, subdomains.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "wfuzz",
+      "name": "wfuzz",
+      "category": "recon",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "wfuzz",
+        "recon"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Reconnaissance & mapping — discover hosts, services, web apps, subdomains.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "whatweb",
+      "name": "whatweb",
+      "category": "recon",
+      "needsNetwork": true,
+      "installed": true,
+      "executable": "/usr/bin/whatweb",
+      "keywords": [
+        "whatweb",
+        "recon"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Reconnaissance & mapping — discover hosts, services, web apps, subdomains.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "wifite",
+      "name": "wifite",
+      "category": "wireless",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "wifite",
+        "wireless"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "Wireless auditing — Wi-Fi capture, WPA/WEP, RF.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "wireshark",
+      "name": "wireshark",
+      "category": "forensic",
+      "needsNetwork": false,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "wireshark",
+        "forensic"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "exports"
+      },
+      "description": "Forensics & artifact recovery — firmware, memory, packets, files.",
+      "hint": "Default I/O: in=engagements/, out=exports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "wpscan",
+      "name": "wpscan",
+      "category": "exploit",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "wpscan",
+        "exploit"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Vulnerability exploitation & post-access — targeted, authorized only.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "yersinia",
+      "name": "yersinia",
+      "category": "exploit",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "yersinia",
+        "exploit"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Vulnerability exploitation & post-access — targeted, authorized only.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    },
+    {
+      "id": "zenmap",
+      "name": "zenmap",
+      "category": "recon",
+      "needsNetwork": true,
+      "installed": false,
+      "executable": null,
+      "keywords": [
+        "zenmap",
+        "recon"
+      ],
+      "io": {
+        "input": "engagements",
+        "output": "reports"
+      },
+      "description": "Reconnaissance & mapping — discover hosts, services, web apps, subdomains.",
+      "hint": "Default I/O: in=engagements/, out=reports/ (resolved inside the workspace automatically)."
+    }
+  ]
+}

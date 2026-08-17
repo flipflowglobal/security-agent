@@ -133,6 +133,12 @@ function injectBundledModel(args) {
 const liveChildren = new Set();
 const STREAM_MAX_BYTES = 16 * 1024 * 1024;   // cap accumulated streamed output
 const RUN_TIMEOUT_MS = 10 * 60 * 1000;       // streaming runs: 10 minute ceiling
+// The wrapped binary spawns a background LM/asset thread that can keep stdout
+// open after all real output has been printed, so the process never exits on a
+// normal pipe. To avoid a 10-minute hang on every streamed command, terminate
+// the child once stdout has been silent for this long AND we have received data.
+// Override with SECAGENT_IDLE_KILL_MS (ms).
+const IDLE_KILL_MS = Number(process.env.SECAGENT_IDLE_KILL_MS) || 30 * 1000;
 
 // ── Network opt-in (trust boundary) ───────────────────────────────────────
 // "Offline by default" is enforced HERE, in the main process, not just in the
@@ -283,20 +289,50 @@ function createWindow() {
     emitLog('info', 'Main window created (contextIsolation=true, nodeIntegration=false, sandbox=true)');
 }
 
-app.whenReady().then(() => {
-    emitLog('info', 'Security-Agent main process starting (platform=' + process.platform + ', electron=' + process.versions.electron + ')');
-    binaryPath = resolveBinaryPath();
-    emitLog(binaryPath ? 'info' : 'warn', binaryPath ? 'Using binary: ' + binaryPath : 'NO binary available — binary-backed commands will report errors');
-    probeBundledModelSupport();
-    createWindow();
-    app.on('activate', () => {
-        if (BrowserWindow.getAllWindows().length === 0) createWindow();
+// When this module is required by an alternate entry (e.g. system-test.js), the
+// IPC handlers below are still registered at module load, but we must NOT spin
+// up a second BrowserWindow or a second app lifecycle. Only the direct entry
+// (electron .) owns the window/activate flow.
+if (require.main === module) {
+    app.whenReady().then(() => {
+        emitLog('info', 'Security-Agent main process starting (platform=' + process.platform + ', electron=' + process.versions.electron + ')');
+        binaryPath = resolveBinaryPath();
+        emitLog(binaryPath ? 'info' : 'warn', binaryPath ? 'Using binary: ' + binaryPath : 'NO binary available — binary-backed commands will report errors');
+        probeBundledModelSupport();
+        createWindow();
+        app.on('activate', () => {
+            if (BrowserWindow.getAllWindows().length === 0) createWindow();
+        });
     });
+}
+
+    app.on('window-all-closed', () => {
+        if (process.platform !== 'darwin') app.quit();
+    });
+
+// ── Agent tool-usage config ─────────────────────────────────────────────────
+// Serves config/agent-tools.json — the desktop tool catalog the agent uses to
+// choose tools and resolve their inputs/outputs inside the workspace, so the
+// user never has to type file locations.
+ipcMain.handle('get-agent-config', async (event) => {
+    if (!trusted(event)) return { ok: false, error: 'untrusted sender' };
+    const file = path.join(__dirname, 'config', 'agent-tools.json');
+    try {
+        const text = await fs.promises.readFile(file, 'utf-8');
+        const cfg = JSON.parse(text);
+        return { ok: true, config: cfg };
+    } catch (err) {
+        emitLog('error', 'get-agent-config failed: ' + String(err));
+        return { ok: false, error: String(err) };
+    }
 });
 
-app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') app.quit();
-});
+// Allow an alternate entry (test harness) to point the handlers at its own
+// BrowserWindow and resolved binary path before driving the renderer.
+function setMainWindow(window) { mainWindow = window; }
+function setBinaryPath(path) { binaryPath = path; }
+
+module.exports = { setMainWindow, setBinaryPath };
 
 // ── IPC Handlers ──────────────────────────────────────────────────────────
 
@@ -402,6 +438,7 @@ ipcMain.handle('run-streaming', (event, args) => {
         let stderr = '';
         let stdoutTruncated = false;
         let stderrTruncated = false;
+        let lastChunkTs = 0;
         const killTimer = setTimeout(() => {
             if (!proc._cancelled) {
                 proc._cancelled = true;
@@ -410,9 +447,22 @@ ipcMain.handle('run-streaming', (event, args) => {
             }
         }, RUN_TIMEOUT_MS);
         if (killTimer.unref) killTimer.unref();
+        // Idle watchdog: once we've seen output, if stdout stays silent for
+        // IDLE_KILL_MS the binary has effectively finished (lingering thread
+        // holding the pipe open). Terminate and report success.
+        const idleTimer = setInterval(() => {
+            if (lastChunkTs > 0 && Date.now() - lastChunkTs > IDLE_KILL_MS &&
+                !proc._cancelled && !proc._idleDone) {
+                proc._idleDone = true;
+                emitLog('info', `run-streaming idle ${IDLE_KILL_MS / 1000}s after last output — terminating pid=${proc.pid}`);
+                killTree(proc);
+            }
+        }, 5000);
+        if (idleTimer.unref) idleTimer.unref();
 
         proc.stdout.on('data', (data) => {
             const chunk = data.toString();
+            if (chunk.length > 0) lastChunkTs = Date.now();
             if (stdout.length + chunk.length > STREAM_MAX_BYTES) {
                 stdoutTruncated = true;
                 stdout += chunk.slice(0, Math.max(0, STREAM_MAX_BYTES - stdout.length));
@@ -436,16 +486,20 @@ ipcMain.handle('run-streaming', (event, args) => {
         });
         proc.on('close', (code) => {
             clearTimeout(killTimer);
+            clearInterval(idleTimer);
             liveChildren.delete(proc);
             const cancelled = !!proc._cancelled;
-            const exitCode = code == null ? (cancelled ? 130 : 1) : code;
+            const idleDone = !!proc._idleDone;
+            // An idle-terminated run that produced output is a success.
+            const exitCode = code == null ? (cancelled ? 130 : (idleDone ? 0 : 1)) : code;
             if (stdoutTruncated) stdout += '\n[output truncated at 16 MiB]';
             if (stderrTruncated) stderr += '\n[output truncated at 16 MiB]';
-            emitLog('info', `run-streaming finished exit=${exitCode} cancelled=${cancelled} stdoutBytes=${stdout.length} stderrBytes=${stderr.length}`);
-            resolve({ ok: !cancelled && code === 0, stdout, stderr, exitCode, cancelled });
+            emitLog('info', `run-streaming finished exit=${exitCode} cancelled=${cancelled} idleDone=${idleDone} stdoutBytes=${stdout.length} stderrBytes=${stderr.length}`);
+            resolve({ ok: !cancelled && (code === 0 || idleDone), stdout, stderr, exitCode, cancelled });
         });
         proc.on('error', (err) => {
             clearTimeout(killTimer);
+            clearInterval(idleTimer);
             liveChildren.delete(proc);
             emitLog('error', 'run-streaming spawn error: ' + String(err));
             resolve({ ok: false, stdout, stderr: String(err), exitCode: 1 });

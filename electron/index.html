@@ -37,6 +37,11 @@
                     <span>Objectives</span>
                     <span class="nav-new">multi-tool</span>
                 </button>
+                <button class="nav-item" data-view="agent">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><line x1="8" y1="9" x2="16" y2="9"/><line x1="8" y1="13" x2="13" y2="13"/></svg>
+                    <span>Agent</span>
+                    <span class="nav-new">chat</span>
+                </button>
                 <button class="nav-item" data-view="analyze">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
                     <span>Analyze</span>
@@ -662,6 +667,74 @@
                             <span class="term-prompt">$</span>
                             <input type="text" id="srv-term-input" placeholder="Type a command for the connected shell… (Enter sends)" autocomplete="off" spellcheck="false">
                             <button class="btn primary" id="srv-term-send">Send</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+            <!-- ═══ VIEW: AGENT CHAT ═══ -->
+            <section class="view" id="view-agent">
+                <div class="agent-layout">
+                    <!-- Tool palette: config-driven, no manual file paths -->
+                    <aside class="agent-palette" id="agent-palette">
+                        <div class="agent-palette-head">
+                            <span>Tools</span>
+                            <input type="text" id="agent-palette-search" class="mini-input" placeholder="Filter…">
+                        </div>
+                        <div class="agent-palette-list" id="agent-palette-list"></div>
+                        <div class="agent-palette-note">Tool inputs/outputs resolve inside the workspace automatically.</div>
+                    </aside>
+
+                    <div class="agent-main">
+                        <div class="agent-header">
+                            <div class="agent-title">
+                                <strong>Agent</strong>
+                                <span class="agent-sub">objective-driven · multi-tool · app control</span>
+                            </div>
+                            <div class="agent-controls">
+                                <label class="agent-ctl">
+                                    <span>Mode</span>
+                                    <select id="agent-mode">
+                                        <option value="agent">Agent (chain tools)</option>
+                                        <option value="chat">Chat (LLM only)</option>
+                                    </select>
+                                </label>
+                                <label class="agent-ctl">
+                                    <span>Backend</span>
+                                    <select id="agent-backend">
+                                        <option value="builtin">Built-in LM</option>
+                                        <option value="ollama">Ollama</option>
+                                    </select>
+                                </label>
+                                <label class="agent-ctl" id="agent-model-wrap">
+                                    <span>Model</span>
+                                    <input type="text" id="agent-model" class="mini-input" placeholder="llama3.2" value="llama3.2">
+                                </label>
+                                <button class="btn-ghost" id="agent-clear" title="Clear conversation">Clear</button>
+                            </div>
+                        </div>
+
+                        <div class="agent-messages" id="agent-messages">
+                            <div class="agent-empty" id="agent-empty">
+                                <div class="agent-empty-card">
+                                    <h3>Describe an objective</h3>
+                                    <p>Examples:</p>
+                                    <ul>
+                                        <li><code>Scan 10.0.0.5 and report the top findings</code></li>
+                                        <li><code>Crack the hash 5d41402abc4b2a76b9719d911017c592</code></li>
+                                        <li><code>Audit the wireless network CorpWiFi</code></li>
+                                    </ul>
+                                    <p class="agent-empty-hint">Commands: <code>/view &lt;name&gt;</code> · <code>/tool &lt;id&gt;</code> · <code>/status</code> · <code>/home</code></p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="agent-composer">
+                            <div class="agent-chips" id="agent-chips"></div>
+                            <div class="agent-input-row">
+                                <textarea id="agent-input" rows="2" placeholder="Set an objective for the agent… (Enter to send, Shift+Enter for newline)"></textarea>
+                                <button class="btn-primary" id="agent-send">Send</button>
+                            </div>
+                            <div class="agent-status" id="agent-status">Ready.</div>
                         </div>
                     </div>
                 </div>

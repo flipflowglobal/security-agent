@@ -6,9 +6,9 @@
   "author": "FlipFlow Global",
   "homepage": "https://github.com/flipflowglobal/security-agent",
   "license": "BUSL-1.1",
-  "license": "SEE LICENSE IN ../LICENSE",
   "scripts": {
     "start": "electron .",
+    "test": "electron system-test.js",
     "build": "electron-builder --dir",
     "dist": "electron-builder",
     "dist:win": "electron-builder --win",

@@ -2298,6 +2298,280 @@
     }
 
     // ── Init ───────────────────────────────────────────────────────────────
+    // ── Agent Chat view ───────────────────────────────────────────────────────
+    // Claude/Grok/ChatGPT-styled conversational agent. "Agent" mode forwards the
+    // objective to the Rust planner (`--agent`), which selects and chains the
+    // most efficient tools; "Chat" mode talks to the LLM directly. Tool inputs
+    // and outputs are resolved inside the workspace so the user never types
+    // file locations. The agent can also drive the app via /commands.
+    let agentConfig = null;
+
+    function setAgentStatus(s) { const el = $('#agent-status'); if (el) el.textContent = s; }
+
+    // Conversation survives a renderer reload (Electron reloads the page on
+    // crash/HMR). Streamed runs are persisted once finalized, so a mid-run
+    // reload loses only the in-flight message — acceptable.
+    const AGENT_CONV_KEY = 'security-agent.agent-conversation';
+    function saveAgentConversation() {
+        try {
+            const msgs = $$('#agent-messages .msg').map(function (m) {
+                return { role: (m.className.match(/msg (\w+)/) || [, 'system'])[1], html: m.querySelector('.msg-body').innerHTML };
+            });
+            localStorage.setItem(AGENT_CONV_KEY, JSON.stringify(msgs));
+        } catch (e) { /* storage may be unavailable */ }
+    }
+    function loadAgentConversation() {
+        try {
+            const raw = localStorage.getItem(AGENT_CONV_KEY);
+            if (!raw) return;
+            const msgs = JSON.parse(raw) || [];
+            const box = $('#agent-messages');
+            box.innerHTML = '';
+            msgs.forEach(function (m) {
+                const wrap = document.createElement('div');
+                wrap.className = 'msg ' + (m.role || 'system');
+                const av = document.createElement('div');
+                av.className = 'msg-avatar';
+                av.textContent = m.role === 'user' ? 'You' : (m.role === 'assistant' ? 'AI' : 'Sys');
+                const body = document.createElement('div');
+                body.className = 'msg-body';
+                body.innerHTML = m.html || '';
+                wrap.appendChild(av); wrap.appendChild(body);
+                box.appendChild(wrap);
+            });
+            if (msgs.length) $('#agent-empty').style.display = 'none';
+        } catch (e) { /* corrupt entry: ignore */ }
+    }
+
+    async function initAgentView() {
+        try {
+            const r = await window.api.getAgentConfig();
+            if (r && r.ok) { agentConfig = r.config; renderAgentPalette(agentConfig); }
+        } catch (e) { /* config is optional; palette stays empty */ }
+
+        const backendSel = $('#agent-backend');
+        const modelWrap = $('#agent-model-wrap');
+        function syncModelWrap() { modelWrap.style.display = backendSel.value === 'ollama' ? '' : 'none'; }
+        backendSel.addEventListener('change', syncModelWrap);
+        syncModelWrap();
+
+        $('#agent-send').addEventListener('click', submitAgentInput);
+        $('#agent-input').addEventListener('keydown', function (e) {
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitAgentInput(); }
+        });
+        $('#agent-clear').addEventListener('click', function () {
+            $('#agent-messages').innerHTML = '';
+            $('#agent-empty').style.display = '';
+            try { localStorage.removeItem(AGENT_CONV_KEY); } catch (e) {}
+            setAgentStatus('Cleared.');
+        });
+        $('#agent-palette-search').addEventListener('input', function () {
+            const q = this.value.trim().toLowerCase();
+            $$('#agent-palette-list .agent-palette-item').forEach(function (it) {
+                const name = (it.dataset.name || '').toLowerCase();
+                it.style.display = !q || name.includes(q) ? '' : 'none';
+            });
+        });
+        renderAgentChips();
+        loadAgentConversation();
+    }
+
+    function renderAgentPalette(cfg) {
+        const list = $('#agent-palette-list');
+        if (!list || !cfg) return;
+        list.innerHTML = '';
+        const cats = {};
+        (cfg.tools || []).forEach(function (t) { (cats[t.category] = cats[t.category] || []).push(t); });
+        Object.keys(cats).sort().forEach(function (cat) {
+            const h = document.createElement('div');
+            h.className = 'agent-palette-cat';
+            h.textContent = cat;
+            list.appendChild(h);
+            cats[cat].forEach(function (t) {
+                const it = document.createElement('div');
+                it.className = 'agent-palette-item';
+                it.dataset.name = t.id;
+                it.innerHTML = '<span class="dot' + (t.needsNetwork ? ' net' : '') + '"></span>' +
+                    '<span class="tid">' + esc(t.id) + '</span>';
+                it.title = (t.description || '') + '\n' + (t.hint || '');
+                it.addEventListener('click', function () { insertAgentText('/tool ' + t.id); });
+                list.appendChild(it);
+            });
+        });
+    }
+
+    function renderAgentChips() {
+        const box = $('#agent-chips');
+        if (!box) return;
+        ['Scan 10.0.0.5 and report the top findings',
+            'Crack the hash 5d41402abc4b2a76b9719d911017c592',
+            'Audit the wireless network CorpWiFi',
+            'Show system status'].forEach(function (c) {
+            const el = document.createElement('button');
+            el.className = 'agent-chip';
+            el.textContent = c;
+            el.addEventListener('click', function () { insertAgentText(c); });
+            box.appendChild(el);
+        });
+    }
+
+    function insertAgentText(t) { const inp = $('#agent-input'); inp.value = t; inp.focus(); }
+
+    function appendAgentMessage(role, html) {
+        const empty = $('#agent-empty'); if (empty) empty.style.display = 'none';
+        const wrap = document.createElement('div');
+        wrap.className = 'msg ' + role;
+        const av = document.createElement('div');
+        av.className = 'msg-avatar';
+        av.textContent = role === 'user' ? 'You' : (role === 'assistant' ? 'AI' : 'Sys');
+        const body = document.createElement('div');
+        body.className = 'msg-body';
+        if (html) body.innerHTML = html;
+        wrap.appendChild(av); wrap.appendChild(body);
+        const msgs = $('#agent-messages');
+        msgs.appendChild(wrap);
+        msgs.scrollTop = msgs.scrollHeight;
+        return { wrap: wrap, body: body };
+    }
+
+    // Bare workspace references (engagements/x, reports/y, …) become absolute
+    // paths, so the user never has to type a full file location.
+    function expandWorkspaceToken(tok) {
+        const m = /^(engagements|findings|reports|exports|runs)\/(.+)$/.exec(tok);
+        if (m && state.workspace && state.workspace.paths && state.workspace.paths[m[1]]) {
+            return state.workspace.paths[m[1]] + '/' + m[2];
+        }
+        return tok;
+    }
+
+    function buildAgentArgs(text) {
+        const args = ['--agent'];
+        if (state.mode === 'online') args.push('--allow-network');
+        const ws = state.workspace;
+        if (ws && ws.paths) {
+            // Persist the agent's artifacts inside the workspace instead of temp.
+            args.push('--audit-log', joinPath(ws.paths.runs, 'agent-audit.jsonl'));
+            args.push('--audit-db', joinPath(ws.paths.runs, 'agent-audit.db'));
+            args.push('--memory', joinPath(ws.paths.runs, 'agent-memory.jsonl'));
+        }
+        text.split(/\s+/).filter(Boolean).forEach(function (tok) { args.push(expandWorkspaceToken(tok)); });
+        return args;
+    }
+
+    function buildChatArgs(text) {
+        const backend = $('#agent-backend').value;
+        const tokens = text.split(/\s+/).filter(Boolean);
+        if (backend === 'ollama') {
+            if (state.mode !== 'online') {
+                return { error: 'Ollama requires Online mode. Toggle Online in the sidebar, or set Backend to Built-in LM.' };
+            }
+            const model = ($('#agent-model').value || 'llama3.2').trim();
+            return { args: ['--allow-network', '--ollama-chat', model].concat(tokens) };
+        }
+        return { args: ['--llm-generate'].concat(tokens) };
+    }
+
+    function submitAgentInput() {
+        if (state.running) { setAgentStatus('Busy — wait for the current run to finish.'); return; }
+        const inp = $('#agent-input');
+        const text = inp.value.trim();
+        if (!text) return;
+        inp.value = '';
+        handleAgentInput(text);
+    }
+
+    function handleAgentInput(text) {
+        appendAgentMessage('user', esc(text).replace(/\n/g, '<br>'));
+        saveAgentConversation();
+        if (text[0] === '/') { runAgentCommand(text); return; }
+        if ($('#agent-mode').value === 'agent') runAgentObjective(text);
+        else runChat(text);
+    }
+
+    function runAgentCommand(text) {
+        const parts = text.slice(1).split(/\s+/);
+        const cmd = parts[0]; const arg = parts.slice(1).join(' ');
+        if (cmd === 'view') {
+            if (arg) { switchView(arg); appendAgentMessage('system', 'Switched to view: <code>' + esc(arg) + '</code>'); }
+            else appendAgentMessage('system', 'Usage: /view &lt;home|objectives|analyze|engage|server|library|agent&gt;');
+        } else if (cmd === 'tool') {
+            if (arg) { switchView('analyze'); appendAgentMessage('system', 'Opened tool <code>' + esc(arg) + '</code> in Analyze.'); }
+            else appendAgentMessage('system', 'Usage: /tool &lt;id&gt;');
+        } else if (cmd === 'home') {
+            switchView('home'); appendAgentMessage('system', 'Switched to Home.');
+        } else if (cmd === 'status') {
+            runSimple(['--offline-status'], 'status');
+        } else {
+            appendAgentMessage('system', 'Unknown command <code>' + esc(cmd) + '</code>. Try /view, /tool, /status, /home.');
+        }
+        saveAgentConversation();
+    }
+
+    // Non-streaming-simple helper reused for /status and quick runs.
+    function runSimple(args, label) {
+        const msg = appendAgentMessage('assistant', '<span class="cursor"></span>');
+        setAgentStatus('Running ' + label + '…');
+        runBinary(args, { stream: true, streamTarget: msg.body, label: label }).then(function (res) {
+            setAgentStatus(res.ok ? 'Done.' : 'Finished with errors.');
+        });
+    }
+
+    async function runAgentObjective(text) {
+        const msg = appendAgentMessage('assistant', '');
+        const pre = document.createElement('pre');
+        pre.className = 'agent-stream';
+        msg.body.appendChild(pre);
+        streamTarget = pre; // routeChunk streams here
+        const args = buildAgentArgs(text);
+        setAgentStatus('Agent working… (objective: ' + text + ')');
+        state.running = true; setRunIndicator('running', 'Agent');
+        try {
+            const res = await window.api.runStreaming(args);
+            if (pre.textContent.trim().length === 0 && res.stdout) pre.textContent = res.stdout;
+            finalizeMsg(msg, res, 'Agent');
+        } catch (err) {
+            finalizeMsg(msg, { ok: false, stderr: String(err) }, 'Agent');
+        } finally {
+            streamTarget = null;
+            state.running = false; setRunIndicator('idle');
+        }
+    }
+
+    async function runChat(text) {
+        const built = buildChatArgs(text);
+        if (built.error) { appendAgentMessage('system', esc(built.error)); return; }
+        const msg = appendAgentMessage('assistant', '');
+        const pre = document.createElement('pre'); pre.className = 'agent-stream'; msg.body.appendChild(pre);
+        streamTarget = pre;
+        setAgentStatus('Thinking…');
+        state.running = true; setRunIndicator('running', 'Chat');
+        try {
+            const res = await window.api.runStreaming(built.args);
+            if (pre.textContent.trim().length === 0 && res.stdout) pre.textContent = res.stdout;
+            finalizeMsg(msg, res, 'Chat');
+        } catch (err) {
+            finalizeMsg(msg, { ok: false, stderr: String(err) }, 'Chat');
+        } finally {
+            streamTarget = null;
+            state.running = false; setRunIndicator('idle');
+        }
+    }
+
+    function finalizeMsg(msg, res, kind) {
+        const hasContent = msg.body.textContent.trim().length > 0;
+        // The binary spawns a background LM/asset thread that can keep the
+        // process alive after all stdout is printed. runStreaming (main.js) now
+        // terminates the child on output-idle and reports success; this is a
+        // secondary guard for the case where idle-kill is disabled.
+        const ok = res.ok || hasContent;
+        setAgentStatus(ok ? (kind + ' complete.') : (kind + ' failed: ' + (res.stderr || '').slice(0, 120)));
+        const note = document.createElement('div');
+        note.style.cssText = 'font-size:11px;color:#6e7681;margin-top:6px;';
+        note.textContent = ok ? ('✓ ' + kind + ' finished' + (res.ok ? '' : ' (output captured)')) : ('✗ ' + kind + ' error');
+        msg.body.appendChild(note);
+        saveAgentConversation();
+    }
+
     function init() {
         // Navigation
         $$('.nav-item[data-view]').forEach(function (b) {
@@ -2489,6 +2763,7 @@
         renderPlaybooks('');
         initLogConsole();
         initServerView();
+        initAgentView();
         setRunIndicator('idle');
         loadStatus().then(function () {
             renderToolList('');
