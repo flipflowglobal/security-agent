@@ -30,6 +30,14 @@ contextBridge.exposeInMainWorld('api', {
     stopListener: () => ipcRenderer.invoke('stop-listener'),
     genShell: (shellType, lhost, lport) => ipcRenderer.invoke('gen-shell', shellType, lhost, lport),
     getShellTypes: () => ipcRenderer.invoke('get-shell-types'),
+    
+    // Native module (embedded Rust cognitive layer)
+    nativeModelInfo: () => ipcRenderer.invoke('native-model-info'),
+    nativeListTools: () => ipcRenderer.invoke('native-list-tools'),
+    nativeExecuteTool: (name, args, timeoutSecs) => ipcRenderer.invoke('native-execute-tool', name, args, timeoutSecs),
+    nativeRunAgent: (goal, options) => ipcRenderer.invoke('native-run-agent', goal, options),
+    nativeTestInference: (prompt, maxTokens) => ipcRenderer.invoke('native-test-inference', prompt, maxTokens),
+
     onStreamChunk: (callback) => {
         ipcRenderer.on('stream-chunk', (_event, chunk) => callback(chunk));
     },

@@ -13,6 +13,7 @@ pub mod calibration_db;
 pub mod capability_graph;
 pub mod cognition;
 pub mod cognitive_engine;
+pub mod cognitive_layer;
 pub mod compat;
 pub mod context_compaction;
 pub mod coordinator;
@@ -44,6 +45,8 @@ pub mod local_llm;
 pub mod memory_store;
 pub mod mission;
 pub mod model;
+#[cfg(feature = "napi-bindings")]
+pub mod napi;
 pub mod network_policy;
 pub mod nlu;
 pub mod observability;
@@ -101,6 +104,10 @@ pub use cognitive_engine::{
     AdversaryModel, AdversaryMove, AdversaryObjective, AttentionAllocator, AttentionFocus, Belief,
     BeliefState, CognitiveDeliberation, CognitiveEngine, Metacognition, ReasoningChain, Thought,
     ThoughtKind,
+};
+pub use cognitive_layer::{
+    AgentReport, CognitiveAgent, CognitiveOptions, EpisodeMemory, Plan, RegistryExecutor,
+    ToolExecutor, ToolOutcome,
 };
 pub use compat::{
     CompatibilityEnvelope, IntegrationAdapter, JsonLineAdapter, audit_record_to_envelope,

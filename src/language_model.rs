@@ -821,6 +821,24 @@ impl NeuralLanguageModel {
             .clone()
     }
 
+    /// Returns the vocabulary size (number of tokens).
+    #[must_use]
+    pub fn vocab_size(&self) -> usize {
+        self.vocab.len()
+    }
+
+    /// Returns the embedding dimension.
+    #[must_use]
+    pub const fn embedding_dim(&self) -> usize {
+        EMBED
+    }
+
+    /// Returns the maximum sequence length (context window).
+    #[must_use]
+    pub const fn max_seq_len(&self) -> usize {
+        CONTEXT
+    }
+
     /// Trains the canonical bundled model from scratch: SGD on the combined
     /// corpus, the Levenberg-Marquardt attention refinement, then anomaly-
     /// threshold calibration. This is what [`BUNDLED_WEIGHTS`] is a serialized

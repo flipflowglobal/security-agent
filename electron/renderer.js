@@ -407,6 +407,25 @@
             if (!rest) return { type: 'err', message: 'Please include the log text to score for anomalies.' };
             return { type: 'run', args: ['--llm-perplexity', rest], label: 'anomaly score' };
         }
+        
+        // Native module test commands
+        if (/^native\b/.test(low)) {
+            const rest = afterKeyword(t, 'native').trim().toLowerCase();
+            if (!rest || /^test$/.test(rest)) {
+                return { type: 'run', args: ['--help'], label: 'native module test' }; // Will be handled specially
+            }
+            if (/^model$/.test(rest)) {
+                return { type: 'quick', tool: 'native-model', values: {}, auto: true };
+            }
+            if (/^tools$/.test(rest)) {
+                return { type: 'quick', tool: 'native-tools', values: {}, auto: true };
+            }
+            if (/^infer/.test(rest)) {
+                const prompt = rest.replace(/^infer\s*/, '') || 'test prompt';
+                return { type: 'quick', tool: 'native-infer', values: { prompt }, auto: true };
+            }
+            return { type: 'err', message: 'Usage: native [test|model|tools|infer <prompt>]' };
+        }
         // Ollama status / generate / chat
         if (/^ollama\b/.test(low)) {
             const rest = afterKeyword(t, 'ollama').trim();
@@ -1378,6 +1397,12 @@
         { id: 'ipids', icon: '🆔', title: 'Gen IP IDs', desc: 'Randomized IP ID values', cmd: ['--gen-ipids'], fields: [{ id: 'count', label: 'Count', type: 'number', required: true }] },
         { id: 'checksum', icon: '➗', title: 'IP Checksum', desc: 'Calculate header checksum', cmd: ['--ip-checksum'], fields: [{ id: 'hex', label: 'Hex header', required: true, placeholder: 'IPv4 header bytes in hex' }] },
         { id: 'deauth', icon: '📵', title: 'Analyze Deauth', desc: '802.11 deauth frame', cmd: ['--analyze-deauth'], fields: [{ id: 'frame', label: 'Hex 802.11 frame', required: true }] },
+        // Native module tools
+        { id: 'native-model', icon: '🧠', title: 'Native Model Info', desc: 'Show bundled LM details', cmd: [], fields: [] },
+        { id: 'native-tools', icon: '🛠️', title: 'Native Tool List', desc: 'List tools via native module', cmd: [], fields: [] },
+        { id: 'native-infer', icon: '💬', title: 'Native Inference', desc: 'Test bundled LM inference', cmd: [], fields: [
+            { id: 'prompt', label: 'Prompt', required: true, type: 'textarea', placeholder: 'Enter prompt for local LM' },
+        ] },
     ];
 
     function renderQuickTools(filter) {
@@ -1473,6 +1498,43 @@
             alert('Missing required field: ' + missing[0].label);
             return;
         }
+        
+        // Native module quick tools
+        if (q.id === 'native-model') {
+            const out = $('#output-quick');
+            setLoading(out, 'Loading native model info…');
+            try {
+                const res = await window.api.nativeModelInfo();
+                renderRunResult(out, { ok: true, stdout: JSON.stringify(res, null, 2) }, q.title);
+            } catch (err) {
+                renderRunResult(out, { ok: false, stderr: String(err) }, q.title);
+            }
+            return;
+        }
+        if (q.id === 'native-tools') {
+            const out = $('#output-quick');
+            setLoading(out, 'Loading native tool list…');
+            try {
+                const res = await window.api.nativeListTools();
+                renderRunResult(out, { ok: true, stdout: JSON.stringify(res, null, 2) }, q.title);
+            } catch (err) {
+                renderRunResult(out, { ok: false, stderr: String(err) }, q.title);
+            }
+            return;
+        }
+        if (q.id === 'native-infer') {
+            const out = $('#output-quick');
+            const prompt = values.prompt || 'test';
+            setLoading(out, 'Running native inference…');
+            try {
+                const res = await window.api.nativeTestInference(prompt, 256);
+                renderRunResult(out, { ok: true, stdout: res.text }, q.title);
+            } catch (err) {
+                renderRunResult(out, { ok: false, stderr: String(err) }, q.title);
+            }
+            return;
+        }
+        
         const args = q.cmd.slice();
         q.fields.forEach(function (f) {
             const v = values[f.id];
@@ -2517,6 +2579,48 @@
     }
 
     async function runAgentObjective(text) {
+        // Try native module first for fully embedded execution
+        if (window.api.nativeRunAgent) {
+            const msg = appendAgentMessage('assistant', '');
+            const pre = document.createElement('pre');
+            pre.className = 'agent-stream';
+            msg.body.appendChild(pre);
+            streamTarget = pre; // routeChunk streams here (for compatibility)
+            setAgentStatus('Agent working… (objective: ' + text + ')');
+            state.running = true; setRunIndicator('running', 'Agent');
+            try {
+                const res = await window.api.nativeRunAgent(text, {
+                    maxSteps: 8,
+                    maxTokensPerCall: 256,
+                    toolTimeoutSecs: 120,
+                    tokenLimit: 8000
+                });
+                if (res.ok && res.answer) {
+                    // Render the full answer from the native agent
+                    pre.textContent = res.answer;
+                    // Also show steps if available
+                    if (res.steps && res.steps.length > 0) {
+                        const stepsDiv = document.createElement('div');
+                        stepsDiv.style.cssText = 'font-size:11px;color:#6e7681;margin-top:8px;border-top:1px solid #30363d;padding-top:8px;';
+                        stepsDiv.innerHTML = '<strong>Steps:</strong><br>' + res.steps.map((s, i) => 
+                            `${i+1}. ${s.step.tool || 'reason'}: ${s.step.description} → ${s.outcome.ok ? '✓' : '✗'} ${s.observation.slice(0, 100)}`
+                        ).join('<br>');
+                        msg.body.appendChild(stepsDiv);
+                    }
+                    finalizeMsg(msg, res, 'Agent');
+                } else {
+                    finalizeMsg(msg, { ok: false, stderr: res.error || 'Native agent error' }, 'Agent');
+                }
+            } catch (err) {
+                finalizeMsg(msg, { ok: false, stderr: String(err) }, 'Agent');
+            } finally {
+                streamTarget = null;
+                state.running = false; setRunIndicator('idle');
+            }
+            return;
+        }
+        
+        // Fallback to binary spawning
         const msg = appendAgentMessage('assistant', '');
         const pre = document.createElement('pre');
         pre.className = 'agent-stream';
@@ -2753,6 +2857,22 @@
                     state.chat.bundledModelDir = status.modelDir || null;
                     chatUpdateSession();
                 }
+            });
+        }
+        
+        // Test native module availability
+        if (window.api.nativeModelInfo) {
+            window.api.nativeModelInfo().then(function (res) {
+                if (res.ok) {
+                    console.log('[Native] Module loaded:', res);
+                    appendAgentMessage('system', '✓ Native cognitive layer loaded (vocab: ' + res.vocab_size + ', embed: ' + res.embedding_dim + ', ctx: ' + res.max_seq_len + ')');
+                } else {
+                    console.warn('[Native] Module load failed:', res.error);
+                    appendAgentMessage('system', '⚠ Native module unavailable: ' + res.error);
+                }
+            }).catch(function (err) {
+                console.warn('[Native] Module error:', err);
+                appendAgentMessage('system', '⚠ Native module error: ' + err);
             });
         }
         chatRenderHistory();

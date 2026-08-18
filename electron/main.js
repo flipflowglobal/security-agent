@@ -4,6 +4,33 @@ const { execFile, spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 
+// ── Native NAPI module (embedded Rust cognitive layer) ────────────────────────
+let nativeModule = null;
+function loadNativeModule() {
+    if (nativeModule) return nativeModule;
+    // Priority order: packaged app resources, dev build, debug build
+    const candidates = [
+        path.join(process.resourcesPath || '', 'libsecurity_agent.so'),           // packaged: <app>/resources/
+        path.join(__dirname, '..', 'target', 'release', 'libsecurity_agent.so'), // release build
+        path.join(__dirname, '..', 'target', 'debug', 'libsecurity_agent.so'),   // debug build
+        path.join(__dirname, '..', '..', 'target', 'release', 'libsecurity_agent.so'),
+        path.join(__dirname, '..', '..', 'target', 'debug', 'libsecurity_agent.so'),
+    ];
+    for (const candidate of candidates) {
+        try {
+            if (fs.existsSync(candidate)) {
+                nativeModule = require(candidate);
+                emitLog('info', `Loaded native module: ${candidate}`);
+                return nativeModule;
+            }
+        } catch (e) {
+            emitLog('warn', `Failed to load native module from ${candidate}: ${e.message}`);
+        }
+    }
+    emitLog('warn', 'Native module not found — falling back to binary spawning');
+    return null;
+}
+
 let mainWindow = null;
 let binaryPath = null;
 
@@ -873,5 +900,78 @@ ipcMain.handle('get-tool-catalog', async (event) => {
     } catch (err) {
         emitLog('error', 'get-tool-catalog failed: ' + String(err));
         return { ok: false, tools: [], skills: 0, error: String(err) };
+    }
+});
+
+// ── Native module IPC handlers ──────────────────────────────────────────────
+
+ipcMain.handle('native-model-info', async (event) => {
+    if (!trusted(event)) return { ok: false, error: 'untrusted sender' };
+    const native = loadNativeModule();
+    if (!native) return { ok: false, error: 'native module not loaded' };
+    try {
+        const info = await native.init_bundled_model();
+        return { ok: true, ...info };
+    } catch (err) {
+        emitLog('error', 'native-model-info failed: ' + String(err));
+        return { ok: false, error: String(err) };
+    }
+});
+
+ipcMain.handle('native-list-tools', async (event) => {
+    if (!trusted(event)) return { ok: false, error: 'untrusted sender' };
+    const native = loadNativeModule();
+    if (!native) return { ok: false, error: 'native module not loaded' };
+    try {
+        const tools = await native.list_tools();
+        return { ok: true, tools };
+    } catch (err) {
+        emitLog('error', 'native-list-tools failed: ' + String(err));
+        return { ok: false, error: String(err) };
+    }
+});
+
+ipcMain.handle('native-execute-tool', async (event, name, args, timeoutSecs) => {
+    if (!trusted(event)) return { ok: false, error: 'untrusted sender' };
+    const native = loadNativeModule();
+    if (!native) return { ok: false, error: 'native module not loaded' };
+    try {
+        const result = await native.execute_tool(name, args || [], timeoutSecs);
+        return { ok: true, ...result };
+    } catch (err) {
+        emitLog('error', 'native-execute-tool failed: ' + String(err));
+        return { ok: false, error: String(err) };
+    }
+});
+
+ipcMain.handle('native-run-agent', async (event, goal, options) => {
+    if (!trusted(event)) return { ok: false, error: 'untrusted sender' };
+    const native = loadNativeModule();
+    if (!native) return { ok: false, error: 'native module not loaded' };
+    try {
+        const agent = new native.CognitiveAgentHandle(
+            options?.maxSteps ?? 8,
+            options?.maxTokensPerCall ?? 256,
+            options?.toolTimeoutSecs ?? 120,
+            options?.tokenLimit ?? 8000
+        );
+        const result = await agent.run(goal);
+        return { ok: true, ...result };
+    } catch (err) {
+        emitLog('error', 'native-run-agent failed: ' + String(err));
+        return { ok: false, error: String(err) };
+    }
+});
+
+ipcMain.handle('native-test-inference', async (event, prompt, maxTokens) => {
+    if (!trusted(event)) return { ok: false, error: 'untrusted sender' };
+    const native = loadNativeModule();
+    if (!native) return { ok: false, error: 'native module not loaded' };
+    try {
+        const result = await native.test_inference(prompt, maxTokens ?? 64);
+        return { ok: true, text: result };
+    } catch (err) {
+        emitLog('error', 'native-test-inference failed: ' + String(err));
+        return { ok: false, error: String(err) };
     }
 });
