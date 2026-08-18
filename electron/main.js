@@ -8,14 +8,29 @@ const os = require('os');
 let nativeModule = null;
 function loadNativeModule() {
     if (nativeModule) return nativeModule;
-    // Priority order: packaged app resources, dev build, debug build
-    const candidates = [
-        path.join(process.resourcesPath || '', 'libsecurity_agent.so'),           // packaged: <app>/resources/
-        path.join(__dirname, '..', 'target', 'release', 'libsecurity_agent.so'), // release build
-        path.join(__dirname, '..', 'target', 'debug', 'libsecurity_agent.so'),   // debug build
-        path.join(__dirname, '..', '..', 'target', 'release', 'libsecurity_agent.so'),
-        path.join(__dirname, '..', '..', 'target', 'debug', 'libsecurity_agent.so'),
+    // Platform-specific shared library extension
+    const ext = process.platform === 'win32' ? 'node' : 'so';
+    const dll = process.platform === 'win32' ? 'dll' : 'so';
+    const base = `security_agent.${ext}`;
+    const alt  = `security_agent.${dll}`;
+    const soFile = `libsecurity_agent.so`;  // Linux cargo output name
+    // All candidate filenames to search (in order)
+    const names = [base, alt, soFile];
+    // Search roots: packaged resources, dev build dirs
+    const roots = [
+        process.resourcesPath || '',
+        path.join(__dirname, '..'),
+        path.join(__dirname, '..', '..'),
     ];
+    const subdirs = ['target/release', 'target/debug', ''];
+    const candidates = [];
+    for (const root of roots) {
+        for (const sub of subdirs) {
+            for (const name of names) {
+                candidates.push(path.join(root, sub, name));
+            }
+        }
+    }
     for (const candidate of candidates) {
         try {
             if (fs.existsSync(candidate)) {
