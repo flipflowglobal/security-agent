@@ -43,13 +43,6 @@
     ],
     "extraResources": [
       {
-        "from": "../assets/model",
-        "to": "assets/model",
-        "filter": [
-          "**/*"
-        ]
-      },
-      {
         "from": "tools",
         "to": "tools",
         "filter": [
@@ -86,8 +79,15 @@
       "artifactName": "${productName}-Setup-${version}.${ext}",
       "extraResources": [
         {
-          "from": "../target/release/security-agent.exe",
+          "from": "target/x86_64-pc-windows-gnu/release/security-agent.exe",
           "to": "security-agent.exe",
+          "filter": [
+            "**/*"
+          ]
+        },
+        {
+          "from": "target/x86_64-pc-windows-gnu/release/security_agent.dll",
+          "to": "security_agent.node",
           "filter": [
             "**/*"
           ]
