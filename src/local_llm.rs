@@ -199,10 +199,11 @@ impl LocalConfig {
     }
 }
 
-/// The largest model the CPU backend will load, in parameters. The bundled
-/// model is ~360M; anything at or above the 1B mark takes minutes per reply
-/// on a laptop, so it is refused with a clear message instead of silently
-/// hanging the CLI or the GUI's chat timeout.
+/// The largest model the CPU backend will load, in parameters.
+///
+/// The bundled model is ~360M; anything at or above the 1B mark takes minutes
+/// per reply on a laptop, so it is refused with a clear message instead of
+/// silently hanging the CLI or the GUI's chat timeout.
 pub const MAX_CPU_INFERENCE_PARAMS: u64 = 1_000_000_000;
 
 /// One pre-tokenization unit: a literal special token id, or a text span that
@@ -935,6 +936,7 @@ fn hash_prompt(prompt: &str) -> u64 {
 /// The 4-argument form is the historical greedy interface (temperature 0.01,
 /// top-`k` 1, penalty supplied by the caller); [`sample_token_with`] is the
 /// full implementation with every knob explicit.
+#[cfg(test)]
 #[allow(clippy::cast_possible_truncation)] // probabilities are stored as f32 by design.
 fn sample_token(
     logits: &[f32],
@@ -1168,9 +1170,13 @@ impl LocalTextModel {
         seed_text: &str,
         options: GenerationOptions,
     ) -> String {
+        // Text-level loop detection window: when the decoded tail (a phrase's
+        // worth) already appears earlier in the reply, the model has started
+        // repeating and generation is cut there.
+        const LOOP_TAIL: usize = 40;
         let mut ids = ids.to_vec();
-        let seed = options.seed.unwrap_or_else(|| hash_prompt(seed_text));
-        let mut rng = SplitMix64::from_seed(seed);
+        let rng_seed = options.seed.unwrap_or_else(|| hash_prompt(seed_text));
+        let mut rng = SplitMix64::from_seed(rng_seed);
         let mut cache = KvCache::new();
         let mut output_ids: Vec<u32> = Vec::with_capacity(max_tokens);
         let mut seen = HashSet::new();
@@ -1201,11 +1207,7 @@ impl LocalTextModel {
             if options.repeat_penalty > 1.0 {
                 seen.insert(id);
             }
-            // Text-level loop detection: when the decoded tail (a phrase's
-            // worth) already appears earlier in the reply, the model has
-            // started repeating — cut it there.
             let decoded = self.tokenizer.decode(&output_ids);
-            const LOOP_TAIL: usize = 40;
             if decoded.len() >= 2 * LOOP_TAIL {
                 let tail = &decoded[decoded.len() - LOOP_TAIL..];
                 if decoded[..decoded.len() - LOOP_TAIL].contains(tail) {

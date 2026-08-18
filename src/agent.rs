@@ -60,14 +60,26 @@ pub struct ActionCall {
 }
 
 impl ActionCall {
-    /// The primary (positional) argument, if any — the first entry of
-    /// [`Self::args`] that isn't a flag.
+    /// The leading positional arguments — every entry up to the first flag.
+    ///
+    /// Arguments are laid out positional(s) first, then flags (e.g.
+    /// `["findings.jsonl", "--format", "json"]`), so a flag *value* like `json`
+    /// is never mistaken for a positional: it appears after the `--format`
+    /// flag and is excluded here.
+    #[must_use]
+    pub fn positional_args(&self) -> &[String] {
+        let end = self
+            .args
+            .iter()
+            .position(|arg| arg.starts_with('-'))
+            .unwrap_or(self.args.len());
+        &self.args[..end]
+    }
+
+    /// The primary (first) positional argument, if any.
     #[must_use]
     pub fn primary_arg(&self) -> Option<&str> {
-        self.args
-            .iter()
-            .find(|arg| !arg.starts_with('-'))
-            .map(String::as_str)
+        self.positional_args().first().map(String::as_str)
     }
 }
 
@@ -737,7 +749,7 @@ fn handle_call(
     // `--run-tool` needs *both* positionals (analyzer name and local path);
     // running it with only one always fails in the child, so skip instead.
     if call.command == "--run-tool" {
-        let positionals = call.args.iter().filter(|arg| !arg.starts_with('-')).count();
+        let positionals = call.positional_args().len();
         if positionals < 2 {
             return ActionOutcome {
                 status: ActionStatus::Skipped(
@@ -882,11 +894,10 @@ pub fn agent_audit_records(
         .steps
         .iter()
         .map(|step| {
-            let args = if step.call.args.is_empty() {
-                "-".to_string()
-            } else {
-                step.call.args.join(" ")
-            };
+            // Debug list form keeps the audit trail unambiguous: it separates a
+            // positional from a flag value and preserves arguments with spaces,
+            // which a plain space-join would flatten.
+            let args = format!("{:?}", step.call.args);
             AuditRecord {
                 timestamp_epoch_seconds: context.timestamp_epoch_seconds,
                 actor: context.actor.to_string(),
@@ -1256,15 +1267,9 @@ fn flag_modifiers(action: &str, lowered: &str) -> Vec<String> {
     let mut flags = Vec::new();
     match action {
         "report" => {
-            if lowered.contains("sarif") {
+            if let Some(format) = requested_report_format(lowered) {
                 flags.push("--format".to_string());
-                flags.push("sarif".to_string());
-            } else if lowered.contains("json") {
-                flags.push("--format".to_string());
-                flags.push("json".to_string());
-            } else if lowered.contains("markdown") || lowered.contains(" md") {
-                flags.push("--format".to_string());
-                flags.push("markdown".to_string());
+                flags.push(format.to_string());
             }
         }
         "run-engagement" if wants_no_expand(lowered) => {
@@ -1273,6 +1278,29 @@ fn flag_modifiers(action: &str, lowered: &str) -> Vec<String> {
         _ => {}
     }
     flags
+}
+
+/// The report format the goal explicitly names, if any. Matched on whole
+/// tokens, so a path like `findings.jsonl` (which merely *contains* "json")
+/// never sets `--format`.
+fn requested_report_format(lowered: &str) -> Option<&'static str> {
+    if mentions_word(lowered, "sarif") {
+        Some("sarif")
+    } else if mentions_word(lowered, "json") {
+        Some("json")
+    } else if mentions_word(lowered, "markdown") || mentions_word(lowered, "md") {
+        Some("markdown")
+    } else {
+        None
+    }
+}
+
+/// Whether `lowered` contains `word` as a whole alphanumeric-delimited token,
+/// rather than as a substring of a larger token (e.g. a filename).
+fn mentions_word(lowered: &str, word: &str) -> bool {
+    lowered
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|token| token == word)
 }
 
 /// Whether the goal asks to disable result-driven expansion.
@@ -1814,6 +1842,72 @@ mod tests {
             "args: {:?}",
             call.args
         );
+    }
+
+    #[test]
+    fn a_jsonl_path_does_not_trigger_the_json_format_flag() {
+        // "findings.jsonl" contains "json" but isn't a whole-word format
+        // request, so --format must not be added (Copilot review, PR #61).
+        let assets = LocalAgentAssets::bundled();
+        let model = model();
+        let plan = planner_over(&assets, &model).plan("write a report from findings.jsonl");
+        let call = plan.iter().find(|c| c.action == "report").expect("report");
+        assert!(
+            !call.args.iter().any(|flag| flag == "--format"),
+            "args: {:?}",
+            call.args
+        );
+    }
+
+    #[test]
+    fn a_flag_value_is_not_mistaken_for_the_positional() {
+        // "write a report as json" resolves --format json but no findings path.
+        // The flag value `json` must not be treated as the positional, so the
+        // step is skipped rather than run with an invalid argument (Copilot).
+        let assets = LocalAgentAssets::bundled();
+        let model = model();
+        let planner = planner_over(&assets, &model);
+        let call = planner
+            .plan("write a report as json")
+            .into_iter()
+            .find(|c| c.action == "report")
+            .expect("report planned");
+        assert_eq!(call.primary_arg(), None, "no positional expected");
+        assert!(call.positional_args().is_empty());
+        let mut executor = FakeExecutor::new(|_| String::new());
+        let transcript = run_agent(
+            "write a report as json",
+            &planner,
+            &mut executor,
+            permissive(),
+        );
+        let step = transcript
+            .steps
+            .iter()
+            .find(|s| s.call.action == "report")
+            .expect("report planned");
+        assert!(matches!(step.outcome.status, ActionStatus::Skipped(_)));
+        assert!(!executor.calls.iter().any(|c| c.action == "report"));
+    }
+
+    #[test]
+    fn positional_args_are_the_leading_non_flag_tokens() {
+        let call = ActionCall {
+            action: "run-tool",
+            command: "--run-tool",
+            class: ActionClass::ReadOnly,
+            network: false,
+            args: vec![
+                "volatility".to_string(),
+                "dump.raw".to_string(),
+                "--format".to_string(),
+                "json".to_string(),
+            ],
+            confidence: 50,
+        };
+        // Two positionals; the flag value `json` is excluded.
+        assert_eq!(call.positional_args(), &["volatility", "dump.raw"]);
+        assert_eq!(call.primary_arg(), Some("volatility"));
     }
 
     #[test]
