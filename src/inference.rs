@@ -32,6 +32,14 @@ use std::path::Path;
 /// The size of the byte-level vocabulary (one token per byte value).
 pub const VOCAB_SIZE: usize = 256;
 
+/// Upper bound on embedding width (keeps `4 * n_embd` and
+/// `VOCAB_SIZE * n_embd` well within `usize`).
+const MAX_N_EMBD: usize = 8_192;
+/// Upper bound on the number of transformer blocks.
+const MAX_N_LAYER: usize = 128;
+/// Upper bound on context length (keeps position indices within `u32`).
+const MAX_BLOCK_SIZE: usize = 8_192;
+
 /// The architectural shape of a [`CandleTextModel`]. Must match the weights it
 /// is loaded with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,8 +61,13 @@ impl ModelConfig {
         self.n_embd / self.n_head
     }
 
-    /// Whether the config is self-consistent (heads divide the width, nothing
-    /// is zero).
+    /// Whether the config is self-consistent and within safe bounds.
+    ///
+    /// Beyond "heads divide the width, nothing is zero", the fields are capped
+    /// so that internal size calculations for operator-supplied configs cannot
+    /// overflow or produce out-of-range indices (`4 * n_embd` in the MLP,
+    /// `VOCAB_SIZE * n_embd` embedding matrices, `block_size` position indices).
+    /// The caps are generous relative to any model this CPU backend would run.
     #[must_use]
     pub const fn is_valid(&self) -> bool {
         self.n_embd != 0
@@ -62,6 +75,9 @@ impl ModelConfig {
             && self.n_layer != 0
             && self.block_size != 0
             && self.n_embd % self.n_head == 0
+            && self.n_embd <= MAX_N_EMBD
+            && self.n_layer <= MAX_N_LAYER
+            && self.block_size <= MAX_BLOCK_SIZE
     }
 
     /// Parses a config from JSON with integer `n_embd`, `n_head`, `n_layer`,
@@ -287,9 +303,13 @@ impl CandleTextModel {
         let forward = || -> Result<Vec<Vec<f32>>, candle_core::Error> {
             let seq_len = context.len();
             let idx = Tensor::from_vec(context.to_vec(), (seq_len,), &self.device)?;
+            // A checked conversion: fail loudly rather than inject a sentinel
+            // index if the context somehow exceeds u32 (block_size is bounded
+            // by MAX_BLOCK_SIZE, so this is unreachable in practice).
             let positions: Vec<u32> = (0..seq_len)
-                .map(|position| u32::try_from(position).unwrap_or(u32::MAX))
-                .collect();
+                .map(u32::try_from)
+                .collect::<Result<_, _>>()
+                .map_err(|_| candle_core::Error::Msg("context length exceeds u32".to_string()))?;
             let pos = Tensor::from_vec(positions, (seq_len,), &self.device)?;
 
             let mut hidden =
@@ -451,6 +471,34 @@ mod tests {
             CandleTextModel::random(bad),
             Err(InferenceError::InvalidConfig(_))
         ));
+    }
+
+    #[test]
+    fn oversized_configs_are_rejected() {
+        // Beyond-bounds fields are refused so internal size math can't overflow
+        // (Copilot review, PR #63).
+        for bad in [
+            ModelConfig {
+                n_embd: MAX_N_EMBD + 8,
+                n_head: 1,
+                n_layer: 1,
+                block_size: 8,
+            },
+            ModelConfig {
+                n_embd: 16,
+                n_head: 2,
+                n_layer: MAX_N_LAYER + 1,
+                block_size: 8,
+            },
+            ModelConfig {
+                n_embd: 16,
+                n_head: 2,
+                n_layer: 1,
+                block_size: MAX_BLOCK_SIZE + 1,
+            },
+        ] {
+            assert!(!bad.is_valid(), "{bad:?} should be rejected");
+        }
     }
 
     #[test]

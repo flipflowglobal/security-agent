@@ -2781,16 +2781,32 @@ impl security_agent::ActionExecutor for CliExecutor {
 
     fn allocate_artifact(&mut self, artifact: security_agent::Artifact) -> Option<String> {
         // A per-run temp path the agent wires from a producer to a consumer
-        // (e.g. an engagement's findings into a report). Unique per allocation
-        // so concurrent runs don't collide.
+        // (e.g. an engagement's findings into a report). The file is created
+        // atomically with `create_new` (O_EXCL), which refuses to follow or
+        // reuse an existing path — so a pre-planted symlink at a predictable
+        // name can't redirect the later `--findings-log` append. A time-based
+        // nonce plus a retry keeps names unique across concurrent runs.
         let security_agent::Artifact::FindingsLog = artifact;
         self.allocations += 1;
-        let path = std::env::temp_dir().join(format!(
-            "security-agent-agent-{}-{}.jsonl",
-            std::process::id(),
-            self.allocations
-        ));
-        Some(path.to_string_lossy().into_owned())
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos());
+        for attempt in 0..16 {
+            let path = std::env::temp_dir().join(format!(
+                "security-agent-agent-{}-{}-{nonce}-{attempt}.jsonl",
+                std::process::id(),
+                self.allocations,
+            ));
+            if fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .is_ok()
+            {
+                return Some(path.to_string_lossy().into_owned());
+            }
+        }
+        None
     }
 }
 
